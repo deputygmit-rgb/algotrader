@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -25,6 +26,8 @@ OTP_EXPIRY_SECONDS = 300  # 5 minutes
 SESSION_EXPIRY_SECONDS = 86400 * 7  # 7 days
 MAX_OTP_ATTEMPTS = 3  # Max incorrect OTP attempts
 MAX_OTP_REQUESTS_PER_HOUR = 5  # Prevent OTP spam
+MAX_OTP_REQUESTS_PER_IP_PER_HOUR = 15  # Per-IP throttle across all Zerodha IDs
+MAX_VERIFY_ATTEMPTS_PER_IP_PER_HOUR = 30  # Per-IP throttle for OTP verification
 SESSION_FILE = os.path.expanduser("~/.kta_sessions.json")  # Home directory, not /tmp
 
 
@@ -33,6 +36,7 @@ class OTPAuth:
         self._pending_otps: dict[str, dict] = {}
         self._sessions: dict[str, dict] = self._load_sessions()
         self._otp_request_count: dict[str, list[float]] = {}  # Track OTP requests per user
+        self._ip_attempts: dict[str, list[float]] = {}  # Track requests per (bucket, ip)
         
         # Load ADMIN_EMAIL from environment (loaded by dotenv.load_dotenv above)
         self._admin_email = os.environ.get("ADMIN_EMAIL", "")
@@ -255,6 +259,36 @@ class OTPAuth:
     def logout(self, token: str) -> None:
         self._sessions.pop(token, None)
         self._save_sessions()
+
+    def check_ip_rate_limit(self, bucket: str, ip: str, max_requests: int, window_seconds: int = 3600) -> bool:
+        """Generic per-IP rate limiter shared by login/OTP endpoints.
+
+        Returns True if the request is allowed (and records it), False if the
+        caller has exceeded ``max_requests`` within ``window_seconds``.
+        """
+        key = f"{bucket}:{ip}"
+        now = time.time()
+        window_start = now - window_seconds
+        attempts = [t for t in self._ip_attempts.get(key, []) if t > window_start]
+        if len(attempts) >= max_requests:
+            self._ip_attempts[key] = attempts
+            logger.warning("ip_rate_limit_exceeded", bucket=bucket, ip=ip)
+            return False
+        attempts.append(now)
+        self._ip_attempts[key] = attempts
+        return True
+
+    def get_csrf_token(self, session_token: str) -> str:
+        """Derive a CSRF token bound to the session token (synchronizer pattern)."""
+        if not session_token:
+            return ""
+        return hmac.new(self._secret.encode("utf-8"), session_token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def verify_csrf_token(self, session_token: str, csrf_token: str) -> bool:
+        if not session_token or not csrf_token:
+            return False
+        expected = self.get_csrf_token(session_token)
+        return hmac.compare_digest(expected, csrf_token)
 
 
 otp_auth = OTPAuth()

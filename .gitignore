@@ -21,12 +21,12 @@ wheels/
 # runtime
 .local/
 logs/
-data/
+/data/
 .env
 .kite_session.json
 logs/
-data/historical/
-data/instruments.csv
+/data/historical/
+/data/instruments.csv
 
 *.pyc
 *.pyo
@@ -47,6 +47,6 @@ ENV/
 *.sqlite3
 
 # Sensitive user credentials
-data/users.json
+/data/users.json
 .env
 .kite_session*.json

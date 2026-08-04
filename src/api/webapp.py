@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from src.agent.mcp_driver import MCPDriverSupervisorAgent
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import otp_auth
 from src.auth.user_config import UserConfigService
@@ -15,7 +17,19 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-app = FastAPI(title="Kite Trading Agent", version="2.0")
+mcp_driver = MCPDriverSupervisorAgent.get_instance()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await mcp_driver.startup()
+    try:
+        yield
+    finally:
+        await mcp_driver.shutdown()
+
+
+app = FastAPI(title="Kite Trading Agent", version="2.0", lifespan=_lifespan)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -48,22 +62,62 @@ def is_logged_in(request: Request) -> bool:
     return otp_auth.validate_session(token)
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _is_secure_request(request: Request) -> bool:
+    if request.url.scheme == "https":
+        return True
+    return request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+def _apply_security_headers(response, request: Request):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    if _is_secure_request(request):
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
+
+CSRF_EXEMPT_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    response = None
+
     if path.startswith("/static/") or path in PUBLIC_PATHS:
-        return await call_next(request)
-    if path.startswith("/ws/"):
+        response = await call_next(request)
+    elif path.startswith("/ws/"):
         token = request.cookies.get(SESSION_COOKIE, "")
         if not otp_auth.validate_session(token):
-            return JSONResponse({"error": "Not authenticated"}, status_code=401)
-        return await call_next(request)
-    if not is_logged_in(request):
+            response = JSONResponse({"error": "Not authenticated"}, status_code=401)
+        else:
+            response = await call_next(request)
+    elif not is_logged_in(request):
         if path.startswith("/api/"):
-            return JSONResponse({"error": "Not authenticated"}, status_code=401)
-        if path != "/login":
-            return RedirectResponse("/login", status_code=302)
-    return await call_next(request)
+            response = JSONResponse({"error": "Not authenticated"}, status_code=401)
+        elif path != "/login":
+            response = RedirectResponse("/login", status_code=302)
+        else:
+            response = await call_next(request)
+    elif request.method not in CSRF_EXEMPT_METHODS:
+        token = request.cookies.get(SESSION_COOKIE, "")
+        csrf_header = request.headers.get("X-CSRF-Token", "")
+        if not otp_auth.verify_csrf_token(token, csrf_header):
+            response = JSONResponse({"error": "CSRF validation failed"}, status_code=403)
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
+
+    return _apply_security_headers(response, request)
+
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -75,6 +129,10 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @app.post("/auth/send-otp")
 async def send_otp(request: Request) -> dict[str, Any]:
+    ip = _client_ip(request)
+    if not otp_auth.check_ip_rate_limit("send-otp", ip, max_requests=15, window_seconds=3600):
+        return {"success": False, "message": "Too many requests. Please try again later."}
+
     body = await request.json()
     email = body.get("email", "").strip().lower()
     zerodha_id = body.get("zerodha_id", "").strip().upper()
@@ -104,6 +162,10 @@ async def send_otp(request: Request) -> dict[str, Any]:
 
 @app.post("/auth/verify-otp")
 async def verify_otp(request: Request) -> Any:
+    ip = _client_ip(request)
+    if not otp_auth.check_ip_rate_limit("verify-otp", ip, max_requests=30, window_seconds=3600):
+        return {"success": False, "message": "Too many attempts. Please try again later."}
+
     body = await request.json()
     otp = body.get("otp", "").strip()
     zerodha_id = body.get("zerodha_id", "").strip().upper()
@@ -121,6 +183,8 @@ async def verify_otp(request: Request) -> Any:
             max_age=86400 * 7,
             httponly=True,
             samesite="lax",
+            secure=_is_secure_request(request),
+            path="/",
         )
         return response
     else:
@@ -142,11 +206,13 @@ async def dashboard(request: Request) -> HTMLResponse:
         return RedirectResponse("/login", status_code=302)
     svc = get_user_service(request)
     zerodha_id = get_session_zerodha_id(request)
+    session_token = request.cookies.get(SESSION_COOKIE, "")
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
+        "csrf_token": otp_auth.get_csrf_token(session_token),
     })
 
 
@@ -589,6 +655,30 @@ async def analysis_deep_profile(request: Request, symbol: str) -> dict[str, Any]
         return result
     # Fall back to on-demand analysis
     return await svc.analyze_stock_on_demand(sym)
+
+
+@app.get("/api/research/status")
+async def research_status(request: Request) -> dict[str, Any]:
+    """Health status of the supervised stock-research MCP agent."""
+    return {"running": mcp_driver.research_agent_running}
+
+
+@app.get("/api/research/best-stocks")
+async def research_best_stocks(request: Request, top_n: int = 5) -> dict[str, Any]:
+    """Top analytical stock picks via the supervised stock-research MCP agent."""
+    return await mcp_driver.call_research_tool("get_best_stocks", top_n=top_n, enrich=True)
+
+
+@app.get("/api/research/news")
+async def research_news(request: Request, symbol: str, limit: int = 15) -> dict[str, Any]:
+    """Latest news for an NSE symbol via the supervised stock-research MCP agent."""
+    return await mcp_driver.call_research_tool("fetch_stock_news", symbol=symbol.upper().strip(), limit=limit)
+
+
+@app.get("/api/research/stock/{symbol}")
+async def research_stock(request: Request, symbol: str) -> dict[str, Any]:
+    """Full research report for a single NSE symbol via the supervised stock-research MCP agent."""
+    return await mcp_driver.call_research_tool("get_stock_research", symbol=symbol.upper().strip())
 
 
 @app.get("/api/analysis/sectors")

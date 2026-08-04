@@ -2343,6 +2343,20 @@
         </div>
     </div>
 
+    <script>
+        window.__CSRF_TOKEN__ = "{{ csrf_token }}";
+        (function () {
+            const originalFetch = window.fetch;
+            window.fetch = function (input, init) {
+                init = init || {};
+                const method = (init.method || 'GET').toUpperCase();
+                if (method !== 'GET' && method !== 'HEAD') {
+                    init.headers = Object.assign({}, init.headers, { 'X-CSRF-Token': window.__CSRF_TOKEN__ });
+                }
+                return originalFetch(input, init);
+            };
+        })();
+    </script>
     <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

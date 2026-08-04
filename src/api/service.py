@@ -2082,10 +2082,19 @@ class TradingService:
 
 
 class TradingServiceManager:
+    """Backward-compatible facade over the MCP driver supervisor agent.
+
+    Kept so existing call sites (``TradingServiceManager.get_instance()``) keep
+    working unchanged; underneath, every TradingService is now created and
+    supervised by an agent via ``MCPDriverSupervisorAgent``.
+    """
+
     _instance: Optional[TradingServiceManager] = None
 
     def __init__(self) -> None:
-        self._services: dict[str, TradingService] = {}
+        from src.agent.mcp_driver import MCPDriverSupervisorAgent  # local import avoids circular import
+
+        self._mcp_driver = MCPDriverSupervisorAgent.get_instance()
 
     @classmethod
     def get_instance(cls) -> TradingServiceManager:
@@ -2094,16 +2103,10 @@ class TradingServiceManager:
         return cls._instance
 
     def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "") -> TradingService:
-        uid = zerodha_id.upper()
-        if uid not in self._services:
-            self._services[uid] = TradingService(api_key=api_key, api_secret=api_secret, zerodha_id=uid)
-            logger.info("service_created", zerodha_id=uid)
-        return self._services[uid]
+        return self._mcp_driver.get_service(zerodha_id, api_key=api_key, api_secret=api_secret)
 
     def has_service(self, zerodha_id: str) -> bool:
-        return zerodha_id.upper() in self._services
+        return self._mcp_driver.has_service(zerodha_id)
 
     def remove_service(self, zerodha_id: str) -> None:
-        uid = zerodha_id.upper()
-        if uid in self._services:
-            del self._services[uid]
+        self._mcp_driver.remove_service(zerodha_id)
