@@ -268,6 +268,7 @@ async def auth_callback(request: Request):
     try:
         svc = get_user_service(request)
         await svc.authenticate(request_token)
+        mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/?auth=success")
     except HTTPException:
         return RedirectResponse("/?auth_error=Please+login+first")
@@ -286,6 +287,7 @@ async def auth_callback_bare(request: Request):
     try:
         svc = get_user_service(request)
         await svc.authenticate(request_token)
+        mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/?auth=success")
     except HTTPException:
         return RedirectResponse("/?auth_error=Please+login+first")
@@ -314,6 +316,7 @@ async def authenticate(request: Request) -> dict[str, Any]:
         raise HTTPException(400, "request_token is required")
     svc = get_user_service(request)
     result = await svc.authenticate(token)
+    mcp_driver.wake_agent(svc.zerodha_id)
     return result
 
 
@@ -661,6 +664,14 @@ async def analysis_deep_profile(request: Request, symbol: str) -> dict[str, Any]
 async def research_status(request: Request) -> dict[str, Any]:
     """Health status of the supervised stock-research MCP agent."""
     return {"running": mcp_driver.research_agent_running}
+
+
+@app.get("/api/agents/status")
+async def agents_status(request: Request) -> dict[str, Any]:
+    """Health/status of this user's Scanner/Verifier/Executor/Tracker agents."""
+    zerodha_id = get_session_zerodha_id(request)
+    status = mcp_driver.get_agent_status(zerodha_id)
+    return status or {"error": "No active agent for this session"}
 
 
 @app.get("/api/research/best-stocks")

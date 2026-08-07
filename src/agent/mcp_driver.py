@@ -62,6 +62,13 @@ class MCPDriverSupervisorAgent:
     def remove_service(self, zerodha_id: str) -> None:
         self._supervisor.remove_service(zerodha_id)
 
+    def get_agent_status(self, zerodha_id: str) -> Optional[dict[str, Any]]:
+        return self._supervisor.get_status(zerodha_id)
+
+    def wake_agent(self, zerodha_id: str) -> None:
+        """Trigger immediate re-check by a user's Scanner/Verifier/Executor/Tracker agents."""
+        self._supervisor.wake(zerodha_id)
+
     @property
     def research_agent_running(self) -> bool:
         return self._research_agent.is_running

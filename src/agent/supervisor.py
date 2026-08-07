@@ -4,12 +4,20 @@ Wraps each existing ``TradingService`` (unchanged) in a ``TradingServiceAgent``
 that is created and monitored by ``TradingServiceSupervisorAgent``. Behavior of
 the underlying trading service is not altered - this only adds lifecycle
 supervision (heartbeat, crash logging, controlled teardown).
+
+``TradingServiceAgent`` also acts as the per-user orchestrator: it owns and
+supervises the four pipeline agents (Scanner, Verifier, Executor, Tracker)
+described by the user-facing "scan -> verify -> execute -> track" workflow.
 """
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
+from src.agent.executor_agent import ExecutorAgent
+from src.agent.scanner_agent import ScannerAgent
+from src.agent.tracker_agent import TrackerAgent
+from src.agent.verifier_agent import VerifierAgent
 from src.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -21,13 +29,23 @@ HEARTBEAT_INTERVAL_SECONDS = 60
 
 
 class TradingServiceAgent:
-    """Supervises a single per-user TradingService without changing its behavior."""
+    """Supervises a single per-user TradingService and its pipeline sub-agents.
+
+    Acts as the per-user orchestrator over ScannerAgent (live idea scanning),
+    VerifierAgent (advisory preflight audit), ExecutorAgent (execution-path
+    health supervision), and TrackerAgent (position/order monitoring) -
+    without altering the underlying TradingService's behavior.
+    """
 
     def __init__(self, zerodha_id: str, service: "TradingService") -> None:
         self.zerodha_id = zerodha_id
         self.service = service
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._alive = True
+        self.scanner = ScannerAgent(zerodha_id, service)
+        self.verifier = VerifierAgent(zerodha_id, service)
+        self.executor = ExecutorAgent(zerodha_id, service)
+        self.tracker = TrackerAgent(zerodha_id, service)
 
     def start_supervision(self) -> None:
         if self._heartbeat_task is not None:
@@ -40,6 +58,10 @@ class TradingServiceAgent:
             return
         self._heartbeat_task = loop.create_task(self._heartbeat())
         self._heartbeat_task.add_done_callback(self._on_heartbeat_done)
+        self.scanner.start()
+        self.verifier.start()
+        self.executor.start()
+        self.tracker.start()
 
     async def _heartbeat(self) -> None:
         while self._alive:
@@ -64,6 +86,27 @@ class TradingServiceAgent:
         self._alive = False
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
+        self.scanner.stop()
+        self.verifier.stop()
+        self.executor.stop()
+        self.tracker.stop()
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "zerodha_id": self.zerodha_id,
+            "is_running": self.service.is_running,
+            "scanner": self.scanner.status(),
+            "verifier": self.verifier.status(),
+            "executor": self.executor.status(),
+            "tracker": self.tracker.status(),
+        }
+
+    def wake_all(self) -> None:
+        """Make all sub-agents re-check conditions immediately (e.g. right after Zerodha login)."""
+        self.scanner.wake()
+        self.verifier.wake()
+        self.executor.wake()
+        self.tracker.wake()
 
 
 class TradingServiceSupervisorAgent:
@@ -97,3 +140,13 @@ class TradingServiceSupervisorAgent:
 
     def list_agents(self) -> list[str]:
         return list(self._agents.keys())
+
+    def get_status(self, zerodha_id: str) -> Optional[dict[str, Any]]:
+        agent = self._agents.get(zerodha_id.upper())
+        return agent.status() if agent else None
+
+    def wake(self, zerodha_id: str) -> None:
+        agent = self._agents.get(zerodha_id.upper())
+        if agent:
+            agent.wake_all()
+

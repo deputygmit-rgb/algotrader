@@ -14,15 +14,24 @@ def setup_logging() -> None:
     settings = get_settings()
 
     os.makedirs(os.path.dirname(settings.log_file), exist_ok=True)
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
-    logging.basicConfig(
-        format="%(message)s",
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(settings.log_file, mode="a"),
-        ],
+    # Route structlog events through stdlib logging so BOTH the console and the
+    # log file receive them (structlog's PrintLoggerFactory used to only print
+    # to stdout, silently dropping every structured event from logs/trading.log).
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.processors.JSONRenderer(),
     )
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    file_handler = logging.FileHandler(settings.log_file, mode="a")
+    file_handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(stdout_handler)
+    root_logger.addHandler(file_handler)
+    root_logger.setLevel(level)
 
     structlog.configure(
         processors=[
@@ -31,13 +40,11 @@ def setup_logging() -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.JSONRenderer(),
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, settings.log_level.upper(), logging.INFO)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
