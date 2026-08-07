@@ -1688,6 +1688,65 @@ function renderTriggerBadges(triggers) {
     }).join(' ') + (triggers.length > 4 ? `<span style="color:var(--text-muted);font-size:10px"> +${triggers.length-4} more</span>` : '');
 }
 
+// Parses a cell's text into a sortable value: numeric when possible (handles %, x, +/-, commas),
+// otherwise falls back to a lowercased string. '--'/blank cells always sort to the bottom.
+function parseSortValue(text) {
+    const t = (text || '').trim();
+    if (!t || t === '--') return { num: null, str: '' };
+    const cleaned = t.replace(/,/g, '');
+    const match = cleaned.match(/^[+-]?\d+(\.\d+)?/);
+    if (match && match[0].length === cleaned.replace(/[%x✓]+$/i, '').length) {
+        return { num: parseFloat(match[0]), str: t.toLowerCase() };
+    }
+    return { num: null, str: t.toLowerCase() };
+}
+
+function sortAnalysisTable(table, colIndex) {
+    const tbody = table.querySelector('tbody');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('tr')).filter(tr => !tr.querySelector('td[colspan]'));
+    if (rows.length < 2) return;
+
+    const prevDir = table.dataset.sortCol === String(colIndex) ? table.dataset.sortDir : null;
+    const dir = prevDir === 'asc' ? 'desc' : 'asc';
+    table.dataset.sortCol = String(colIndex);
+    table.dataset.sortDir = dir;
+
+    rows.sort((a, b) => {
+        const av = parseSortValue(a.children[colIndex]?.textContent);
+        const bv = parseSortValue(b.children[colIndex]?.textContent);
+        // Rows with no value for this column always sink to the bottom.
+        if (av.num === null && bv.num === null) {
+            if (!av.str && !bv.str) return 0;
+            if (!av.str) return 1;
+            if (!bv.str) return -1;
+            return dir === 'asc' ? av.str.localeCompare(bv.str) : bv.str.localeCompare(av.str);
+        }
+        if (av.num === null) return 1;
+        if (bv.num === null) return -1;
+        return dir === 'asc' ? av.num - bv.num : bv.num - av.num;
+    });
+
+    rows.forEach(tr => tbody.appendChild(tr));
+
+    table.querySelectorAll('thead th.sortable').forEach((th, i) => {
+        th.classList.toggle('sort-asc', i === colIndex && dir === 'asc');
+        th.classList.toggle('sort-desc', i === colIndex && dir === 'desc');
+    });
+}
+
+function initAnalysisTableSorting() {
+    document.querySelectorAll('.analysis-view table').forEach(table => {
+        const headerCells = table.querySelectorAll('thead th');
+        headerCells.forEach((th, i) => {
+            const label = th.textContent.trim();
+            if (!label || label === 'Detail') return; // button column, not sortable
+            th.classList.add('sortable');
+            th.addEventListener('click', () => sortAnalysisTable(table, i));
+        });
+    });
+}
+
 function renderAnalysis(data) {
     if (data.scan_time) {
         document.getElementById('scan-time').textContent = 'Last scan: ' + new Date(data.scan_time).toLocaleString();
@@ -5332,4 +5391,5 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load custom strategies into all dropdowns early
     loadCustomStrategiesDropdowns();
     loadFnOCustomStrategiesDropdowns();
+    initAnalysisTableSorting();
 });

@@ -4,11 +4,62 @@ import json
 import os
 from typing import Any, Optional
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 USER_CONFIG_FILE = "data/users.json"
+_KEY_FILE = "data/.user_config.key"
+_KEY_ENV_VAR = "USER_CONFIG_ENCRYPTION_KEY"
+
+
+def _load_or_create_key() -> bytes:
+    """Resolve the Fernet key used to encrypt api_key/api_secret at rest.
+
+    Prefers the USER_CONFIG_ENCRYPTION_KEY env var (recommended for production
+    - keep the key out of the data directory, e.g. in your secrets manager).
+    Falls back to a locally generated, owner-only-readable key file for local/dev use.
+    """
+    env_key = os.environ.get(_KEY_ENV_VAR)
+    if env_key:
+        return env_key.encode()
+    if os.path.exists(_KEY_FILE):
+        with open(_KEY_FILE, "rb") as f:
+            return f.read().strip()
+    key = Fernet.generate_key()
+    os.makedirs(os.path.dirname(_KEY_FILE), exist_ok=True)
+    with open(_KEY_FILE, "wb") as f:
+        f.write(key)
+    os.chmod(_KEY_FILE, 0o600)
+    logger.warning(
+        "user_config_key_generated",
+        key_file=_KEY_FILE,
+        hint=f"For production, set {_KEY_ENV_VAR} instead of relying on this local key file.",
+    )
+    return key
+
+
+_fernet = Fernet(_load_or_create_key())
+
+
+def _encrypt(value: str) -> str:
+    if not value:
+        return ""
+    return _fernet.encrypt(value.encode()).decode()
+
+
+def _decrypt(value: str) -> tuple[str, bool]:
+    """Returns (plaintext, was_legacy_plaintext)."""
+    if not value:
+        return "", False
+    try:
+        return _fernet.decrypt(value.encode()).decode(), False
+    except InvalidToken:
+        # Pre-encryption value written before this feature existed - use as-is,
+        # caller should re-save to migrate it to encrypted form.
+        return value, True
 
 
 class UserConfig:
@@ -37,14 +88,21 @@ class UserConfigService:
             try:
                 with open(USER_CONFIG_FILE, "r") as f:
                     data = json.load(f)
+                needs_migration = False
                 for uid, info in data.items():
+                    api_key, legacy_key = _decrypt(info.get("api_key", ""))
+                    api_secret, legacy_secret = _decrypt(info.get("api_secret", ""))
+                    needs_migration = needs_migration or legacy_key or legacy_secret
                     self._users[uid.upper()] = UserConfig(
                         zerodha_id=uid.upper(),
-                        api_key=info.get("api_key", ""),
-                        api_secret=info.get("api_secret", ""),
+                        api_key=api_key,
+                        api_secret=api_secret,
                         email=info.get("email", ""),
                     )
                 logger.info("users_loaded", count=len(self._users))
+                if needs_migration:
+                    logger.info("user_config_migrating_to_encrypted")
+                    self._save()
             except Exception as e:
                 logger.error("user_config_load_failed", error=str(e))
         else:
@@ -67,8 +125,8 @@ class UserConfigService:
             data = {}
             for uid, uc in self._users.items():
                 data[uid] = {
-                    "api_key": uc.api_key,
-                    "api_secret": uc.api_secret,
+                    "api_key": _encrypt(uc.api_key),
+                    "api_secret": _encrypt(uc.api_secret),
                     "email": uc.email,
                 }
             with open(USER_CONFIG_FILE, "w") as f:

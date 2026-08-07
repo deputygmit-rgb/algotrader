@@ -18,3 +18,4 @@ websockets>=16.0
 mcp[cli]>=1.0.0
 beautifulsoup4>=4.12.0
 feedparser>=6.0.0
+cryptography>=42.0.0

@@ -48,5 +48,6 @@ ENV/
 
 # Sensitive user credentials
 /data/users.json
+/data/.user_config.key
 .env
 .kite_session*.json

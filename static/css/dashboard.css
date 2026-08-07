@@ -211,6 +211,15 @@ tr:hover td { background: var(--bg-hover); }
     border-radius: 8px;
 }
 
+.analysis-view th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+.analysis-view th.sortable:hover { color: var(--text-primary); }
+.analysis-view th.sortable::after { content: '\2195'; opacity: 0.35; margin-left: 4px; font-size: 10px; }
+.analysis-view th.sortable.sort-asc::after { content: '\2191'; opacity: 1; }
+.analysis-view th.sortable.sort-desc::after { content: '\2193'; opacity: 1; }
+
 .table-wrap::-webkit-scrollbar { width: 6px; }
 .table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
