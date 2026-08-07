@@ -19,8 +19,15 @@ def setup_logging() -> None:
     # Route structlog events through stdlib logging so BOTH the console and the
     # log file receive them (structlog's PrintLoggerFactory used to only print
     # to stdout, silently dropping every structured event from logs/trading.log).
+    # foreign_pre_chain adds level/timestamp to plain logging.getLogger(...) calls
+    # too (several modules still log via stdlib logging directly, not get_logger()).
     formatter = structlog.stdlib.ProcessorFormatter(
         processor=structlog.processors.JSONRenderer(),
+        foreign_pre_chain=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+        ],
     )
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(formatter)

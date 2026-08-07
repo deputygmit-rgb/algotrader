@@ -40,6 +40,7 @@ class ExecutorAgent:
         self._wake_event = asyncio.Event()
         self._state = "idle"
         self.last_checked_at: Optional[str] = None
+        self.last_error: Optional[str] = None
         self.ticker_connected: bool = False
         self.stall_warnings: int = 0
 
@@ -83,7 +84,12 @@ class ExecutorAgent:
                 self._set_state("monitoring")
                 try:
                     ticker = self.service._ticker
-                    self.ticker_connected = bool(getattr(ticker, "is_connected", lambda: False)())
+                    # is_connected is a @property on the real KiteTicker, not a method -
+                    # only call it if it actually is callable (e.g. in tests/mocks).
+                    is_connected = getattr(ticker, "is_connected", False)
+                    if callable(is_connected):
+                        is_connected = is_connected()
+                    self.ticker_connected = bool(is_connected)
                     if not self.ticker_connected:
                         self.stall_warnings += 1
                         logger.warning(
@@ -93,7 +99,9 @@ class ExecutorAgent:
                         )
                     else:
                         self.stall_warnings = 0
+                    self.last_error = None
                 except Exception as e:
+                    self.last_error = str(e)
                     logger.error("executor_agent_check_failed", zerodha_id=self.zerodha_id, error=str(e))
                 self.last_checked_at = datetime.now().isoformat()
             else:
@@ -112,6 +120,7 @@ class ExecutorAgent:
             "running": self._alive,
             "state": self._state,
             "last_checked_at": self.last_checked_at,
+            "last_error": self.last_error,
             "ticker_connected": self.ticker_connected,
             "stall_warnings": self.stall_warnings,
         }

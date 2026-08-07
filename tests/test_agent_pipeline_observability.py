@@ -17,6 +17,17 @@ from src.agent.tracker_agent import TrackerAgent
 from src.agent.verifier_agent import VerifierAgent
 
 
+class FakeTicker:
+    """Mirrors the real KiteTicker's is_connected being a @property, not a method."""
+
+    def __init__(self, connected: bool = True) -> None:
+        self._connected = connected
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+
 class FakeService:
     """Minimal stand-in for TradingService with controllable async behavior."""
 
@@ -24,8 +35,7 @@ class FakeService:
         self.is_authenticated = True
         self.is_running = True
         self._client = MagicMock()
-        self._ticker = MagicMock()
-        self._ticker.is_connected = MagicMock(return_value=True)
+        self._ticker = FakeTicker(connected=True)
         self._risk = MagicMock()
         self._risk._total_exposure = 0.0  # real float: preflight does numeric comparisons on this
         self._risk.is_kill_switch_active = False
@@ -207,29 +217,50 @@ async def test_executor_idles_until_live_trading():
 @pytest.mark.asyncio
 async def test_executor_detects_ticker_disconnect():
     service = FakeService()
-    service._ticker.is_connected = MagicMock(return_value=False)
+    service._ticker = FakeTicker(connected=False)
     agent = ExecutorAgent("U1", service, interval_seconds=5)
     agent.start()
     try:
         await _run_until(lambda: agent.status()["stall_warnings"] >= 1)
         assert agent.status()["ticker_connected"] is False
         assert agent.status()["running"] is True
+        assert agent.status()["last_error"] is None
+    finally:
+        agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_executor_is_connected_property_not_called_as_method():
+    # Regression: KiteTicker.is_connected is a @property; calling it as a
+    # method used to raise "bool object is not callable", silently swallowed,
+    # leaving ticker_connected stuck at its default False/stall_warnings at 0.
+    service = FakeService()
+    service._ticker = FakeTicker(connected=True)
+    agent = ExecutorAgent("U1", service, interval_seconds=5)
+    agent.start()
+    try:
+        await _run_until(lambda: agent.status()["last_checked_at"] is not None)
+        status = agent.status()
+        assert status["ticker_connected"] is True
+        assert status["last_error"] is None
+        assert status["stall_warnings"] == 0
     finally:
         agent.stop()
 
 
 @pytest.mark.asyncio
 async def test_executor_handles_check_exception():
+    class BrokenTicker:
+        @property
+        def is_connected(self) -> bool:
+            raise RuntimeError("ticker check failed")
+
     service = FakeService()
-
-    def _boom():
-        raise RuntimeError("ticker check failed")
-
-    service._ticker.is_connected = _boom
+    service._ticker = BrokenTicker()
     agent = ExecutorAgent("U1", service, interval_seconds=5)
     agent.start()
     try:
-        await _run_until(lambda: agent.status()["last_checked_at"] is not None)
+        await _run_until(lambda: agent.status()["last_error"] == "ticker check failed")
         assert agent.status()["running"] is True
     finally:
         agent.stop()
