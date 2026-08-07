@@ -30,7 +30,10 @@ from datetime import datetime, date
 from typing import Any, Dict, List, Optional
 import logging
 
+import pandas as pd
+
 from src.data.models import Order, TransactionType, OrderType, ProductType, Exchange
+from src.utils.serialization import sanitize_for_json
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +237,58 @@ class RiskControls:
 
 
 # ─────────────────────────────────────────────────────────────
+# Run result
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class PaperTradeResult:
+    """Complete result from a historical-data paper trading session."""
+    strategy_name:      str
+    tradingsymbol:       str
+    exchange:            str
+    timeframe:           str
+    initial_capital:     float
+    final_capital:       float
+    total_return_pct:    float
+    total_pnl:           float
+    total_trades:        int
+    win_rate:            float
+    avg_win:             float
+    avg_loss:            float
+    profit_factor:       float
+    max_drawdown_pct:    float
+    sharpe_ratio:        float
+    equity_curve:        list = field(default_factory=list)
+    positions:           list = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "engine": "paper_trade",
+            "strategy_name": self.strategy_name,
+            "tradingsymbol": self.tradingsymbol,
+            "exchange": self.exchange,
+            "timeframe": self.timeframe,
+            "initial_capital": self.initial_capital,
+            "final_capital": round(self.final_capital, 2),
+            "total_return_pct": round(self.total_return_pct, 2),
+            "total_pnl": round(self.total_pnl, 2),
+            "total_trades": self.total_trades,
+            "win_rate": round(self.win_rate, 2),
+            "avg_win": round(self.avg_win, 2),
+            "avg_loss": round(self.avg_loss, 2),
+            "profit_factor": round(self.profit_factor, 3),
+            "max_drawdown_pct": round(self.max_drawdown_pct, 2),
+            "sharpe_ratio": round(self.sharpe_ratio, 4),
+            "equity_curve": self.equity_curve,
+            "positions": self.positions,
+        }
+
+    def to_dict_safe(self) -> dict[str, Any]:
+        """JSON-safe dict (numpy scalars from strategy signals sanitized)."""
+        return sanitize_for_json(self.to_dict())
+
+
+# ─────────────────────────────────────────────────────────────
 # Paper Trading Engine v2
 # ─────────────────────────────────────────────────────────────
 
@@ -278,6 +333,101 @@ class PaperTradingEngine:
 
     # ── Public API ────────────────────────────────────────────
 
+    def run(
+        self,
+        data: pd.DataFrame,
+        instrument_token: int = 0,
+        tradingsymbol: str = "PAPER",
+        exchange: str = "NSE",
+        timeframe: str = "day",
+    ) -> PaperTradeResult:
+        """Replay a strategy bar-by-bar over historical data using the same
+        realistic cost/slippage model as live paper trading (place_order /
+        update_prices), then return a comprehensive result summary.
+
+        self.strategy must be a strategy instance exposing update_bar_data()
+        and generate_signal() (the same interface BacktestEngine uses).
+        """
+        self.reset()
+        strategy = self.strategy
+        strategy_name = getattr(strategy, "name", str(strategy))
+
+        df = data.copy()
+        if "timestamp" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
+            df["timestamp"] = df.index
+        df = df.reset_index(drop=True)
+
+        for i in range(1, len(df)):
+            bar = df.iloc[i]
+            slice_df = df.iloc[: i + 1]
+            strategy.update_bar_data(instrument_token, slice_df)
+            signal = strategy.generate_signal(slice_df, instrument_token)
+
+            price = float(bar["close"])
+            bar_ts = bar["timestamp"] if "timestamp" in df.columns else None
+            bar_ts = pd.Timestamp(bar_ts).to_pydatetime() if bar_ts is not None else datetime.now()
+
+            if signal:
+                pos = self._positions.get(tradingsymbol)
+                current_qty = pos.quantity if pos else 0
+                qty = max(1, int(getattr(signal, "quantity", 1) or 1))
+                if signal.transaction_type == TransactionType.BUY and current_qty <= 0:
+                    self.place_order(
+                        tradingsymbol, TransactionType.BUY, qty + abs(current_qty), price, timestamp=bar_ts
+                    )
+                elif signal.transaction_type == TransactionType.SELL and current_qty >= 0:
+                    self.place_order(
+                        tradingsymbol, TransactionType.SELL, qty + abs(current_qty), price, timestamp=bar_ts
+                    )
+
+            self.update_prices({tradingsymbol: price})
+
+        # Force-exit any open position at the last close (EOD square-off)
+        if not df.empty:
+            last_price = float(df.iloc[-1]["close"])
+            self.close_all_positions({tradingsymbol: last_price})
+
+        report = self.get_performance_report()
+        final_capital = self.get_portfolio_value()
+        total_return_pct = (
+            (final_capital - self.initial_capital) / self.initial_capital * 100
+            if self.initial_capital else 0.0
+        )
+
+        positions = [
+            {
+                "type": ct.direction,
+                "entry": round(ct.entry_price, 2),
+                "exit": round(ct.exit_price, 2),
+                "qty": ct.quantity,
+                "pnl": ct.net_pnl,
+                "entry_time": str(ct.entry_time),
+                "exit_time": str(ct.exit_time),
+                "reason": "",
+            }
+            for ct in self.get_closed_trades()
+        ]
+
+        return PaperTradeResult(
+            strategy_name=strategy_name,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            timeframe=timeframe,
+            initial_capital=self.initial_capital,
+            final_capital=final_capital,
+            total_return_pct=total_return_pct,
+            total_pnl=self.get_pnl(),
+            total_trades=report.get("total_trades", 0),
+            win_rate=report.get("win_rate", 0.0),
+            avg_win=report.get("avg_win", 0.0),
+            avg_loss=report.get("avg_loss", 0.0),
+            profit_factor=report.get("profit_factor", 0.0),
+            max_drawdown_pct=report.get("max_drawdown_pct", 0.0),
+            sharpe_ratio=report.get("sharpe_ratio", 0.0),
+            equity_curve=self.get_equity_curve(),
+            positions=positions,
+        )
+
     def place_order(
         self,
         tradingsymbol:    str,
@@ -285,6 +435,7 @@ class PaperTradingEngine:
         quantity:         int,
         price:            float,
         order_type:       OrderType = OrderType.MARKET,
+        timestamp:        Optional[datetime] = None,
     ) -> Optional[PaperTrade]:
         """
         Place a paper order. Returns PaperTrade on success, None if blocked by risk.
@@ -314,6 +465,7 @@ class PaperTradingEngine:
             fill_price=fill,
             costs=costs,
             is_intraday=self.is_intraday,
+            **({"timestamp": timestamp} if timestamp is not None else {}),
         )
 
         # Update cash

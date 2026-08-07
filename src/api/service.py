@@ -20,6 +20,7 @@ from src.data.models import (
 from src.data.paper_trader import PaperTradingEngine
 from src.derivatives.fno_backtest import FnOBacktestEngine
 from src.derivatives.fno_paper_trader import FnOPaperTradingEngine
+from src.utils.serialization import sanitize_for_json
 from src.execution.engine import ExecutionEngine
 from src.journal.journal_store import JournalStore
 from src.journal.journal_analytics import JournalAnalytics
@@ -995,11 +996,11 @@ class TradingService:
         df = pd.DataFrame(rows)
 
         # Run paper trade
+        # NOTE: commission_pct/slippage_pct are no longer accepted by PaperTradingEngine -
+        # it now derives realistic Indian brokerage + market-impact slippage internally.
         engine = PaperTradingEngine(
             strategy=strategy,
             initial_capital=capital,
-            commission_pct=commission_pct,
-            slippage_pct=slippage_pct,
         )
         result = engine.run(
             data=df,
@@ -1742,7 +1743,7 @@ class TradingService:
             strategy_name = result.get("strategy_name", "unknown")
 
         report = compute_health_report(result, strategy_type=strategy_type, strategy_name=strategy_name)
-        report_dict = report.to_dict()
+        report_dict = sanitize_for_json(report.to_dict())
         report_dict["grade"] = get_health_grade(report.overall_score)
 
         # Cache

@@ -822,7 +822,10 @@ def compute_health_report(
 
     # Critical blockers override
     critical_fails = {"profitability", "drawdown"} & set(fail_pillars)
-    execution_ready = overall >= 60 and len(critical_fails) == 0
+    # cast to native bool/float - pillar scores can be numpy scalars, and
+    # `numpy_bool and bool` returns the numpy operand as-is when falsy
+    overall = float(overall)
+    execution_ready = bool(overall >= 60 and len(critical_fails) == 0)
 
     if overall >= 75:
         overall_verdict = "PASS"
