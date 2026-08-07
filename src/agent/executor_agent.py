@@ -58,6 +58,7 @@ class ExecutorAgent:
 
     def stop(self) -> None:
         self._alive = False
+        self._set_state("stopped")
         if self._task and not self._task.done():
             self._task.cancel()
 

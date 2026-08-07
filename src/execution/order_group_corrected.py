@@ -1421,7 +1421,17 @@ class CorrectMultiLegOrderGroup:
         self.sl_manager = HybridStopLossManager(client)
         self.margin_simulator = WorstCaseMarginSimulator(client)
         self.child_manager = ChildOrderManager(client)
-    
+
+    def _set_lifecycle(self, lifecycle: "ExecutionLifecycle") -> None:
+        if lifecycle != self.state.lifecycle:
+            logger.info(
+                "execution_lifecycle_changed",
+                group_id=self.group_id,
+                from_state=self.state.lifecycle.name,
+                to_state=lifecycle.name,
+            )
+            self.state.lifecycle = lifecycle
+
     async def _process_state_update(self, event: dict):
         """Handle incoming state update from broker with all 5 safeguards.
         
@@ -1477,7 +1487,7 @@ class CorrectMultiLegOrderGroup:
                 return  # Don't overwrite with stale data
         
         # Continue with normal processing
-        self.state.lifecycle = incoming_state
+        self._set_lifecycle(incoming_state)
         await self.persistence.save_state(self.state)
     
     async def place_order_with_intent_persistence(self, leg, order_type: str = 'HEDGE'):
@@ -1536,7 +1546,7 @@ class CorrectMultiLegOrderGroup:
         """
         try:
             # VALIDATE
-            self.state.lifecycle = ExecutionLifecycle.VALIDATED
+            self._set_lifecycle(ExecutionLifecycle.VALIDATED)
             
             # FREEZE-SPLIT: Split any legs exceeding NSE freeze limits BEFORE margin check
             # This must happen first — margin simulation on unsplit legs is invalid
@@ -1566,7 +1576,7 @@ class CorrectMultiLegOrderGroup:
             ordered_legs = protection_legs + risk_legs
             
             # SUBMIT: Protection legs first
-            self.state.lifecycle = ExecutionLifecycle.HEDGE_SUBMITTED
+            self._set_lifecycle(ExecutionLifecycle.HEDGE_SUBMITTED)
             
             for i, leg in enumerate(ordered_legs):
                 leg_state = LegState(
@@ -1583,7 +1593,14 @@ class CorrectMultiLegOrderGroup:
                     order_id = await self.execution_engine.execute_signal(leg)
                     leg_state.order_id = order_id
                     leg_state.status = "SUBMITTED"
-                    
+                    logger.info(
+                        "leg_order_submitted",
+                        group_id=self.group_id,
+                        leg_id=leg_state.leg_id,
+                        leg_type=leg.leg_type.value,
+                        order_id=order_id,
+                    )
+
                 except Exception as e:
                     logger.error("order_placement_failed", leg=i, error=str(e))
                     leg_state.status = "REJECTED"
@@ -1609,11 +1626,21 @@ class CorrectMultiLegOrderGroup:
                     if leg_state.order_id:
                         order = await _get_latest_order_status(self.client, leg_state.order_id)
                         leg_state.filled_quantity = order.get('filled_quantity', 0)
-                        leg_state.status = order.get('status', leg_state.status)
+                        new_status = order.get('status', leg_state.status)
+                        if new_status != leg_state.status:
+                            logger.info(
+                                "leg_status_changed",
+                                group_id=self.group_id,
+                                leg_id=leg_state.leg_id,
+                                order_id=leg_state.order_id,
+                                from_status=leg_state.status,
+                                to_status=new_status,
+                            )
+                            leg_state.status = new_status
                 
                 # Check if all filled
                 if self.state.get_filled_count() == len(self.state.legs):
-                    self.state.lifecycle = ExecutionLifecycle.HEDGED
+                    self._set_lifecycle(ExecutionLifecycle.HEDGED)
                     break
                 
                 # Check if failed (some orders rejected)
@@ -1631,7 +1658,7 @@ class CorrectMultiLegOrderGroup:
                 await asyncio.sleep(0.1)
             
             # SUCCESS
-            self.state.lifecycle = ExecutionLifecycle.CLOSED
+            self._set_lifecycle(ExecutionLifecycle.CLOSED)
             await self.persistence.save_state(self.state)
             
             logger.info(
