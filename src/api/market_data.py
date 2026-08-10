@@ -224,7 +224,7 @@ class MarketDataProvider:
 
         df = pd.DataFrame(data)
         if not df.empty and "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
             df.set_index("timestamp", inplace=True)
         return df
 

@@ -248,25 +248,31 @@ class KiteTicker:
                 ),
             )
 
-            if packet_len >= 184:
-                change = struct.unpack(">i", packet[44:48])[0] / divisor
-                tick.change = change
+            # "change" is not sent over the wire - computed client-side from OHLC.
+            if tick.ohlc.close:
+                tick.change = round((tick.last_price - tick.ohlc.close) / tick.ohlc.close * 100, 2)
 
-                if packet_len >= 56:
-                    ts_values = struct.unpack(">II", packet[48:56])
-                    if ts_values[0]:
-                        tick.last_trade_time = datetime.fromtimestamp(ts_values[0])
-                    if ts_values[1]:
-                        tick.exchange_timestamp = datetime.fromtimestamp(ts_values[1])
-
-                if packet_len >= 68:
-                    oi_values = struct.unpack(">III", packet[56:68])
-                    tick.oi = oi_values[0]
-                    tick.oi_day_high = oi_values[1]
-                    tick.oi_day_low = oi_values[2]
+            if packet_len >= 64:
+                # Real Kite full-mode layout after the 44-byte header above:
+                #   [44:48]=last_trade_time [48:52]=oi [52:56]=oi_day_high
+                #   [56:60]=oi_day_low [60:64]=exchange_timestamp
+                # (previously misread starting at [44:48] as a phantom "change"
+                # field, shifting every field after it by 4 bytes - which made
+                # exchange_timestamp/last_trade_time hold garbage epoch values
+                # such as the OI count, producing bogus decades-old tick ages).
+                last_trade_ts, oi, oi_day_high, oi_day_low, exch_ts = struct.unpack(
+                    ">iIIII", packet[44:64]
+                )
+                if last_trade_ts:
+                    tick.last_trade_time = datetime.fromtimestamp(last_trade_ts)
+                tick.oi = oi
+                tick.oi_day_high = oi_day_high
+                tick.oi_day_low = oi_day_low
+                if exch_ts:
+                    tick.exchange_timestamp = datetime.fromtimestamp(exch_ts)
 
                 if packet_len >= 184:
-                    depth = self._parse_depth(packet[68:184], divisor)
+                    depth = self._parse_depth(packet[64:184], divisor)
                     tick.depth = depth
 
             return tick

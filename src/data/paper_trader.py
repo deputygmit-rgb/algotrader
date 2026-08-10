@@ -28,14 +28,14 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional
-import logging
 
 import pandas as pd
 
 from src.data.models import Order, TransactionType, OrderType, ProductType, Exchange
 from src.utils.serialization import sanitize_for_json
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -385,7 +385,9 @@ class PaperTradingEngine:
         # Force-exit any open position at the last close (EOD square-off)
         if not df.empty:
             last_price = float(df.iloc[-1]["close"])
-            self.close_all_positions({tradingsymbol: last_price})
+            last_ts_raw = df.iloc[-1]["timestamp"] if "timestamp" in df.columns else None
+            last_ts = pd.Timestamp(last_ts_raw).to_pydatetime() if last_ts_raw is not None else datetime.now()
+            self.close_all_positions({tradingsymbol: last_price}, timestamp=last_ts)
 
         report = self.get_performance_report()
         final_capital = self.get_portfolio_value()
@@ -518,6 +520,7 @@ class PaperTradingEngine:
         tradingsymbol: str,
         price: float,
         reason: str = "MANUAL",
+        timestamp: Optional[datetime] = None,
     ) -> Optional[PaperTrade]:
         """Close an entire position at market."""
         pos = self._positions.get(tradingsymbol)
@@ -525,14 +528,26 @@ class PaperTradingEngine:
             return None
 
         direction = TransactionType.SELL if pos.is_long else TransactionType.BUY
-        return self.place_order(tradingsymbol, direction, abs(pos.quantity), price)
+        return self.place_order(
+            tradingsymbol, direction, abs(pos.quantity), price,
+            **({"timestamp": timestamp} if timestamp is not None else {}),
+        )
 
-    def close_all_positions(self, prices: dict[str, float]) -> List[PaperTrade]:
-        """Close all open positions (EOD square-off for intraday)."""
+    def close_all_positions(
+        self, prices: dict[str, float], timestamp: Optional[datetime] = None,
+    ) -> List[PaperTrade]:
+        """Close all open positions (EOD square-off for intraday).
+
+        ``timestamp``, if given, must have the same tz-awareness as the entry
+        trades' timestamps (e.g. the last historical bar's time) - otherwise
+        hold-day calculations mixing naive ``datetime.now()`` exits with
+        tz-aware broker-bar entries raise "can't subtract offset-naive and
+        offset-aware datetimes".
+        """
         trades = []
         for sym, pos in list(self._positions.items()):
             if pos.quantity != 0 and sym in prices:
-                t = self.close_position(sym, prices[sym], "EOD_SQUAREOFF")
+                t = self.close_position(sym, prices[sym], "EOD_SQUAREOFF", timestamp=timestamp)
                 if t:
                     trades.append(t)
         return trades

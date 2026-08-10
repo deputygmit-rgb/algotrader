@@ -52,6 +52,17 @@ _CREDIT_SPREAD_STRATEGIES = frozenset({
     "put_credit_spread_runner",
 })
 
+# FnOBacktestEngine.STRATEGY_MAP has no entries for the *_runner names above (it
+# only knows generic structure names) - without this translation it silently
+# falls back to iron_condor for ANY unrecognized strategy_name, meaning the
+# backtest gate would validate a completely different structure than the one
+# that actually gets executed. "Call credit spread" = sell a call spread =
+# bear_call_spread; "put credit spread" = sell a put spread = bull_put_spread.
+_BACKTEST_STRUCTURE_ALIAS: dict[str, str] = {
+    "call_credit_spread_runner": "bear_call_spread",
+    "put_credit_spread_runner": "bull_put_spread",
+}
+
 # Default risk parameters matching the credit spread runner classes
 _CREDIT_SPREAD_DEFAULTS = {
     "sl_premium_points": 40,       # SL distance on the sold premium (absolute points)
@@ -488,8 +499,13 @@ class OIFnOBridge:
 
             # Run backtest. FnOBacktestEngine doesn't take an arbitrary params dict -
             # only pass the specific kwargs it actually understands from the mapping.
+            # Translate *_runner names to the structure name FnOBacktestEngine
+            # actually recognizes (see _BACKTEST_STRUCTURE_ALIAS above).
+            backtest_structure_name = _BACKTEST_STRUCTURE_ALIAS.get(
+                mapping.fno_strategy, mapping.fno_strategy
+            )
             engine = FnOBacktestEngine(
-                strategy_name=mapping.fno_strategy,
+                strategy_name=backtest_structure_name,
                 underlying=mapping.underlying,
                 initial_capital=self.thresholds.backtest_capital,
                 max_positions=self.thresholds.backtest_max_positions,

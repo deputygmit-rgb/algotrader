@@ -934,7 +934,7 @@ class StockScanner:
         tmp = df.copy()
         dt_col = "timestamp" if "timestamp" in tmp.columns else "date" if "date" in tmp.columns else None
         if dt_col:
-            tmp[dt_col] = pd.to_datetime(tmp[dt_col])
+            tmp[dt_col] = pd.to_datetime(tmp[dt_col], format="mixed")
             tmp = tmp.set_index(dt_col)
         weekly = tmp.resample("W").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
@@ -946,7 +946,7 @@ class StockScanner:
         tmp = df.copy()
         dt_col = "timestamp" if "timestamp" in tmp.columns else "date" if "date" in tmp.columns else None
         if dt_col:
-            tmp[dt_col] = pd.to_datetime(tmp[dt_col])
+            tmp[dt_col] = pd.to_datetime(tmp[dt_col], format="mixed")
             tmp = tmp.set_index(dt_col)
         monthly = tmp.resample("ME").agg({
             "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"

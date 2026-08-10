@@ -39,7 +39,7 @@
             <button class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
             <button class="tab" data-tab="positions" onclick="switchTab('positions');loadPositions()">Positions</button>
             <button class="tab" data-tab="orders" onclick="switchTab('orders');loadOrders()">Orders</button>
-            <button class="tab" data-tab="signals" onclick="switchTab('signals');loadSignals()">Signals</button>
+            <button class="tab" data-tab="signals" onclick="switchTab('signals');loadSignals();loadVerifierFindings()">Signals</button>
             <button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
             <button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>
             <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
@@ -210,6 +210,13 @@
 
         <!-- Signals Tab -->
         <div id="tab-signals" class="tab-content">
+            <div id="verifier-findings-card" class="card" style="margin-bottom:16px;display:none">
+                <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+                    <span>Preflight / Verifier Findings</span>
+                    <span id="verifier-findings-time" style="font-size:11px;font-weight:400;color:var(--text-muted)"></span>
+                </div>
+                <div id="verifier-findings-body" style="font-size:13px"></div>
+            </div>
             <div class="card">
                 <div class="card-title">Signal History</div>
                 <div id="signals-log-full" class="table-wrap" style="max-height:600px;overflow-y:auto">
@@ -2480,6 +2487,6 @@
             };
         })();
     </script>
-    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/dashboard.js?v={{ js_version }}"></script>
 </body>
 </html>

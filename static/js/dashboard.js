@@ -168,6 +168,7 @@ async function loadStatus() {
         updateTicksTable(data.ticks);
 
         updateStatusBadge(data);
+        loadVerifierFindings();
     } catch (e) {
         console.error('Status load error:', e);
     }
@@ -740,27 +741,51 @@ async function toggleKillSwitch() {
 async function loadSignals() {
     try {
         const signals = await API.get('/api/signals');
-        const el = document.getElementById('signals-log');
-        if (signals.length === 0) {
-            el.innerHTML = '<div class="empty-state"><p>No signals generated yet</p></div>';
-            return;
+        const rendered = signals.length === 0
+            ? '<div class="empty-state"><p>No signals generated yet</p></div>'
+            : signals.slice().reverse().map(s => {
+                const cls = s.transaction_type === 'BUY' ? 'buy' : 'sell';
+                return `
+                    <div class="signal-entry ${cls}">
+                        <div class="signal-header">
+                            <strong>${s.tradingsymbol} ${s.transaction_type}</strong>
+                            <span class="signal-time">${new Date(s.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        <div class="signal-detail">
+                            Strategy: ${s.strategy} | Qty: ${s.quantity} |
+                            Price: ${formatNum(s.price)} | Confidence: ${formatNum(s.confidence)}%
+                        </div>
+                    </div>`;
+            }).join('');
+        // Both the small Overview widget and the full Signals tab share the same feed.
+        const overviewEl = document.getElementById('signals-log');
+        if (overviewEl) overviewEl.innerHTML = rendered;
+        const fullEl = document.getElementById('signals-log-full');
+        if (fullEl) fullEl.innerHTML = rendered;
+    } catch (e) { console.error('loadSignals failed:', e); }
+}
+
+/** Surfaces the VerifierAgent's latest PreflightChecker report (advisory - it never
+ * blocks execution itself, but the reasons are otherwise only visible in the log file). */
+async function loadVerifierFindings() {
+    try {
+        const status = await API.get('/api/agents/status');
+        const report = status?.verifier?.last_report;
+        const card = document.getElementById('verifier-findings-card');
+        if (!card) return;
+        if (!report) { card.style.display = 'none'; return; }
+        card.style.display = 'block';
+        const timeEl = document.getElementById('verifier-findings-time');
+        if (timeEl) timeEl.textContent = report.timestamp ? new Date(report.timestamp).toLocaleString() : '';
+        const body = document.getElementById('verifier-findings-body');
+        if (!body) return;
+        if (report.passed) {
+            body.innerHTML = '<span style="color:#00d4aa">\u2713 All preflight checks passed</span>';
+        } else {
+            const reasons = (report.blocked_reasons || []).map(r => `<li>${r}</li>`).join('');
+            body.innerHTML = `<div style="color:#ff9100;margin-bottom:6px">\u26A0 Preflight found issues (advisory - does not block execution):</div><ul style="margin:0;padding-left:18px;color:var(--text-muted)">${reasons}</ul>`;
         }
-        el.innerHTML = signals.reverse().map(s => {
-            const cls = s.transaction_type === 'BUY' ? 'buy' : 'sell';
-            return `
-                <div class="signal-entry ${cls}">
-                    <div class="signal-header">
-                        <strong>${s.tradingsymbol} ${s.transaction_type}</strong>
-                        <span class="signal-time">${new Date(s.timestamp).toLocaleTimeString()}</span>
-                    </div>
-                    <div class="signal-detail">
-                        Strategy: ${s.strategy} | Qty: ${s.quantity} |
-                        Price: ${formatNum(s.price)} | Confidence: ${formatNum(s.confidence)}%
-                    </div>
-                </div>
-            `;
-        }).join('');
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error('loadVerifierFindings failed:', e); }
 }
 
 async function loadOrders() {

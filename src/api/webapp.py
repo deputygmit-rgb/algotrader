@@ -207,12 +207,18 @@ async def dashboard(request: Request) -> HTMLResponse:
     svc = get_user_service(request)
     zerodha_id = get_session_zerodha_id(request)
     session_token = request.cookies.get(SESSION_COOKIE, "")
+    js_path = os.path.join(BASE_DIR, "static", "js", "dashboard.js")
+    try:
+        js_version = str(int(os.path.getmtime(js_path)))
+    except OSError:
+        js_version = "1"
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
         "csrf_token": otp_auth.get_csrf_token(session_token),
+        "js_version": js_version,
     })
 
 

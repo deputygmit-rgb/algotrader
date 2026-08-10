@@ -520,7 +520,7 @@ class TradingService:
         if not rows:
             return None, token
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
         df.set_index("timestamp", inplace=True)
         return df, token
 
@@ -981,9 +981,16 @@ class TradingService:
     ) -> dict[str, Any]:
         """Import historical candles from Zerodha into the local DB cache.
 
-        Incremental: if candles are already cached for this token+interval, only
-        the gap since the last cached bar is fetched (the last cached day is
-        re-fetched too, harmlessly upserted, to complete any partial day).
+        Incremental in BOTH directions:
+          - if the cache already reaches up to (or past) ``to_date``, only the
+            gap since the last cached bar is fetched (cheap top-up).
+          - if the cache's oldest bar is newer than the requested ``from_date``
+            (e.g. the user increases "Days" to pull in more history than was
+            previously imported), the older gap is ALSO backfilled instead of
+            being silently ignored (this was a real bug: the old logic only
+            ever checked the "recent" edge, so raising "Days" had no effect
+            once ANY data existed for this token+interval - every click just
+            re-fetched today's single bar forever).
         """
         from datetime import timedelta
         to_dt = datetime.now()
@@ -991,26 +998,41 @@ class TradingService:
         requested_from_s = (from_date or (to_dt - timedelta(days=days)).strftime("%Y-%m-%d"))[:10]
 
         cached_min, cached_max = self._market_store.get_cached_date_range(instrument_token, interval)
-        incremental = bool(cached_max and cached_max >= requested_from_s)
-        effective_from_s = cached_max if incremental else requested_from_s
+        incremental = bool(cached_max)
+        fetch_ranges: list[tuple[str, str]] = []
 
+        if not cached_max:
+            # Nothing cached yet - fetch the full requested range.
+            fetch_ranges.append((requested_from_s, to_date_s))
+        else:
+            if requested_from_s < cached_min:
+                # Backfill older history the cache doesn't have yet.
+                fetch_ranges.append((requested_from_s, cached_min))
+            if cached_max <= to_date_s:
+                # Top up from the last cached bar (re-fetches that day too,
+                # harmlessly upserted, to complete any partial day).
+                fetch_ranges.append((cached_max, to_date_s))
+
+        stored = 0
         try:
-            candles = await self._client.get_historical_data(
-                instrument_token=instrument_token,
-                interval=Interval(interval),
-                from_date=f"{effective_from_s} 00:00:00",
-                to_date=f"{to_date_s} 23:59:59",
-            )
+            for range_from, range_to in fetch_ranges:
+                candles = await self._client.get_historical_data(
+                    instrument_token=instrument_token,
+                    interval=Interval(interval),
+                    from_date=f"{range_from} 00:00:00",
+                    to_date=f"{range_to} 23:59:59",
+                )
+                rows = [
+                    {"ts": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
+                     "close": c.close, "volume": c.volume}
+                    for c in candles
+                ] if candles else []
+                if rows:
+                    stored += self._market_store.store_candles(instrument_token, interval, rows)
         except Exception as e:
             logger.error("historical_import_fetch_failed", token=instrument_token, error=str(e))
             return {"error": f"Failed to fetch data: {e}"}
 
-        rows = [
-            {"ts": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
-             "close": c.close, "volume": c.volume}
-            for c in candles
-        ] if candles else []
-        stored = self._market_store.store_candles(instrument_token, interval, rows) if rows else 0
         new_min, new_max = self._market_store.get_cached_date_range(instrument_token, interval)
 
         logger.info(
@@ -1020,8 +1042,7 @@ class TradingService:
             interval=interval,
             incremental=incremental,
             candles_fetched=stored,
-            range_from=effective_from_s,
-            range_to=to_date_s,
+            fetch_ranges=fetch_ranges,
         )
         return {
             "success": True,
@@ -1030,7 +1051,7 @@ class TradingService:
             "interval": interval,
             "incremental": incremental,
             "candles_fetched": stored,
-            "fetched_from": effective_from_s,
+            "fetched_from": fetch_ranges[0][0] if fetch_ranges else requested_from_s,
             "fetched_to": to_date_s,
             "cached_range": {"from": new_min, "to": new_max},
         }
@@ -2008,7 +2029,7 @@ class TradingService:
         if not rows:
             return {"error": "No historical data available. Check instrument token and date range."}
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
         df.set_index("timestamp", inplace=True)
 
         engine = BacktestEngine(
@@ -2259,7 +2280,7 @@ class TradingService:
         if not rows:
             return {"error": "No historical data available. Check underlying and date range."}
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
         df.set_index("timestamp", inplace=True)
 
         engine = FnOBacktestEngine(
@@ -2386,7 +2407,7 @@ class TradingService:
         if not rows:
             return {"error": "No historical data available. Check underlying and date range."}
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
         df.set_index("timestamp", inplace=True)
 
         engine = FnOPaperTradingEngine(
@@ -2630,7 +2651,8 @@ class TradingService:
 
             if self._replay_state.get("status") == "running" and total:
                 last_price = float(df.iloc[-1]["close"])
-                engine.close_all_positions({tradingsymbol: last_price})
+                last_ts = pd.Timestamp(df.iloc[-1]["timestamp"]).to_pydatetime() if "timestamp" in df.columns else datetime.now()
+                engine.close_all_positions({tradingsymbol: last_price}, timestamp=last_ts)
                 self._replay_state["status"] = "completed"
 
             report = engine.get_performance_report()
