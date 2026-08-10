@@ -8,6 +8,7 @@ from typing import Any, Callable, Coroutine, Optional
 
 import websockets
 from websockets.asyncio.client import ClientConnection as WebSocketClientProtocol
+from websockets.protocol import State
 
 from src.data.models import (
     DepthItem,
@@ -55,7 +56,7 @@ class KiteTicker:
 
     @property
     def is_connected(self) -> bool:
-        return self._ws is not None and self._ws.open
+        return self._ws is not None and self._ws.state is State.OPEN
 
     def get_tick_cache(self) -> dict[int, Tick]:
         return self._tick_cache.copy()

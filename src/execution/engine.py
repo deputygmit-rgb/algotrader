@@ -47,6 +47,7 @@ class TrackedPosition:
         quantity: int,
         entry_price: float,
         stop_loss: float | None = None,
+        target: float | None = None,
         strategy_name: str = "",
         product: str = "MIS",
         signal: Signal | None = None,
@@ -67,6 +68,10 @@ class TrackedPosition:
         self.current_stop_loss = stop_loss
         self.trailing_active = stop_loss is not None
         self.best_price = entry_price  # track best-ever price for trailing
+
+        # Profit target (protective LIMIT order, OCO with the SL order)
+        self.target = target  # absolute price
+        self.target_order_id: str | None = None
 
         # State
         self.sl_order_id: str | None = None
@@ -338,6 +343,44 @@ class ExecutionEngine:
             logger.error("trailing_sl_modify_failed", error=str(e), order_id=tracked.sl_order_id)
             return False
 
+    async def _place_protective_target(self, tracked: TrackedPosition) -> Optional[str]:
+        """Place a separate profit-target LIMIT order (OCO with the protective SL order).
+
+        Called AFTER entry fill confirmation, same as the SL leg. Once either the
+        SL or target order fills, the sibling is cancelled (see _detect_sl_fills /
+        _detect_target_fills) so the position is never closed twice.
+        """
+        if not tracked.target:
+            return None
+
+        target_txn = TransactionType.SELL if tracked.is_long else TransactionType.BUY
+        target_order = OrderRequest(
+            tradingsymbol=tracked.tradingsymbol,
+            exchange=Exchange(tracked.exchange),
+            transaction_type=target_txn,
+            order_type=OrderType.LIMIT,
+            quantity=tracked.quantity,
+            product=ProductType(tracked.product),
+            price=tracked.target,
+        )
+
+        try:
+            target_order_id = await self._coordinator.place_order(target_order)
+            if isinstance(target_order_id, list):
+                target_order_id = target_order_id[0] if target_order_id else None
+            tracked.target_order_id = target_order_id
+            logger.info(
+                "protective_target_placed",
+                entry_order=tracked.order_id,
+                target_order=target_order_id,
+                target_price=tracked.target,
+                direction="LONG" if tracked.is_long else "SHORT",
+            )
+            return target_order_id
+        except Exception as e:
+            logger.error("protective_target_failed", error=str(e), order_id=tracked.order_id)
+            return None
+
     # ────────────────────────────────────────────────────────
     # Position Monitoring: SL + Trailing + MIS Square-off
     # ────────────────────────────────────────────────────────
@@ -364,8 +407,9 @@ class ExecutionEngine:
                     await self._squareoff_mis_positions()
                     continue
 
-                # Detect SL order fills on broker
+                # Detect SL / target order fills on broker (each cancels its OCO sibling)
                 await self._detect_sl_fills()
+                await self._detect_target_fills()
 
                 # Get current prices from broker positions
                 positions = await self._client.get_positions()
@@ -419,7 +463,14 @@ class ExecutionEngine:
                     # SL order has been filled by broker
                     exit_price = bo.average_price or tracked.current_stop_loss or 0.0
                     self._finalize_position_exit(tracked, exit_price, "stop_loss")
-                    
+
+                    # OCO: cancel the sibling target order so it can't also fill/duplicate the exit
+                    if tracked.target_order_id:
+                        try:
+                            await self._client.cancel_order(tracked.target_order_id, OrderVariety.REGULAR)
+                        except Exception as e:
+                            logger.warning("oco_target_cancel_failed", order_id=tracked.target_order_id, error=str(e))
+
                     # Notify journal callback
                     if self._on_exit_callback:
                         try:
@@ -437,6 +488,53 @@ class ExecutionEngine:
                     )
         except Exception as e:
             logger.error("sl_fill_detection_error", error=str(e))
+
+    async def _detect_target_fills(self) -> None:
+        """Check if any broker-side profit-target LIMIT orders have been filled.
+        Mirrors _detect_sl_fills - cancels the sibling SL order (OCO) on fill."""
+        target_order_ids = {
+            tracked.target_order_id: order_id
+            for order_id, tracked in self._tracked_positions.items()
+            if tracked.target_order_id and not tracked.is_closed
+        }
+        if not target_order_ids:
+            return
+
+        try:
+            broker_orders = await self._client.get_orders()
+            for bo in broker_orders:
+                if bo.order_id in target_order_ids and bo.status == "COMPLETE":
+                    entry_order_id = target_order_ids[bo.order_id]
+                    tracked = self._tracked_positions.get(entry_order_id)
+                    if not tracked or tracked.is_closed:
+                        continue
+
+                    exit_price = bo.average_price or tracked.target or 0.0
+                    self._finalize_position_exit(tracked, exit_price, "target")
+
+                    # OCO: cancel the sibling SL order so it can't also fill/duplicate the exit
+                    if tracked.sl_order_id:
+                        try:
+                            await self._client.cancel_order(tracked.sl_order_id, OrderVariety.REGULAR)
+                        except Exception as e:
+                            logger.warning("oco_sl_cancel_failed", order_id=tracked.sl_order_id, error=str(e))
+
+                    if self._on_exit_callback:
+                        try:
+                            await self._on_exit_callback(tracked, bo.order_id)
+                        except Exception as e:
+                            logger.error("target_fill_callback_error", error=str(e))
+
+                    logger.info(
+                        "target_order_filled_detected",
+                        entry_order=entry_order_id,
+                        target_order=bo.order_id,
+                        exit_price=exit_price,
+                        pnl=tracked.pnl,
+                        symbol=tracked.tradingsymbol,
+                    )
+        except Exception as e:
+            logger.error("target_fill_detection_error", error=str(e))
 
     def _finalize_position_exit(
         self, tracked: TrackedPosition, exit_price: float, reason: str
@@ -468,10 +566,15 @@ class ExecutionEngine:
         
         for tracked in mis_positions:
             try:
-                # Cancel existing SL order first
+                # Cancel existing SL/target orders first (OCO pair)
                 if tracked.sl_order_id:
                     try:
                         await self._client.cancel_order(tracked.sl_order_id, OrderVariety.REGULAR)
+                    except Exception:
+                        pass
+                if tracked.target_order_id:
+                    try:
+                        await self._client.cancel_order(tracked.target_order_id, OrderVariety.REGULAR)
                     except Exception:
                         pass
 
@@ -525,10 +628,15 @@ class ExecutionEngine:
         if not tracked or tracked.is_closed:
             return None
 
-        # Cancel SL order first
+        # Cancel SL/target orders first (OCO pair)
         if tracked.sl_order_id:
             try:
                 await self._client.cancel_order(tracked.sl_order_id, OrderVariety.REGULAR)
+            except Exception:
+                pass
+        if tracked.target_order_id:
+            try:
+                await self._client.cancel_order(tracked.target_order_id, OrderVariety.REGULAR)
             except Exception:
                 pass
 
@@ -712,14 +820,22 @@ class ExecutionEngine:
                             
                             # 1. Create tracked position for SL/trailing monitoring
                             if signal and fill_price > 0:
-                                # Compute absolute SL price from signal
+                                # Compute absolute SL/target prices from signal (both are
+                                # stored as points-distance from entry, not absolute prices)
                                 sl_price = None
                                 if signal.stop_loss:
                                     if signal.transaction_type == TransactionType.BUY:
                                         sl_price = round(fill_price - signal.stop_loss, 2)
                                     else:
                                         sl_price = round(fill_price + signal.stop_loss, 2)
-                                
+
+                                target_price = None
+                                if signal.target:
+                                    if signal.transaction_type == TransactionType.BUY:
+                                        target_price = round(fill_price + signal.target, 2)
+                                    else:
+                                        target_price = round(fill_price - signal.target, 2)
+
                                 tracked = TrackedPosition(
                                     order_id=order_id,
                                     tradingsymbol=signal.tradingsymbol,
@@ -728,15 +844,18 @@ class ExecutionEngine:
                                     quantity=signal.quantity,
                                     entry_price=fill_price,
                                     stop_loss=sl_price,
+                                    target=target_price,
                                     strategy_name=signal.strategy_name or "",
                                     product=signal.product.value if hasattr(signal.product, "value") else str(signal.product),
                                     signal=signal,
                                 )
                                 self._tracked_positions[order_id] = tracked
                                 
-                                # 2. Place protective SL order
+                                # 2. Place protective SL + target orders (OCO pair)
                                 if sl_price:
                                     await self._place_protective_stop_loss(tracked)
+                                if target_price:
+                                    await self._place_protective_target(tracked)
                                 
                                 # 3. Update risk manager
                                 self._risk.update_daily_pnl(0)  # register trade count

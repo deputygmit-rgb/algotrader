@@ -172,6 +172,27 @@ CREATE INDEX IF NOT EXISTS idx_backtest_results_strategy
     ON backtest_results(strategy_name, engine_type);
 CREATE INDEX IF NOT EXISTS idx_backtest_results_date
     ON backtest_results(run_date);
+
+CREATE TABLE IF NOT EXISTS oi_snapshots (
+    underlying       TEXT    NOT NULL,
+    instrument_token INTEGER NOT NULL,
+    ts               TEXT    NOT NULL,
+    tradingsymbol    TEXT    NOT NULL DEFAULT '',
+    strike           REAL    NOT NULL DEFAULT 0,
+    option_type      TEXT    NOT NULL DEFAULT '',
+    expiry           TEXT    NOT NULL DEFAULT '',
+    oi               INTEGER NOT NULL DEFAULT 0,
+    oi_day_high      INTEGER NOT NULL DEFAULT 0,
+    oi_day_low       INTEGER NOT NULL DEFAULT 0,
+    volume           INTEGER NOT NULL DEFAULT 0,
+    last_price       REAL    NOT NULL DEFAULT 0,
+    change           REAL    NOT NULL DEFAULT 0,
+    spot_price       REAL    NOT NULL DEFAULT 0,
+    PRIMARY KEY (underlying, instrument_token, ts)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_oi_snapshots_underlying_ts
+    ON oi_snapshots(underlying, ts);
 """
 
 
@@ -576,6 +597,7 @@ class MarketDataStore:
             "quote_snapshots": conn.execute("SELECT COUNT(*) as cnt FROM quote_snapshots").fetchone()["cnt"],
             "orders_logged": conn.execute("SELECT COUNT(*) as cnt FROM orders_log").fetchone()["cnt"],
             "positions_logged": conn.execute("SELECT COUNT(*) as cnt FROM positions_log").fetchone()["cnt"],
+            "oi_snapshots": conn.execute("SELECT COUNT(*) as cnt FROM oi_snapshots").fetchone()["cnt"],
             "db_size_mb": round(db_size_mb, 2),
         }
 
@@ -647,6 +669,72 @@ class MarketDataStore:
                    ORDER BY ts DESC LIMIT ?""",
                 (instrument_token, limit),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ─── OI Snapshots ───────────────────────────────────────────
+
+    def store_oi_snapshots(self, snapshots: list[dict[str, Any]]) -> int:
+        """Store a batch of OI tracker snapshots (upsert by underlying+token+ts)."""
+        if not snapshots:
+            return 0
+        conn = self._get_conn()
+        rows = [
+            (
+                s.get("underlying", ""),
+                s.get("instrument_token", 0),
+                s.get("ts", datetime.now().isoformat()),
+                s.get("tradingsymbol", ""),
+                s.get("strike", 0),
+                s.get("option_type", ""),
+                s.get("expiry", ""),
+                s.get("oi", 0),
+                s.get("oi_day_high", 0),
+                s.get("oi_day_low", 0),
+                s.get("volume", 0),
+                s.get("last_price", 0),
+                s.get("change", 0),
+                s.get("spot_price", 0),
+            )
+            for s in snapshots
+        ]
+        conn.executemany(
+            """INSERT OR REPLACE INTO oi_snapshots
+               (underlying, instrument_token, ts, tradingsymbol, strike, option_type,
+                expiry, oi, oi_day_high, oi_day_low, volume, last_price, change, spot_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        return len(rows)
+
+    def get_oi_snapshots(
+        self,
+        underlying: str,
+        instrument_token: int | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Retrieve stored OI snapshots, optionally filtered by token and time range."""
+        conn = self._get_conn()
+        conditions = ["underlying = ?"]
+        params: list[Any] = [underlying]
+        if instrument_token is not None:
+            conditions.append("instrument_token = ?")
+            params.append(instrument_token)
+        if from_ts:
+            conditions.append("ts >= ?")
+            params.append(from_ts)
+        if to_ts:
+            conditions.append("ts <= ?")
+            params.append(to_ts)
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT * FROM oi_snapshots
+                WHERE {' AND '.join(conditions)}
+                ORDER BY ts DESC LIMIT ?""",
+            tuple(params),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     # ─── Orders Log ─────────────────────────────────────────────
@@ -917,8 +1005,9 @@ class MarketDataStore:
         q_cnt = conn.execute("DELETE FROM quote_snapshots WHERE ts < ?", (cutoff,)).rowcount
         o_cnt = conn.execute("DELETE FROM orders_log WHERE ts < ?", (cutoff,)).rowcount
         p_cnt = conn.execute("DELETE FROM positions_log WHERE ts < ?", (cutoff,)).rowcount
+        oi_cnt = conn.execute("DELETE FROM oi_snapshots WHERE ts < ?", (cutoff,)).rowcount
         conn.commit()
-        return {"quotes_purged": q_cnt, "orders_purged": o_cnt, "positions_purged": p_cnt}
+        return {"quotes_purged": q_cnt, "orders_purged": o_cnt, "positions_purged": p_cnt, "oi_snapshots_purged": oi_cnt}
 
 
 # ─── Singleton Instance ─────────────────────────────────────────

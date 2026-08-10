@@ -105,6 +105,10 @@ class StockScanner:
         self._scanning = False
         self._benchmark_data: Optional[pd.DataFrame] = None
         self._sector_cache: dict[str, dict[str, Any]] = {}
+        # Full built reports kept per-universe so switching between nifty50/nifty500
+        # doesn't lose the other's last scan, and a running scan doesn't blank out
+        # the previously completed one.
+        self._universe_reports: dict[str, dict[str, Any]] = {}
 
     @property
     def last_scan_time(self) -> Optional[str]:
@@ -146,7 +150,11 @@ class StockScanner:
     # ────────────────────────────────────────────────────────────
 
     async def run_scan(self, client: Any, symbols: Optional[list[str]] = None,
-                        universe: str = "nifty50") -> dict[str, Any]:
+                        universe: str = "nifty50",
+                        on_progress: Optional[Any] = None) -> dict[str, Any]:
+        """Scan the given universe. ``on_progress``, if provided, is an
+        ``async def(scanned: int, total: int, symbol: str) -> None`` callback
+        invoked after each symbol so callers can stream live progress."""
         if self._scanning:
             return {"error": "Scan already in progress"}
 
@@ -197,17 +205,23 @@ class StockScanner:
 
             results = {}
             auth_failures = 0
-            for symbol in scan_symbols:
+            total_symbols = len(scan_symbols)
+            for i, symbol in enumerate(scan_symbols, start=1):
                 token = token_map.get(symbol)
                 if not token:
                     logger.warning("token_not_found", symbol=symbol)
+                    if on_progress:
+                        await on_progress(i, total_symbols, symbol)
                     continue
                 try:
-                    candles = await client.get_historical_data(
-                        instrument_token=token,
-                        interval=self._get_interval("day"),
-                        from_date=from_date,
-                        to_date=to_date,
+                    candles = await asyncio.wait_for(
+                        client.get_historical_data(
+                            instrument_token=token,
+                            interval=self._get_interval("day"),
+                            from_date=from_date,
+                            to_date=to_date,
+                        ),
+                        timeout=45,
                     )
                     if not candles or len(candles) < 10:
                         continue
@@ -237,7 +251,11 @@ class StockScanner:
 
                     results[symbol] = result
                     auth_failures = 0
-                    await asyncio.sleep(0.35)
+                    if on_progress:
+                        await on_progress(i, total_symbols, symbol)
+                    # No extra sleep here - the KiteClient's AsyncLimiter (rate_limit_historical,
+                    # 3 req/s) already throttles every get_historical_data() call centrally.
+                    # An additional fixed sleep here just doubled the total scan time.
 
                 except Exception as e:
                     err_str = str(e)
@@ -266,20 +284,26 @@ class StockScanner:
                                 "scanned": False,
                                 "auth_error": True,
                             }
+                    if on_progress:
+                        await on_progress(i, total_symbols, symbol)
                     continue
 
             self._analysis_cache = results
             self._last_scan_time = datetime.now()
 
-            return self._build_report(results)
+            report = self._build_report(results)
+            report["universe"] = universe
+            self._universe_reports[universe] = report
+            return report
 
         finally:
             self._scanning = False
 
-    def get_cached_results(self) -> dict[str, Any]:
-        if not self._analysis_cache:
+    def get_cached_results(self, universe: str = "nifty50") -> dict[str, Any]:
+        report = self._universe_reports.get(universe)
+        if not report:
             return {"scanned": False, "message": "No scan data. Run a scan first."}
-        return self._build_report(self._analysis_cache)
+        return report
 
     # ────────────────────────────────────────────────────────────
     # On-Demand Single Stock Analysis (for any NSE symbol)

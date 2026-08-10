@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 
 from src.utils.config import get_settings
+from src.utils.event_log import SQLiteLogHandler
 
 
 def setup_logging() -> None:
@@ -33,11 +34,14 @@ def setup_logging() -> None:
     stdout_handler.setFormatter(formatter)
     file_handler = logging.FileHandler(settings.log_file, mode="a")
     file_handler.setFormatter(formatter)
+    event_db_handler = SQLiteLogHandler()
+    event_db_handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.addHandler(stdout_handler)
     root_logger.addHandler(file_handler)
+    root_logger.addHandler(event_db_handler)
     root_logger.setLevel(level)
 
     structlog.configure(

@@ -45,9 +45,10 @@
             <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
             <button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>
             <button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>
-            <button class="tab" data-tab="backtest" onclick="switchTab('backtest')">Backtest</button>
+            <button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>
             <button class="tab" data-tab="reports" onclick="switchTab('reports');loadReports()">Reports</button>
-            <button class="tab" data-tab="paper-trading" onclick="switchTab('paper-trading')">Paper Trading</button>
+            <button class="tab" data-tab="paper-trading" onclick="switchTab('paper-trading');loadCachedPaperResults()">Paper Trading</button>
+            <button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>
             <button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>
             <button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>
         </div>
@@ -766,7 +767,7 @@
         <!-- Analysis Tab -->
         <div id="tab-analysis" class="tab-content">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-                <select id="scan-universe" style="padding:4px 8px;border-radius:4px;background:var(--card-bg);color:var(--text);border:1px solid var(--border);font-size:12px">
+                <select id="scan-universe" onchange="loadAnalysis()" style="padding:4px 8px;border-radius:4px;background:var(--card-bg);color:var(--text);border:1px solid var(--border);font-size:12px">
                     <option value="nifty50">NIFTY 50</option>
                     <option value="nifty500">NIFTY 500</option>
                 </select>
@@ -1273,6 +1274,8 @@
                         <div class="form-group">
                             <label style="display:flex;align-items:center;gap:6px"><input id="bt-regime-filter" type="checkbox" checked> Use Regime Filter</label>
                         </div>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="importFnOHistoricalData('bt')" title="Fetch &amp; cache underlying historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <div id="bt-fno-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                     </div>
                     <div class="grid grid-2" style="margin-bottom:0">
                         <div class="form-group"><label>Slippage %</label><input id="bt-slippage" type="number" value="0.05" step="0.01"></div>
@@ -1283,10 +1286,15 @@
                     <div style="display:flex;gap:8px;margin-top:12px">
                         <button class="btn btn-primary" onclick="runBacktest()" id="btn-run-bt">Run Backtest</button>
                         <button class="btn btn-outline" onclick="runBacktestSample()">Quick Sample Test</button>
+                        <button class="btn btn-outline" onclick="importHistoricalData('bt')" title="Fetch &amp; cache historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
                     </div>
+                    <div id="bt-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                 </div>
                 <div class="card">
-                    <div class="card-title">Backtest Summary</div>
+                    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+                        <span>Backtest Summary</span>
+                        <span id="bt-last-run" style="font-size:11px;font-weight:400;color:var(--text-muted)"></span>
+                    </div>
                     <div id="bt-summary" style="color:var(--text-muted);font-size:13px">Run a backtest to see results</div>
                 </div>
             </div>
@@ -1532,6 +1540,8 @@
                             <div class="form-group"><label>Profit Target %</label><input id="paper-profit-target" type="number" value="50" min="10" max="100"></div>
                             <div class="form-group"><label>Stop Loss %</label><input id="paper-stop-loss" type="number" value="100" min="25" max="300"></div>
                         </div>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="importFnOHistoricalData('paper')" title="Fetch &amp; cache underlying historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <div id="paper-fno-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                     </div>
                     <div class="grid grid-2">
                         <div class="form-group">
@@ -1546,12 +1556,17 @@
                     <div style="display:flex;gap:8px;margin-top:8px">
                         <button id="btn-run-paper" class="btn btn-primary" onclick="runPaperTrade()">Run Paper Trade</button>
                         <button class="btn btn-outline" onclick="runPaperTradeSample()">Quick Test (Sample Data)</button>
+                        <button class="btn btn-outline" onclick="importHistoricalData('paper')" title="Fetch &amp; cache historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
                     </div>
                     <div id="paper-loading" style="display:none;margin-top:12px;color:var(--accent-green);font-size:13px">Running simulation...</div>
+                    <div id="paper-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                 </div>
 
                 <div class="card">
-                    <div class="card-title">Performance Summary</div>
+                    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+                        <span>Performance Summary</span>
+                        <span id="paper-last-run" style="font-size:11px;font-weight:400;color:var(--text-muted)"></span>
+                    </div>
                     <div id="paper-summary">
                         <div class="empty-state"><p>Run a paper trade to see results</p></div>
                     </div>
@@ -1619,6 +1634,83 @@
                             <tbody id="paper-trades-body"></tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Market Replay Tab -->
+        <div id="tab-replay" class="tab-content">
+            <div class="grid grid-2" style="margin-bottom:16px">
+                <div class="card">
+                    <div class="card-title">Replay Market</div>
+                    <div class="form-group">
+                        <label>Strategy</label>
+                        <select id="replay-strategy">
+                            <option value="ema_crossover">EMA Crossover</option>
+                            <option value="vwap_breakout">VWAP Breakout</option>
+                            <option value="mean_reversion">Mean Reversion</option>
+                            <option value="rsi">RSI Strategy</option>
+                            <option value="scanner_strategy">Scanner Strategy (All-in-One)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Symbol</label>
+                        <div style="display:flex;gap:6px">
+                            <input id="replay-symbol" type="text" placeholder="e.g. RELIANCE" value="RELIANCE" style="flex:1">
+                            <select id="replay-exchange" style="width:80px">
+                                <option value="NSE" selected>NSE</option>
+                                <option value="BSE">BSE</option>
+                                <option value="NFO">NFO</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-2">
+                        <div class="form-group">
+                            <label>Interval</label>
+                            <select id="replay-interval">
+                                <option value="5minute" selected>5 min</option>
+                                <option value="15minute">15 min</option>
+                                <option value="30minute">30 min</option>
+                                <option value="60minute">1 hour</option>
+                                <option value="day">Daily</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Duration (days)</label>
+                            <input id="replay-days" type="number" value="30" min="1" max="365">
+                        </div>
+                    </div>
+                    <div class="grid grid-2">
+                        <div class="form-group">
+                            <label>Initial Capital</label>
+                            <input id="replay-capital" type="number" value="100000" min="1000">
+                        </div>
+                        <div class="form-group">
+                            <label>Speed (bars/sec)</label>
+                            <input id="replay-speed" type="number" value="10" min="0.5" max="100" step="0.5">
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:8px">
+                        <button id="btn-start-replay" class="btn btn-primary" onclick="startReplay()">▶ Start Replay</button>
+                        <button id="btn-stop-replay" class="btn btn-outline" onclick="stopReplay()" disabled>■ Stop</button>
+                        <button class="btn btn-outline" onclick="importHistoricalData('replay')" title="Fetch &amp; cache historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                    </div>
+                    <div id="replay-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
+                    <div id="replay-status-line" style="display:none;margin-top:12px;color:var(--accent-green);font-size:13px"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">Replay Progress</div>
+                    <div id="replay-summary">
+                        <div class="empty-state"><p>Start a replay to see live progress</p></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="replay-results-section" style="display:none">
+                <div class="card">
+                    <div class="card-title">Equity Curve (live)</div>
+                    <canvas id="replay-equity-chart" height="200"></canvas>
                 </div>
             </div>
         </div>
@@ -2270,8 +2362,39 @@
         </div>
     </div>
 
+    <!-- OI Signal Execute Confirm Modal -->
+    <div id="modal-oi-execute" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-oi-execute')">
+        <div class="modal">
+            <div class="modal-title">Execute OI Signal</div>
+            <p style="color:var(--text-muted);font-size:13px">
+                This will run a backtest validation of the mapped strategy first, then place a
+                <strong style="color:#ff9100">REAL broker order</strong> (real money) if it passes. Continue?
+            </p>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-outline" onclick="hideModal('modal-oi-execute')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmExecuteOISignal()">Validate &amp; Execute</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- OI Position Close Modal -->
+    <div id="modal-oi-close" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-oi-close')">
+        <div class="modal">
+            <div class="modal-title">Close Position</div>
+            <div class="form-group">
+                <label>Exit Price</label>
+                <input id="oi-close-price" type="number" step="0.05" placeholder="e.g. 125.50">
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-outline" onclick="hideModal('modal-oi-close')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmCloseOIPosition()">Close Position</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Start Live Modal -->
     <div id="modal-start-live" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-start-live')">
+
         <div class="modal" style="max-width:650px;max-height:85vh;overflow-y:auto">
             <div class="modal-title">Start Live Trading</div>
 

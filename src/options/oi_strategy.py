@@ -383,6 +383,7 @@ class OIStrategyEngine:
         self._positions.append(pos)
         return pos
 
+
     def update_position(self, position_id: str, current_price: float) -> Optional[OIPosition]:
         """Update position with current market price, check SL/target."""
         pos = next((p for p in self._positions if p.id == position_id and p.status == "OPEN"), None)

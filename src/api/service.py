@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -11,15 +12,21 @@ from src.api.ticker import KiteTicker
 from src.auth.authenticator import KiteAuthenticator
 from src.data.backtest import BacktestEngine, WalkForwardOptimizer
 from src.data.journal import TradeJournal
+from src.data.market_data_store import get_market_data_store
 from src.data.models import (
+    Exchange,
     Interval,
+    OrderType,
+    ProductType,
     Signal,
     Tick,
     TickMode,
+    TransactionType,
 )
 from src.data.paper_trader import PaperTradingEngine
 from src.derivatives.fno_backtest import FnOBacktestEngine
 from src.derivatives.fno_paper_trader import FnOPaperTradingEngine
+from src.data.fno_data_fetcher import INDEX_TOKENS
 from src.utils.serialization import sanitize_for_json
 from src.execution.engine import ExecutionEngine
 from src.journal.journal_store import JournalStore
@@ -35,6 +42,7 @@ from src.options.chain import OptionChainBuilder
 from src.options.oi_analysis import FuturesOIAnalyzer, OptionsOIAnalyzer
 from src.options.oi_tracker import NIFTY_TOKEN, SENSEX_TOKEN, OITracker
 from src.options.oi_strategy import OIStrategyEngine, OIStrategyConfig
+from src.options.oi_fno_bridge import OIFnOBridge
 from src.options.strategies import (
     BearPutSpreadStrategy,
     BullCallSpreadStrategy,
@@ -98,6 +106,7 @@ class TradingService:
         self._futures_oi = FuturesOIAnalyzer()
         self._options_oi = OptionsOIAnalyzer()
         self._oi_strategy = OIStrategyEngine()
+        self._oi_fno_bridge = OIFnOBridge()
         self._scanner = StockScanner()
         self._strategies: list[BaseStrategy] = []
         self._instruments_cache: dict[str, list] = {}
@@ -114,6 +123,12 @@ class TradingService:
         self._portfolio_reporter = PortfolioReporter(self._client)
         self._backtest_results: dict[str, Any] = {}  # cache latest backtest results
         self._last_health_report: Optional[dict[str, Any]] = None  # cache latest health report
+        self._market_store = get_market_data_store()
+        self._last_quote_persist: dict[int, float] = {}
+        self._quote_persist_interval_s = 2.0  # throttle per-token quote_snapshots writes
+        self._oi_snapshot_task: Optional[asyncio.Task] = None
+        self._replay_task: Optional[asyncio.Task] = None
+        self._replay_state: dict[str, Any] = {"status": "idle", "running": False}
 
     @staticmethod
     def _task_exception_handler(task: asyncio.Task) -> None:
@@ -411,8 +426,23 @@ class TradingService:
         sensex_spot: float = 0.0,
         instruments: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
+        """Start OI tracking + its 2s broadcast loop over /ws/oi. Self-sufficient:
+        fetches NFO instruments and index spot prices itself if not supplied, so
+        it can be called with an empty body as soon as the OI Tracker tab opens.
+        """
         if instruments:
             self._oi_tracker.register_instruments(instruments)
+        elif not self._oi_tracker.get_tracked_tokens():
+            try:
+                nfo_instruments = await self._client.get_instruments("NFO")
+                self._oi_tracker.register_instruments([i.model_dump() for i in nfo_instruments])
+            except Exception as e:
+                logger.error("oi_tracking_instrument_fetch_failed", error=str(e))
+
+        if nifty_spot <= 0:
+            nifty_spot = await self._options_oi._get_spot_price(self._client, "NIFTY")
+        if sensex_spot <= 0:
+            sensex_spot = await self._options_oi._get_spot_price(self._client, "SENSEX")
 
         if nifty_spot > 0:
             self._oi_tracker.set_spot_price("NIFTY", nifty_spot)
@@ -426,15 +456,24 @@ class TradingService:
             tokens = nifty_tokens + sensex_tokens
 
         if tokens:
+            # subscribe() always records tokens for auto-resubscribe even if the
+            # ticker isn't connected yet (e.g. live trading not started).
             await self._ticker.subscribe(tokens, TickMode.FULL)
 
         if not self._oi_streaming:
             self._oi_streaming = True
             task = asyncio.create_task(self._oi_broadcast_loop())
             task.add_done_callback(self._task_exception_handler)
+            # Real SL/target monitoring for OI positions is handled by
+            # ExecutionEngine.start_reconciliation_loop() (protective broker
+            # orders + fill detection) - see oi_strategy_execute_signal().
 
-        logger.info("oi_tracking_started", token_count=len(tokens))
-        return {"success": True, "tracked_tokens": len(tokens)}
+        logger.info("oi_tracking_started", token_count=len(tokens), ticker_connected=self._ticker.is_connected)
+        return {
+            "success": True,
+            "tracked_tokens": len(tokens),
+            "ticker_connected": self._ticker.is_connected,
+        }
 
     async def _oi_broadcast_loop(self) -> None:
         while self._oi_streaming:
@@ -470,26 +509,211 @@ class TradingService:
         sensex = await self.oi_strategy_scan("SENSEX")
         return {"nifty": nifty, "sensex": sensex}
 
-    def oi_strategy_execute_signal(self, signal_id: str) -> dict[str, Any]:
-        """Execute a specific OI signal by creating a position."""
+    async def _oi_bridge_market_data_fetcher(self, underlying: str, days: int):
+        """market_data_fetcher callable for OIFnOBridge.backtest_strategy():
+        returns (DataFrame, instrument_token) for the underlying's spot/index history."""
+        import pandas as pd
+        token = self.resolve_underlying_token(underlying)
+        if not token:
+            return None, 0
+        rows = await self._resolve_ohlcv_rows(token, "day", days=days)
+        if not rows:
+            return None, token
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df.set_index("timestamp", inplace=True)
+        return df, token
+
+    async def _resolve_option_tradingsymbol(
+        self, underlying: str, expiry: str, strike: float, option_type: str
+    ) -> Optional[tuple[str, str]]:
+        """Look up the authoritative broker tradingsymbol for an option leg from the
+        live NFO/BFO instrument master - never trust a locally-constructed symbol
+        string for real order placement (weekly-expiry naming rules are easy to get
+        wrong and would risk sending an order for the wrong contract).
+        """
+        exchange = "BFO" if underlying.upper() == "SENSEX" else "NFO"
+        try:
+            instruments = await self._client.get_instruments(exchange)
+        except Exception as e:
+            logger.error("oi_option_resolve_fetch_failed", exchange=exchange, error=str(e))
+            return None
+
+        expiry_key = (expiry or "")[:10]
+        for inst in instruments:
+            if inst.instrument_type != option_type:
+                continue
+            if inst.name.upper() != underlying.upper():
+                continue
+            if str(inst.expiry or "")[:10] != expiry_key:
+                continue
+            if abs(float(inst.strike) - float(strike)) > 0.01:
+                continue
+            return inst.tradingsymbol, exchange
+        return None
+
+    async def oi_strategy_execute_signal(self, signal_id: str) -> dict[str, Any]:
+        """Validate an OI signal via a gated backtest of its mapped F&O strategy,
+        then place a REAL broker order for the signal's option leg.
+        """
         sig = next((s for s in self._oi_strategy._signals_history if s.id == signal_id), None)
         if not sig:
-            return {"error": f"Signal {signal_id} not found"}
-        if len(self._oi_strategy.get_open_positions()) >= self._oi_strategy.config.max_open_positions:
-            return {"error": "Max open positions reached"}
-        pos = self._oi_strategy.create_position_from_signal(sig)
-        self._record_oi_journal_entry(pos, "ENTRY")
-        return {"success": True, "position": pos.model_dump()}
+            logger.warning(
+                "oi_signal_execute_not_found",
+                signal_id=signal_id,
+                history_size=len(self._oi_strategy._signals_history),
+            )
+            return {"error": f"Signal {signal_id} not found. Re-run the scan and try again."}
 
-    def oi_strategy_close_position(self, position_id: str, exit_price: float = 0.0) -> dict[str, Any]:
-        """Close an OI strategy position."""
-        if exit_price <= 0:
-            return {"error": "exit_price must be greater than 0"}
-        pos = self._oi_strategy.close_position(position_id, exit_price, "Manual close")
+        open_count = len(self._oi_strategy.get_open_positions())
+        max_allowed = self._oi_strategy.config.max_open_positions
+        if open_count >= max_allowed:
+            logger.warning(
+                "oi_signal_execute_blocked",
+                signal_id=signal_id,
+                reason="max_open_positions",
+                open_count=open_count,
+                max_allowed=max_allowed,
+            )
+            return {"error": f"Max open positions reached ({open_count}/{max_allowed}). Close a position first."}
+
+        # Real SL/target orders are placed by ExecutionEngine's reconciliation loop
+        # right after the entry fills - refuse to trade if nothing will ever pick
+        # that fill up (would leave a real position with no protective orders).
+        if not self._execution._running:
+            logger.warning("oi_signal_execute_no_reconciliation", signal_id=signal_id)
+            return {"error": "Live trading isn't running, so the entry fill wouldn't be monitored and no protective stop-loss/target order would be placed. Start live trading first."}
+
+        # ── Step 1: hard backtest gate - map the signal to its FnO strategy family
+        # and refuse to execute unless that strategy's backtest clears quality thresholds.
+        plan = await self._oi_fno_bridge.create_execution_plan(
+            sig, market_data_fetcher=self._oi_bridge_market_data_fetcher
+        )
+        if not plan.execution_approved:
+            logger.warning(
+                "oi_signal_execute_rejected_by_backtest",
+                signal_id=signal_id,
+                fno_strategy=plan.mapping.get("fno_strategy"),
+                reasons=plan.rejection_reasons,
+            )
+            return {
+                "error": "Backtest validation failed - execution blocked.",
+                "rejection_reasons": plan.rejection_reasons,
+                "mapping": plan.mapping,
+                "backtest": plan.backtest,
+            }
+
+        # ── Step 2: resolve the real broker tradingsymbol for this option leg.
+        resolved = await self._resolve_option_tradingsymbol(sig.underlying, sig.expiry, sig.strike, sig.option_type)
+        if not resolved:
+            logger.error(
+                "oi_signal_execute_resolve_failed",
+                signal_id=signal_id, underlying=sig.underlying, strike=sig.strike,
+                option_type=sig.option_type, expiry=sig.expiry,
+            )
+            return {"error": f"Could not resolve a live instrument for {sig.underlying} {sig.strike}{sig.option_type} exp {sig.expiry}."}
+        tradingsymbol, exchange_str = resolved
+
+        # ── Step 3: create the (paper-tracked, dashboard-facing) OIPosition FIRST so
+        # its id can be carried in the entry Signal's metadata - this is how the
+        # ExecutionEngine exit callback finds it again when SL/target fires later.
+        pos = self._oi_strategy.create_position_from_signal(sig)
+        pos.tradingsymbol = tradingsymbol
+        pos.metadata["fno_strategy"] = plan.mapping.get("fno_strategy")
+
+        # ── Step 4: place the real order - reuses ExecutionEngine's full safety
+        # stack (kill switch, RiskManager limits, market-state guard, freeze-split).
+        # stop_loss/target on Signal are POINTS DISTANCE from entry (matching how
+        # ExecutionEngine interprets them for its own protective SL/target orders -
+        # NOT absolute prices, which is what OISignal.stop_loss/target actually are).
+        order_signal = Signal(
+            tradingsymbol=tradingsymbol,
+            exchange=Exchange(exchange_str),
+            transaction_type=TransactionType.BUY if sig.action.startswith("BUY") else TransactionType.SELL,
+            quantity=sig.lot_size * sig.lots,
+            order_type=OrderType.MARKET,
+            product=ProductType.NRML,
+            stop_loss=abs(sig.entry_price - sig.stop_loss) if sig.stop_loss else None,
+            target=abs(sig.target - sig.entry_price) if sig.target else None,
+            strategy_name=f"oi_strategy_{sig.signal_type}",
+            confidence=sig.confidence,
+            metadata={"signal_id": sig.id, "position_id": pos.id, "oi_underlying": sig.underlying, "fno_strategy": plan.mapping.get("fno_strategy")},
+        )
+
+        try:
+            order_id = await self._execution.execute_signal(order_signal)
+        except KillSwitchError as e:
+            logger.error("oi_signal_execute_kill_switch", signal_id=signal_id, error=str(e))
+            return {"error": "Kill switch is active - cannot place orders."}
+        except RiskLimitError as e:
+            logger.warning("oi_signal_execute_risk_blocked", signal_id=signal_id, error=str(e))
+            return {"error": f"Blocked by risk manager: {e}"}
+        except Exception as e:
+            logger.error("oi_signal_execute_order_failed", signal_id=signal_id, error=str(e))
+            return {"error": f"Order placement failed: {e}"}
+
+        if not order_id:
+            logger.error("oi_signal_execute_no_order_id", signal_id=signal_id)
+            return {"error": "Order placement failed - no order ID returned by broker."}
+
+        # Entry order_id is how manual close finds the ExecutionEngine TrackedPosition later.
+        pos.metadata["order_id"] = order_id
+        self._record_oi_journal_entry(pos, "ENTRY")
+
+        # Surface it the same way regular strategy signals are - in the Signals
+        # feed/log and over the live websocket - so it's visible outside this tab.
+        signal_data = {
+            "timestamp": pos.entry_time,
+            "strategy": f"oi_strategy_{pos.signal_type}",
+            "tradingsymbol": pos.tradingsymbol,
+            "transaction_type": pos.direction,
+            "quantity": pos.quantity,
+            "price": pos.entry_price,
+            "confidence": sig.confidence,
+            "metadata": {"position_id": pos.id, "signal_id": sig.id, "underlying": pos.underlying, "order_id": order_id},
+        }
+        self._signal_log.append(signal_data)
+        await self._broadcast_ws({"type": "signal", "data": signal_data})
+
+        logger.info(
+            "oi_signal_executed",
+            signal_id=signal_id,
+            position_id=pos.id,
+            order_id=order_id,
+            tradingsymbol=pos.tradingsymbol,
+            entry_price=pos.entry_price,
+        )
+        return {
+            "success": True,
+            "position": pos.model_dump(),
+            "order_id": order_id,
+            "mapping": plan.mapping,
+            "backtest": plan.backtest,
+        }
+
+    async def oi_strategy_close_position(self, position_id: str, exit_price: float = 0.0) -> dict[str, Any]:
+        """Manually close an OI strategy position: cancels any resting protective
+        SL/target orders and places a real market exit, via ExecutionEngine's own
+        close_position() (the same path used for MIS square-off) - avoids building
+        a second, competing order-placement path.
+        """
+        pos = next((p for p in self._oi_strategy._positions if p.id == position_id and p.status == "OPEN"), None)
         if not pos:
+            logger.warning("oi_position_close_not_found", position_id=position_id)
             return {"error": f"Position {position_id} not found or not open"}
-        self._record_oi_journal_entry(pos, "EXIT")
-        return {"success": True, "position": pos.model_dump()}
+        entry_order_id = pos.metadata.get("order_id")
+        if not entry_order_id:
+            logger.error("oi_position_close_no_order_id", position_id=position_id)
+            return {"error": "Position has no tracked entry order - cannot place a real exit order"}
+
+        exit_order_id = await self._execution.close_position(entry_order_id, reason="Manual close")
+        if not exit_order_id:
+            logger.error("oi_position_close_failed", position_id=position_id, entry_order_id=entry_order_id)
+            return {"error": "Exit order placement failed - position remains open. Check broker/orders manually."}
+
+        # _on_execution_exit (registered as ExecutionEngine's on_exit callback) finalizes
+        # the OIPosition, journal, and signal log/broadcast once the exit is confirmed.
+        return {"success": True, "order_id": exit_order_id}
 
     def oi_strategy_get_positions(self, underlying: Optional[str] = None) -> dict[str, Any]:
         """Get open and recent closed positions."""
@@ -541,26 +765,26 @@ class TradingService:
                 notes=f"OI Strategy: {position.signal_type} | {action}",
                 metadata=meta,
             )
-            # Also record in JournalStore (pro journal)
-            if action == "EXIT":
-                entry = JournalEntry(
-                    entry_id=f"oi-{position.id}",
-                    trade_type="fno",
-                    instrument=position.tradingsymbol or f"{position.underlying}_{position.option_type}_{position.strike}",
-                    tradingsymbol=position.tradingsymbol or "",
-                    exchange=position.exchange,
-                    strategy_name=f"oi_strategy_{position.signal_type}",
-                    direction=position.direction,
-                    is_closed=True,
-                    gross_pnl=position.pnl,
-                    net_pnl=position.pnl,
-                    entry_time=position.entry_time,
-                    exit_time=position.exit_time or "",
-                    tags=["oi_strategy", position.signal_type, position.underlying],
-                    notes=f"OI Signal: {position.signal_type}",
-                    metadata=meta,
-                )
-                self._journal_store.record_entry(entry)
+            # Also record in JournalStore (pro journal / strategy order book) - on
+            # ENTRY as an open position, upserted to closed on EXIT (same entry_id).
+            entry = JournalEntry(
+                entry_id=f"oi-{position.id}",
+                trade_type="fno",
+                instrument=position.tradingsymbol or f"{position.underlying}_{position.option_type}_{position.strike}",
+                tradingsymbol=position.tradingsymbol or "",
+                exchange=position.exchange,
+                strategy_name=f"oi_strategy_{position.signal_type}",
+                direction=position.direction,
+                is_closed=(action == "EXIT"),
+                gross_pnl=position.pnl,
+                net_pnl=position.pnl,
+                entry_time=position.entry_time,
+                exit_time=position.exit_time or "",
+                tags=["oi_strategy", position.signal_type, position.underlying],
+                notes=f"OI Signal: {position.signal_type}",
+                metadata=meta,
+            )
+            self._journal_store.record_entry(entry)
         except Exception as e:
             logger.error("oi_journal_record_error", error=str(e))
 
@@ -624,9 +848,18 @@ class TradingService:
             self._ticker.connect(),
             self._execution.start_reconciliation_loop(),
             self._position_update_loop(),
+            self._oi_snapshot_loop(),
         ]:
             task = asyncio.create_task(coro)
             task.add_done_callback(self._task_exception_handler)
+
+        # Kick off OI tracking too - the ticker connecting is what makes OI data
+        # genuinely live (ticks -> _oi_tracker.update_from_tick); harmless if
+        # already running or if /ws/oi hasn't been opened yet.
+        try:
+            await self.start_oi_tracking()
+        except Exception as e:
+            logger.warning("oi_tracking_autostart_failed", error=str(e))
 
         logger.info("live_trading_started", tokens=tokens)
         return {"success": True, "tokens": tokens}
@@ -659,27 +892,152 @@ class TradingService:
         from datetime import timedelta
         to_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         from_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+        interval = Interval.MINUTE_5
         for token in tokens:
             try:
                 candles = await self._client.get_historical_data(
                     instrument_token=token,
-                    interval=Interval.MINUTE_5,
+                    interval=interval,
                     from_date=from_date,
                     to_date=to_date,
                 )
                 if candles:
                     rows = [
-                        {"timestamp": c.timestamp, "open": c.open, "high": c.high,
+                        {"ts": c.timestamp, "open": c.open, "high": c.high,
                          "low": c.low, "close": c.close, "volume": c.volume}
                         for c in candles
                     ]
-                    df = pd.DataFrame(rows)
+                    try:
+                        self._market_store.store_candles(token, interval.value, rows)
+                    except Exception as e:
+                        logger.warning("bar_data_persist_failed", token=token, error=str(e))
+                    df = pd.DataFrame([
+                        {"timestamp": r["ts"], "open": r["open"], "high": r["high"],
+                         "low": r["low"], "close": r["close"], "volume": r["volume"]}
+                        for r in rows
+                    ])
                     for strategy in self._strategies:
                         strategy.update_bar_data(token, df)
             except Exception as e:
                 logger.warning("bar_data_seed_failed", token=token, error=str(e))
 
+    @staticmethod
+    def resolve_underlying_token(underlying: str, instrument_token: int = 0) -> int:
+        """Resolve an F&O underlying index token: client-supplied token wins, else
+        looked up from the well-known index token map (NIFTY/BANKNIFTY/etc.)."""
+        if instrument_token:
+            return instrument_token
+        return INDEX_TOKENS.get(underlying.upper(), 0)
+
+    async def _resolve_ohlcv_rows(
+        self,
+        instrument_token: int,
+        interval: str,
+        days: int = 365,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Historical OHLCV rows for backtest/paper-trade: locally cached data first
+        (populated by ``import_historical_data`` or a prior run), live Kite fetch as
+        fallback - which is itself cached for next time.
+        """
+        from datetime import timedelta
+        to_dt = datetime.now()
+        to_date_s = (to_date or to_dt.strftime("%Y-%m-%d"))[:10]
+        from_date_s = (from_date or (to_dt - timedelta(days=days)).strftime("%Y-%m-%d"))[:10]
+
+        cached = self._market_store.get_candles(instrument_token, interval, from_date_s, to_date_s)
+        if cached:
+            return cached
+
+        from_dt_full = from_date or (to_dt - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        to_dt_full = to_date or to_dt.strftime("%Y-%m-%d %H:%M:%S")
+        candles = await self._client.get_historical_data(
+            instrument_token=instrument_token,
+            interval=Interval(interval),
+            from_date=from_dt_full,
+            to_date=to_dt_full,
+        )
+        rows = [
+            {"ts": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
+             "close": c.close, "volume": c.volume}
+            for c in candles
+        ] if candles else []
+        if rows:
+            try:
+                self._market_store.store_candles(instrument_token, interval, rows)
+            except Exception as e:
+                logger.warning("ohlcv_cache_store_failed", token=instrument_token, error=str(e))
+        return rows
+
+    async def import_historical_data(
+        self,
+        instrument_token: int,
+        tradingsymbol: str,
+        interval: str = "day",
+        days: int = 365,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Import historical candles from Zerodha into the local DB cache.
+
+        Incremental: if candles are already cached for this token+interval, only
+        the gap since the last cached bar is fetched (the last cached day is
+        re-fetched too, harmlessly upserted, to complete any partial day).
+        """
+        from datetime import timedelta
+        to_dt = datetime.now()
+        to_date_s = (to_date or to_dt.strftime("%Y-%m-%d"))[:10]
+        requested_from_s = (from_date or (to_dt - timedelta(days=days)).strftime("%Y-%m-%d"))[:10]
+
+        cached_min, cached_max = self._market_store.get_cached_date_range(instrument_token, interval)
+        incremental = bool(cached_max and cached_max >= requested_from_s)
+        effective_from_s = cached_max if incremental else requested_from_s
+
+        try:
+            candles = await self._client.get_historical_data(
+                instrument_token=instrument_token,
+                interval=Interval(interval),
+                from_date=f"{effective_from_s} 00:00:00",
+                to_date=f"{to_date_s} 23:59:59",
+            )
+        except Exception as e:
+            logger.error("historical_import_fetch_failed", token=instrument_token, error=str(e))
+            return {"error": f"Failed to fetch data: {e}"}
+
+        rows = [
+            {"ts": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
+             "close": c.close, "volume": c.volume}
+            for c in candles
+        ] if candles else []
+        stored = self._market_store.store_candles(instrument_token, interval, rows) if rows else 0
+        new_min, new_max = self._market_store.get_cached_date_range(instrument_token, interval)
+
+        logger.info(
+            "historical_data_imported",
+            tradingsymbol=tradingsymbol,
+            instrument_token=instrument_token,
+            interval=interval,
+            incremental=incremental,
+            candles_fetched=stored,
+            range_from=effective_from_s,
+            range_to=to_date_s,
+        )
+        return {
+            "success": True,
+            "tradingsymbol": tradingsymbol,
+            "instrument_token": instrument_token,
+            "interval": interval,
+            "incremental": incremental,
+            "candles_fetched": stored,
+            "fetched_from": effective_from_s,
+            "fetched_to": to_date_s,
+            "cached_range": {"from": new_min, "to": new_max},
+        }
+
     async def _on_ticks(self, ticks: list[Tick]) -> None:
+        quote_rows: list[dict[str, Any]] = []
+        now_mono = time.monotonic()
         for tick in ticks:
             tick_data = {
                 "token": tick.instrument_token,
@@ -694,6 +1052,24 @@ class TradingService:
                 "sell_qty": tick.total_sell_quantity,
             }
             self._live_ticks[tick.instrument_token] = tick_data
+
+            last_persist = self._last_quote_persist.get(tick.instrument_token, 0.0)
+            if now_mono - last_persist >= self._quote_persist_interval_s:
+                quote_rows.append({
+                    "instrument_token": tick.instrument_token,
+                    "ts": datetime.now().isoformat(),
+                    "last_price": tick.last_price,
+                    "volume": tick.volume_traded,
+                    "oi": tick.oi or 0,
+                    "buy_quantity": tick.total_buy_quantity,
+                    "sell_quantity": tick.total_sell_quantity,
+                    "open": tick.ohlc.open,
+                    "high": tick.ohlc.high,
+                    "low": tick.ohlc.low,
+                    "close": tick.ohlc.close,
+                    "net_change": tick.change,
+                })
+                self._last_quote_persist[tick.instrument_token] = now_mono
 
             if tick.instrument_token == NIFTY_TOKEN:
                 self._oi_tracker.set_spot_price("NIFTY", tick.last_price)
@@ -724,6 +1100,12 @@ class TradingService:
                     }])
                     updated = pd.concat([df, new_row], ignore_index=True).tail(500)
                     strategy.update_bar_data(tick.instrument_token, updated)
+
+        if quote_rows:
+            try:
+                self._market_store.store_quote_snapshots(quote_rows)
+            except Exception as e:
+                logger.error("quote_snapshot_store_failed", error=str(e))
 
         for strategy in self._strategies:
             if not strategy.is_active:
@@ -909,6 +1291,34 @@ class TradingService:
             exit_order=exit_order_id,
         )
 
+        # If this was an OI-strategy position, sync the OIStrategyEngine's own
+        # position record + its journal entry + Signals feed - whether the exit
+        # was triggered by a broker-side SL/target fill, manual close, or MIS
+        # square-off, there's exactly one real order behind it (no duplicates).
+        if tracked.strategy_name.startswith("oi_strategy_"):
+            signal = getattr(tracked, "signal", None)
+            position_id = (signal.metadata.get("position_id") if signal else None)
+            if position_id:
+                pos = self._oi_strategy.close_position(position_id, tracked.exit_price or 0.0, exit_reason)
+                if pos:
+                    pos.metadata["exit_order_id"] = exit_order_id
+                    self._record_oi_journal_entry(pos, "EXIT")
+                    oi_signal_data = {
+                        "timestamp": pos.exit_time or datetime.now().isoformat(),
+                        "strategy": tracked.strategy_name,
+                        "tradingsymbol": pos.tradingsymbol,
+                        "transaction_type": exit_txn,
+                        "quantity": pos.quantity,
+                        "price": pos.exit_price,
+                        "confidence": 0,
+                        "metadata": {"position_id": pos.id, "pnl": pos.pnl, "underlying": pos.underlying, "order_id": exit_order_id, "reason": exit_reason},
+                    }
+                    self._signal_log.append(oi_signal_data)
+                    await self._broadcast_ws({"type": "signal", "data": oi_signal_data})
+                    logger.info("oi_position_closed", position_id=position_id, order_id=exit_order_id, reason=exit_reason, pnl=pos.pnl)
+                else:
+                    logger.warning("oi_position_close_sync_failed", position_id=position_id, reason="already closed or not found")
+
     async def _process_signal(self, signal: Signal) -> None:
         signal_data = {
             "timestamp": datetime.now().isoformat(),
@@ -969,31 +1379,17 @@ class TradingService:
         if isinstance(strategy, dict):  # error dict
             return strategy
 
-        # Fetch historical data
-        from datetime import timedelta
-        to_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-
+        # Fetch historical data (DB cache first, live Kite fetch as fallback)
         try:
-            candles = await self._client.get_historical_data(
-                instrument_token=instrument_token,
-                interval=Interval(interval),
-                from_date=from_date,
-                to_date=to_date,
-            )
+            rows = await self._resolve_ohlcv_rows(instrument_token, interval, days=days)
         except Exception as e:
             logger.error("paper_trade_data_fetch_failed", error=str(e))
             return {"error": f"Failed to fetch data: {str(e)}"}
 
-        if not candles:
+        if not rows:
             return {"error": "No historical data returned. Check instrument token and date range."}
 
-        rows = [
-            {"timestamp": c.timestamp, "open": c.open, "high": c.high,
-             "low": c.low, "close": c.close, "volume": c.volume}
-            for c in candles
-        ]
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
 
         # Run paper trade
         # NOTE: commission_pct/slippage_pct are no longer accepted by PaperTradingEngine -
@@ -1011,6 +1407,7 @@ class TradingService:
         )
 
         result_dict = result.to_dict_safe()
+        result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[strategy_name] = result_dict
 
         # Compute strategy health report and embed in result
@@ -1081,6 +1478,7 @@ class TradingService:
         engine = PaperTradingEngine(strategy=strategy, initial_capital=capital)
         result = engine.run(df, instrument_token=0, tradingsymbol=tradingsymbol, timeframe="5min")
         result_dict = result.to_dict_safe()
+        result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[strategy_name] = result_dict
 
         # Compute strategy health report and embed in result
@@ -1199,10 +1597,18 @@ class TradingService:
 
     async def run_analysis_scan(self, symbols: Optional[list[str]] = None,
                                 universe: str = "nifty50") -> dict[str, Any]:
-        return await self._scanner.run_scan(self._client, symbols, universe=universe)
+        async def _on_progress(scanned: int, total: int, symbol: str) -> None:
+            await self._broadcast_ws({
+                "type": "scan_progress",
+                "data": {"scanned": scanned, "total": total, "symbol": symbol},
+            })
 
-    def get_analysis_results(self) -> dict[str, Any]:
-        return self._scanner.get_cached_results()
+        return await self._scanner.run_scan(
+            self._client, symbols, universe=universe, on_progress=_on_progress
+        )
+
+    def get_analysis_results(self, universe: str = "nifty50") -> dict[str, Any]:
+        return self._scanner.get_cached_results(universe)
 
     def get_scanner_status(self) -> dict[str, Any]:
         return {
@@ -1597,12 +2003,13 @@ class TradingService:
         if isinstance(strategy, dict):
             return strategy  # error dict
 
-        # Fetch historical data
-        df = await self._market_data.get_historical_df(
-            instrument_token, interval, days, from_date, to_date
-        )
-        if df.empty:
+        # Fetch historical data (DB cache first, live Kite fetch as fallback)
+        rows = await self._resolve_ohlcv_rows(instrument_token, interval, days, from_date, to_date)
+        if not rows:
             return {"error": "No historical data available. Check instrument token and date range."}
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df.set_index("timestamp", inplace=True)
 
         engine = BacktestEngine(
             strategy=strategy,
@@ -1616,6 +2023,7 @@ class TradingService:
         )
 
         result = engine.run(df, instrument_token, tradingsymbol)
+        result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
         # Compute strategy health report and embed in result
@@ -1695,6 +2103,7 @@ class TradingService:
             use_indian_costs=use_indian_costs, is_intraday=is_intraday,
         )
         result = engine.run(df, tradingsymbol="SAMPLE")
+        result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
         # Compute strategy health report and embed in result
@@ -1842,12 +2251,16 @@ class TradingService:
                 "available": self.FNO_STRATEGIES,
             }
 
-        # Fetch underlying data
-        df = await self._market_data.get_historical_df(
-            instrument_token, interval, days, from_date, to_date
-        )
-        if df.empty:
-            return {"error": "No historical data. Check instrument token and date range."}
+        # Fetch underlying data (DB cache first, live Kite fetch as fallback)
+        token = self.resolve_underlying_token(underlying, instrument_token)
+        if not token:
+            return {"error": f"Unknown underlying: {underlying}. Provide instrument_token explicitly."}
+        rows = await self._resolve_ohlcv_rows(token, interval, days, from_date, to_date)
+        if not rows:
+            return {"error": "No historical data available. Check underlying and date range."}
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df.set_index("timestamp", inplace=True)
 
         engine = FnOBacktestEngine(
             strategy_name=strategy_name,
@@ -1864,6 +2277,7 @@ class TradingService:
         )
 
         result = engine.run(df, tradingsymbol=underlying)
+        result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
         # Compute strategy health report and embed in result
@@ -1924,6 +2338,7 @@ class TradingService:
             delta_target=delta_target,
         )
         result = engine.run(df, tradingsymbol=underlying)
+        result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
         # Compute strategy health report and embed in result
@@ -1964,11 +2379,15 @@ class TradingService:
                 "available": self.FNO_STRATEGIES,
             }
 
-        df = await self._market_data.get_historical_df(
-            instrument_token, interval, days
-        )
-        if df.empty:
-            return {"error": "No historical data. Check instrument token and date range."}
+        token = self.resolve_underlying_token(underlying, instrument_token)
+        if not token:
+            return {"error": f"Unknown underlying: {underlying}. Provide instrument_token explicitly."}
+        rows = await self._resolve_ohlcv_rows(token, interval, days)
+        if not rows:
+            return {"error": "No historical data available. Check underlying and date range."}
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df.set_index("timestamp", inplace=True)
 
         engine = FnOPaperTradingEngine(
             strategy_name=strategy_name,
@@ -1984,6 +2403,7 @@ class TradingService:
         )
         result = engine.run(df, tradingsymbol=underlying, timeframe=interval)
         result_dict = result.to_dict_safe()
+        result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[f"fno_{strategy_name}"] = result_dict
 
         # Compute strategy health report and embed in result
@@ -2044,6 +2464,7 @@ class TradingService:
         )
         result = engine.run(df, tradingsymbol=underlying, timeframe="day")
         result_dict = result.to_dict_safe()
+        result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[f"fno_{strategy_name}"] = result_dict
 
         # Compute strategy health report and embed in result
@@ -2080,6 +2501,157 @@ class TradingService:
             except Exception as e:
                 logger.error("position_update_error", error=str(e))
             await asyncio.sleep(30)
+
+    async def _oi_snapshot_loop(self) -> None:
+        """Periodically persist the OI tracker's current snapshots for offline analysis."""
+        while self._running:
+            try:
+                for underlying in ("NIFTY", "SENSEX"):
+                    rows = self._oi_tracker.get_current_snapshots(underlying)
+                    if rows:
+                        self._market_store.store_oi_snapshots(rows)
+            except Exception as e:
+                logger.error("oi_snapshot_store_failed", error=str(e))
+            await asyncio.sleep(30)
+
+    # ────────────────────────────────────────────────────────────
+    # Market Replay (paper-trade a strategy bar-by-bar over cached
+    # historical data, streamed over the live websocket like a feed)
+    # ────────────────────────────────────────────────────────────
+
+    def get_replay_status(self) -> dict[str, Any]:
+        return {k: v for k, v in self._replay_state.items() if k != "running"}
+
+    async def start_replay(
+        self,
+        strategy_name: str,
+        instrument_token: int,
+        tradingsymbol: str,
+        exchange: str = "NSE",
+        interval: str = "5minute",
+        days: int = 30,
+        capital: float = 100000.0,
+        speed: float = 10.0,
+        strategy_params: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Start replaying cached historical candles bar-by-bar as if they were live,
+        driving a strategy + PaperTradingEngine in near-real-time (scaled by ``speed``).
+        """
+        if self._replay_state.get("running"):
+            return {"error": "A replay is already running. Stop it first."}
+
+        strategy = self._resolve_strategy(strategy_name, strategy_params)
+        if isinstance(strategy, dict):  # error dict
+            return strategy
+
+        rows = await self._resolve_ohlcv_rows(instrument_token, interval, days=days)
+        if not rows:
+            return {"error": "No historical data available for replay. Import historical data first."}
+
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        engine = PaperTradingEngine(strategy=strategy, initial_capital=capital)
+
+        self._replay_state = {
+            "status": "starting",
+            "running": True,
+            "strategy": strategy_name,
+            "tradingsymbol": tradingsymbol,
+            "interval": interval,
+            "total": len(df),
+            "progress": 0,
+        }
+        self._replay_task = asyncio.create_task(
+            self._replay_loop(df, engine, instrument_token, tradingsymbol, exchange, interval, speed)
+        )
+        self._replay_task.add_done_callback(self._task_exception_handler)
+        return {"success": True, "total_bars": len(df)}
+
+    def stop_replay(self) -> dict[str, Any]:
+        if not self._replay_state.get("running"):
+            return {"error": "No replay is running"}
+        self._replay_state["running"] = False
+        return {"success": True}
+
+    async def _replay_loop(
+        self,
+        df: pd.DataFrame,
+        engine: PaperTradingEngine,
+        instrument_token: int,
+        tradingsymbol: str,
+        exchange: str,
+        timeframe: str,
+        speed: float,
+    ) -> None:
+        strategy = engine.strategy
+        df = df.reset_index(drop=True)
+        total = len(df)
+        delay = max(0.0, 1.0 / max(speed, 0.01))
+        self._replay_state["status"] = "running"
+
+        try:
+            for i in range(1, total):
+                if not self._replay_state.get("running"):
+                    self._replay_state["status"] = "stopped"
+                    break
+
+                bar = df.iloc[i]
+                slice_df = df.iloc[: i + 1]
+                strategy.update_bar_data(instrument_token, slice_df)
+                signal = strategy.generate_signal(slice_df, instrument_token)
+
+                price = float(bar["close"])
+                bar_ts = pd.Timestamp(bar["timestamp"]).to_pydatetime() if "timestamp" in df.columns else datetime.now()
+
+                if signal:
+                    pos = engine._positions.get(tradingsymbol)
+                    current_qty = pos.quantity if pos else 0
+                    qty = max(1, int(getattr(signal, "quantity", 1) or 1))
+                    if signal.transaction_type == TransactionType.BUY and current_qty <= 0:
+                        engine.place_order(tradingsymbol, TransactionType.BUY, qty + abs(current_qty), price, timestamp=bar_ts)
+                    elif signal.transaction_type == TransactionType.SELL and current_qty >= 0:
+                        engine.place_order(tradingsymbol, TransactionType.SELL, qty + abs(current_qty), price, timestamp=bar_ts)
+
+                engine.update_prices({tradingsymbol: price})
+                self._replay_state["progress"] = i
+
+                await self._broadcast_ws({
+                    "type": "replay_tick",
+                    "data": {
+                        "timestamp": str(bar_ts),
+                        "tradingsymbol": tradingsymbol,
+                        "price": price,
+                        "portfolio_value": engine.get_portfolio_value(),
+                        "progress": i,
+                        "total": total,
+                    },
+                })
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+            if self._replay_state.get("status") == "running" and total:
+                last_price = float(df.iloc[-1]["close"])
+                engine.close_all_positions({tradingsymbol: last_price})
+                self._replay_state["status"] = "completed"
+
+            report = engine.get_performance_report()
+            result_dict: dict[str, Any] = {
+                "strategy_name": getattr(strategy, "name", str(strategy)),
+                "tradingsymbol": tradingsymbol,
+                "final_capital": engine.get_portfolio_value(),
+                "total_pnl": engine.get_pnl(),
+                "equity_curve": engine.get_equity_curve(),
+                **report,
+            }
+            self._replay_state["result"] = result_dict
+            await self._broadcast_ws({"type": "replay_complete", "data": result_dict})
+        except Exception as e:
+            logger.error("replay_loop_error", error=str(e))
+            self._replay_state["status"] = "error"
+            self._replay_state["error"] = str(e)
+            await self._broadcast_ws({"type": "replay_error", "data": {"error": str(e)}})
+        finally:
+            self._replay_state["running"] = False
+
 
 
 class TradingServiceManager:

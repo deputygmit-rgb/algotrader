@@ -18,6 +18,27 @@ const API = {
         if (!res.ok) throw new Error(await res.text());
         return res.json();
     },
+    // Like post(), but aborts with a clear error instead of hanging forever
+    // (used for long-running operations like full universe scans).
+    async postTimeout(url, data, timeoutMs) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+                signal: controller.signal,
+            });
+            if (!res.ok) throw new Error(await res.text());
+            return await res.json();
+        } catch (e) {
+            if (e.name === 'AbortError') throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+            throw e;
+        } finally {
+            clearTimeout(timer);
+        }
+    },
 };
 
 let ws = null;
@@ -395,6 +416,10 @@ function connectWS() {
                     pnlEl.className = `metric-value ${pnlClass(msg.pnl)}`;
                 }
             }
+            else if (msg.type === 'replay_tick') updateReplayTick(msg.data);
+            else if (msg.type === 'replay_complete') finishReplay(msg.data);
+            else if (msg.type === 'replay_error') replayFailed(msg.data);
+            else if (msg.type === 'scan_progress') updateScanProgress(msg.data);
         } catch (err) { console.error('WS parse error:', err); }
     };
 
@@ -428,11 +453,15 @@ async function removeStrategy(name) {
 }
 
 function showModal(id) {
-    document.getElementById(id).classList.add('show');
+    const el = document.getElementById(id);
+    if (!el) { console.error('showModal: no element with id', id); return; }
+    el.classList.add('show');
 }
 
 function hideModal(id) {
-    document.getElementById(id).classList.remove('show');
+    const el = document.getElementById(id);
+    if (!el) { console.error('hideModal: no element with id', id); return; }
+    el.classList.remove('show');
 }
 
 async function addStrategy() {
@@ -789,6 +818,10 @@ function initOITracker() {
     if (!oiInitialized) {
         oiInitialized = true;
         connectOIWebSocket();
+        // Kicks off the server-side 2s broadcast loop feeding /ws/oi - without this
+        // call the websocket only ever shows one static snapshot and never updates.
+        fetch('/api/oi/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+            .catch(e => console.error('OI tracking start failed:', e));
     }
     document.getElementById('oi-underlying-select').addEventListener('change', () => {
         const activeView = document.querySelector('.oi-view.active');
@@ -813,6 +846,20 @@ let _oiStratLastScan = null;
 function loadOIStrategyOnSwitch() {
     loadOIStrategyPositions();
     loadOIStrategyConfig();
+    loadOIStrategyLastScan();
+}
+
+/** Show the most recent signals from a prior scan (with timestamp) when the OI Strategy tab is opened. */
+async function loadOIStrategyLastScan() {
+    const st = document.getElementById('oi-strat-scan-status');
+    try {
+        const signals = await (await fetch('/api/oi/strategy/signals?limit=50')).json();
+        if (!Array.isArray(signals) || !signals.length) return;
+        const latest = signals.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+        _oiStratLastScan = { signals };
+        renderOIStrategyScanResult({ signals }, latest.underlying || 'BOTH');
+        if (st) st.textContent = `Showing last scan (${new Date(latest.timestamp).toLocaleString()}) — ${signals.length} signals`;
+    } catch (e) { /* no prior scan yet - leave the empty state as-is */ }
 }
 
 async function runOIStrategyScan(underlying) {
@@ -906,29 +953,57 @@ function updateOIStratScanDetail(data, index) {
     document.getElementById('oi-strat-straddle').textContent = data.straddle_premium != null ? data.straddle_premium.toFixed(1) : '--';
 }
 
-async function executeOISignal(signalId) {
-    if (!confirm('Execute this OI signal as a position?')) return;
+// Browser-native confirm()/prompt()/alert() are unreliable in embedded webviews
+// (they can silently return false/null without ever showing a dialog), so OI
+// execute/close use the app's own modal + toast system instead.
+let _pendingOIExecuteSignalId = null;
+
+function executeOISignal(signalId) {
+    _pendingOIExecuteSignalId = signalId;
+    showModal('modal-oi-execute');
+}
+
+async function confirmExecuteOISignal() {
+    const signalId = _pendingOIExecuteSignalId;
+    hideModal('modal-oi-execute');
+    _pendingOIExecuteSignalId = null;
+    if (!signalId) return;
     try {
         const r = await fetch('/api/oi/strategy/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({signal_id: signalId})});
         const d = await r.json();
-        if (!r.ok) { alert(d.detail || 'Execute failed'); return; }
-        showToast('Position created from signal', 'success');
+        if (!r.ok || d.error) {
+            const reasons = (d.rejection_reasons || []).join('; ');
+            console.error('OI signal execute failed:', d.error || d.detail, reasons);
+            showToast((d.error || d.detail || 'Execute failed') + (reasons ? ' — ' + reasons : ''), 'error');
+            return;
+        }
+        showToast(`Order placed (${d.order_id}) for ${d.position?.tradingsymbol || 'signal'}`, 'success');
         loadOIStrategyPositions();
-    } catch(e) { alert('Error: ' + e.message); }
+    } catch(e) { console.error('OI signal execute error:', e); showToast('Error: ' + e.message, 'error'); }
 }
 
-async function closeOIPosition(positionId) {
-    const priceStr = prompt('Enter current/exit price:');
-    if (!priceStr) return;
-    const exitPrice = parseFloat(priceStr);
-    if (isNaN(exitPrice)) { alert('Invalid price'); return; }
+let _pendingOIClosePositionId = null;
+
+function closeOIPosition(positionId) {
+    _pendingOIClosePositionId = positionId;
+    const input = document.getElementById('oi-close-price');
+    if (input) input.value = '';
+    showModal('modal-oi-close');
+}
+
+async function confirmCloseOIPosition() {
+    const positionId = _pendingOIClosePositionId;
+    const exitPrice = parseFloat(document.getElementById('oi-close-price').value);
+    if (isNaN(exitPrice) || exitPrice <= 0) { showToast('Enter a valid exit price', 'error'); return; }
+    hideModal('modal-oi-close');
+    _pendingOIClosePositionId = null;
     try {
         const r = await fetch('/api/oi/strategy/close', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({position_id: positionId, exit_price: exitPrice})});
         const d = await r.json();
-        if (!r.ok) { alert(d.detail || 'Close failed'); return; }
+        if (!r.ok || d.error) { console.error('OI position close failed:', d.error || d.detail); showToast(d.error || d.detail || 'Close failed', 'error'); return; }
         showToast('Position closed', 'info');
         loadOIStrategyPositions();
-    } catch(e) { alert('Error: ' + e.message); }
+    } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 async function loadOIStrategyPositions() {
@@ -1613,8 +1688,9 @@ function switchAnalysisView(view) {
 }
 
 async function loadAnalysis() {
+    const universe = document.getElementById('scan-universe')?.value || 'nifty50';
     try {
-        const data = await API.get('/api/analysis/results');
+        const data = await API.get('/api/analysis/results?universe=' + universe);
         if (data.scanned) {
             analysisData = data;
             renderAnalysis(data);
@@ -1630,10 +1706,11 @@ async function runAnalysisScan() {
     const estTime = universe === 'nifty500' ? '~5 minutes' : '~30 seconds';
     btn.disabled = true;
     btn.textContent = 'Scanning...';
+    _scanInProgress = true;
     status.textContent = `Running deep analysis on ${label} stocks (${estTime})...`;
     status.style.color = '#ff9100';
     try {
-        const data = await API.post('/api/analysis/scan', { universe });
+        const data = await API.postTimeout('/api/analysis/scan', { universe }, 600000);
         if (data.permission_error) {
             status.textContent = data.error || 'Historical Data API not enabled on your Kite Connect app.';
             status.style.color = '#ff9100';
@@ -1657,8 +1734,20 @@ async function runAnalysisScan() {
         status.style.color = '#ff5252';
         showToast('Scan failed', 'error');
     }
+    _scanInProgress = false;
     btn.disabled = false;
     btn.textContent = 'Run Full Scan';
+}
+
+let _scanInProgress = false;
+
+// Live progress pushed over the websocket while a full scan runs (see scan_progress in ws.onmessage).
+function updateScanProgress(data) {
+    if (!_scanInProgress) return;
+    const status = document.getElementById('scan-status');
+    if (!status) return;
+    status.textContent = `Scanning... ${data.scanned}/${data.total} (${data.symbol})`;
+    status.style.color = '#ff9100';
 }
 
 function fmtPct(v) { return v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) + '%' : '--'; }
@@ -2320,6 +2409,115 @@ async function resolveToken(prefix) {
     }
 }
 
+/**
+ * Set a "Last run: <time>" badge next to a results card title. No-op (clears
+ * the badge) if no timestamp is available yet.
+ */
+function setLastRunBadge(elId, isoTimestamp) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    el.textContent = isoTimestamp ? 'Last run: ' + new Date(isoTimestamp).toLocaleString() : '';
+}
+
+/** Show the most recent cached backtest result (if any) when the Backtest tab is opened. */
+async function loadCachedBacktestResult() {
+    try {
+        const data = await API.get('/api/backtest/results');
+        if (!data || !data.generated_at) return;
+        if (data.structure) displayFnOBacktestResult(data);
+        else displayBacktestResult(data);
+    } catch (e) { /* no cached result yet - leave the empty state as-is */ }
+}
+
+/** Show the most recently generated cached paper-trade result (if any) when the tab is opened. */
+async function loadCachedPaperResults() {
+    try {
+        const results = await API.get('/api/paper-trade/results');
+        const entries = Object.entries(results || {}).filter(([, r]) => r && r.generated_at);
+        if (!entries.length) return;
+        entries.sort((a, b) => new Date(b[1].generated_at) - new Date(a[1].generated_at));
+        const [name, r] = entries[0];
+        if (name.startsWith('fno_')) displayFnOPaperResult(r);
+        else displayPaperResult(r);
+    } catch (e) { /* no cached result yet - leave the empty state as-is */ }
+}
+
+/**
+ * Import (and incrementally update) cached historical candles from Zerodha
+ * for the symbol/interval/days currently set in the given section's form.
+ * Works for 'paper', 'bt', and 'replay' prefixes (all share the same
+ * -symbol/-exchange/-interval/-days element naming convention).
+ */
+async function importHistoricalData(prefix) {
+    const symbol = (document.getElementById(prefix + '-symbol').value || '').trim().toUpperCase();
+    const exchange = document.getElementById(prefix + '-exchange').value;
+    const interval = document.getElementById(prefix + '-interval').value;
+    const days = parseInt(document.getElementById(prefix + '-days').value) || 365;
+    const statusEl = document.getElementById(prefix + '-import-status');
+
+    if (!symbol) {
+        showToast('Enter a symbol first', 'error');
+        return;
+    }
+    if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.style.color = 'var(--text-muted)';
+        statusEl.textContent = `Importing ${symbol} (${interval}) history...`;
+    }
+    try {
+        const result = await API.post('/api/data/import-historical', {
+            tradingsymbol: symbol, exchange, interval, days,
+        });
+        if (result.error) {
+            if (statusEl) { statusEl.style.color = '#ff5252'; statusEl.textContent = 'Error: ' + result.error; }
+            showToast('Import failed: ' + result.error, 'error');
+            return;
+        }
+        const mode = result.incremental ? 'incremental update' : 'full import';
+        const msg = `${mode}: ${result.candles_fetched} candle(s) fetched · cached range ${result.cached_range.from} → ${result.cached_range.to}`;
+        if (statusEl) { statusEl.style.color = '#00d4aa'; statusEl.textContent = msg; }
+        showToast(`Imported ${symbol}: ${result.candles_fetched} new candle(s)`, 'success');
+    } catch (e) {
+        if (statusEl) { statusEl.style.color = '#ff5252'; statusEl.textContent = 'Error: ' + (e.message || 'Failed'); }
+        showToast('Import failed', 'error');
+    }
+}
+
+/**
+ * Import (and incrementally update) cached historical underlying candles for
+ * an F&O index (NIFTY/BANKNIFTY/etc.) - used by the F&O Backtest and F&O
+ * Paper Trade fields, which use a different data pipeline than equities.
+ */
+async function importFnOHistoricalData(prefix) {
+    const underlying = document.getElementById(prefix + '-underlying')?.value || 'NIFTY';
+    const interval = document.getElementById(prefix + '-interval')?.value || 'day';
+    const days = parseInt(document.getElementById(prefix + '-days')?.value) || 365;
+    const statusEl = document.getElementById(prefix + '-fno-import-status');
+
+    if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.style.color = 'var(--text-muted)';
+        statusEl.textContent = `Importing ${underlying} (${interval}) underlying history...`;
+    }
+    try {
+        const result = await API.post('/api/data/import-fno-historical', {
+            underlying, interval, days,
+        });
+        if (result.error) {
+            if (statusEl) { statusEl.style.color = '#ff5252'; statusEl.textContent = 'Error: ' + result.error; }
+            showToast('Import failed: ' + result.error, 'error');
+            return;
+        }
+        const mode = result.incremental ? 'incremental update' : 'full import';
+        const msg = `${mode}: ${result.candles_fetched} candle(s) fetched · cached range ${result.cached_range.from} → ${result.cached_range.to}`;
+        if (statusEl) { statusEl.style.color = '#00d4aa'; statusEl.textContent = msg; }
+        showToast(`Imported ${underlying}: ${result.candles_fetched} new candle(s)`, 'success');
+    } catch (e) {
+        if (statusEl) { statusEl.style.color = '#ff5252'; statusEl.textContent = 'Error: ' + (e.message || 'Failed'); }
+        showToast('Import failed', 'error');
+    }
+}
+
 // ─── Paper Trading ────────────────────────────────────────────
 
 let paperEquityChart = null;
@@ -2466,6 +2664,7 @@ async function runPaperTradeSample() {
 function displayFnOPaperResult(r) {
     const loading = document.getElementById('paper-loading');
     loading.style.display = 'none';
+    setLastRunBadge('paper-last-run', r.generated_at);
 
     if (r.error) {
         loading.style.display = 'block';
@@ -2567,6 +2766,7 @@ function displayFnOPaperResult(r) {
 function displayPaperResult(r) {
     const loading = document.getElementById('paper-loading');
     loading.style.display = 'none';
+    setLastRunBadge('paper-last-run', r.generated_at);
 
     if (r.error) {
         loading.style.display = 'block';
@@ -2670,6 +2870,148 @@ function drawEquityCurve(data) {
     ctx.stroke();
 
     // Fill
+    ctx.lineTo((data.length - 1) * stepX, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    ctx.fillStyle = lastVal >= firstVal ? 'rgba(0,212,170,0.08)' : 'rgba(255,82,82,0.08)';
+    ctx.fill();
+}
+
+// ─── Market Replay ─────────────────────────────────────────────
+
+let replayEquityData = [];
+
+async function startReplay() {
+    const symbol = document.getElementById('replay-symbol').value.trim().toUpperCase();
+    if (!symbol) {
+        showToast('Enter a symbol first', 'error');
+        return;
+    }
+    const startBtn = document.getElementById('btn-start-replay');
+    const stopBtn = document.getElementById('btn-stop-replay');
+    const statusLine = document.getElementById('replay-status-line');
+    replayEquityData = [];
+    document.getElementById('replay-results-section').style.display = 'block';
+    document.getElementById('replay-summary').innerHTML = '<div class="empty-state"><p>Starting replay...</p></div>';
+    statusLine.style.display = 'block';
+    statusLine.style.color = 'var(--accent-green)';
+    statusLine.textContent = 'Starting...';
+    startBtn.disabled = true;
+
+    try {
+        const result = await API.post('/api/replay/start', {
+            strategy: document.getElementById('replay-strategy').value,
+            tradingsymbol: symbol,
+            exchange: document.getElementById('replay-exchange').value,
+            interval: document.getElementById('replay-interval').value,
+            days: parseInt(document.getElementById('replay-days').value) || 30,
+            capital: parseFloat(document.getElementById('replay-capital').value) || 100000,
+            speed: parseFloat(document.getElementById('replay-speed').value) || 10,
+        });
+        if (result.error) {
+            statusLine.style.color = '#ff5252';
+            statusLine.textContent = 'Error: ' + result.error;
+            startBtn.disabled = false;
+            return;
+        }
+        statusLine.textContent = `Replaying ${symbol} · ${result.total_bars} bars...`;
+        stopBtn.disabled = false;
+    } catch (e) {
+        statusLine.style.color = '#ff5252';
+        statusLine.textContent = 'Error: ' + (e.message || 'Failed to start replay');
+        startBtn.disabled = false;
+    }
+}
+
+async function stopReplay() {
+    try {
+        await API.post('/api/replay/stop', {});
+    } catch (e) { /* ignore - loop will report its own final state */ }
+    document.getElementById('btn-stop-replay').disabled = true;
+    document.getElementById('btn-start-replay').disabled = false;
+}
+
+function updateReplayTick(data) {
+    const statusLine = document.getElementById('replay-status-line');
+    if (statusLine) {
+        statusLine.style.display = 'block';
+        statusLine.textContent = `${data.tradingsymbol} @ ₹${formatNum(data.price)} · ` +
+            `Portfolio: ₹${formatNum(data.portfolio_value)} · Bar ${data.progress}/${data.total}`;
+    }
+    replayEquityData.push(data.portfolio_value);
+    if (replayEquityData.length > 1) drawReplayEquityCurve(replayEquityData);
+}
+
+function finishReplay(data) {
+    document.getElementById('btn-stop-replay').disabled = true;
+    document.getElementById('btn-start-replay').disabled = false;
+    const statusLine = document.getElementById('replay-status-line');
+    if (statusLine) {
+        statusLine.style.color = data.total_pnl >= 0 ? 'var(--accent-green)' : '#ff5252';
+        statusLine.textContent = `Replay complete · Final capital: ₹${formatNum(data.final_capital)} · P&L: ₹${formatNum(data.total_pnl)}`;
+    }
+    if (Array.isArray(data.equity_curve) && data.equity_curve.length > 1) {
+        replayEquityData = data.equity_curve;
+        drawReplayEquityCurve(replayEquityData);
+    }
+    document.getElementById('replay-summary').innerHTML = `
+        <div class="summary-grid">
+            <div class="summary-item"><span class="summary-label">Total Trades</span><span class="summary-value">${data.total_trades ?? 0}</span></div>
+            <div class="summary-item"><span class="summary-label">Win Rate</span><span class="summary-value">${fmtPct(data.win_rate ?? 0)}</span></div>
+            <div class="summary-item"><span class="summary-label">Final Capital</span><span class="summary-value ${pnlClass(data.total_pnl)}">₹${formatNum(data.final_capital)}</span></div>
+            <div class="summary-item"><span class="summary-label">Total P&L</span><span class="summary-value ${pnlClass(data.total_pnl)}">₹${formatNum(data.total_pnl)}</span></div>
+        </div>`;
+    showToast('Market replay complete', 'success');
+}
+
+function replayFailed(data) {
+    document.getElementById('btn-stop-replay').disabled = true;
+    document.getElementById('btn-start-replay').disabled = false;
+    const statusLine = document.getElementById('replay-status-line');
+    if (statusLine) { statusLine.style.color = '#ff5252'; statusLine.textContent = 'Error: ' + data.error; }
+    showToast('Replay failed: ' + data.error, 'error');
+}
+
+function drawReplayEquityCurve(data) {
+    const canvas = document.getElementById('replay-equity-chart');
+    const ctx = canvas.getContext('2d');
+    const w = canvas.parentElement.clientWidth - 40;
+    const h = 200;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+
+    if (data.length < 2) return;
+
+    const min = Math.min(...data) * 0.995;
+    const max = Math.max(...data) * 1.005;
+    const range = max - min || 1;
+    const stepX = w / (data.length - 1);
+
+    ctx.strokeStyle = '#1a2332';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 5; i++) {
+        const y = (i / 4) * h;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+        const val = max - (i / 4) * range;
+        ctx.fillStyle = '#667788';
+        ctx.font = '10px Inter';
+        ctx.fillText('₹' + val.toFixed(0), 4, y - 4);
+    }
+
+    const lastVal = data[data.length - 1];
+    const firstVal = data[0];
+    ctx.strokeStyle = lastVal >= firstVal ? '#00d4aa' : '#ff5252';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+        const x = i * stepX;
+        const y = h - ((data[i] - min) / range) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
     ctx.lineTo((data.length - 1) * stepX, h);
     ctx.lineTo(0, h);
     ctx.closePath();
@@ -3738,6 +4080,7 @@ async function runBacktestSampleInner() {
 
 function displayBacktestResult(data) {
     if (!data) return;
+    setLastRunBadge('bt-last-run', data.generated_at);
     // Metrics are at root level (spread via **metrics in Python)
     const m = data;
     const eq = data.equity_curve || [];
@@ -3959,6 +4302,7 @@ function drawUnderwaterCurve(uw) {
 // ===== F&O BACKTEST RESULT DISPLAY =====
 function displayFnOBacktestResult(data) {
     if (!data) return;
+    setLastRunBadge('bt-last-run', data.generated_at);
     const m = data;
     const eq = data.equity_curve || [];
     const trades = data.trades || [];

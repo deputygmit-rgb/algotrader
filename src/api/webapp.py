@@ -575,7 +575,7 @@ async def oi_strategy_execute(request: Request) -> dict[str, Any]:
     signal_id = body.get("signal_id", "")
     if not signal_id:
         return {"error": "signal_id required"}
-    return get_user_service(request).oi_strategy_execute_signal(signal_id)
+    return await get_user_service(request).oi_strategy_execute_signal(signal_id)
 
 
 @app.post("/api/oi/strategy/close")
@@ -589,7 +589,7 @@ async def oi_strategy_close(request: Request) -> dict[str, Any]:
     exit_price = body.get("exit_price", 0.0)
     if not position_id:
         return {"error": "position_id required"}
-    return get_user_service(request).oi_strategy_close_position(position_id, exit_price)
+    return await get_user_service(request).oi_strategy_close_position(position_id, exit_price)
 
 
 @app.get("/api/oi/strategy/positions")
@@ -643,8 +643,8 @@ async def run_analysis_scan(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/analysis/results")
-async def analysis_results(request: Request) -> dict[str, Any]:
-    return get_user_service(request).get_analysis_results()
+async def analysis_results(request: Request, universe: str = "nifty50") -> dict[str, Any]:
+    return get_user_service(request).get_analysis_results(universe)
 
 
 @app.get("/api/analysis/deep/{symbol}")
@@ -772,6 +772,86 @@ async def run_paper_trade_sample(request: Request) -> dict[str, Any]:
 @app.get("/api/paper-trade/results")
 async def paper_trade_results(request: Request) -> dict[str, Any]:
     return get_user_service(request).get_paper_results()
+
+
+# ─── Historical Data Import & Market Replay ───────────────────
+
+@app.post("/api/data/import-historical")
+async def import_historical_data(request: Request) -> dict[str, Any]:
+    """Import historical candles from Zerodha into the local DB cache.
+
+    Incremental: only fetches the gap since the last cached bar for this
+    token+interval, so repeated clicks don't re-download the full history.
+    """
+    body = await request.json()
+    tradingsymbol = (body.get("tradingsymbol") or "").strip().upper()
+    exchange = body.get("exchange", "NSE")
+    if not tradingsymbol:
+        raise HTTPException(400, "tradingsymbol is required")
+
+    svc = get_user_service(request)
+    instrument_token = await svc.resolve_instrument_token(tradingsymbol, exchange)
+    if not instrument_token:
+        raise HTTPException(404, f"Instrument not found: {exchange}:{tradingsymbol}")
+
+    try:
+        return await svc.import_historical_data(
+            instrument_token=instrument_token,
+            tradingsymbol=tradingsymbol,
+            interval=body.get("interval", "day"),
+            days=int(body.get("days", 365)),
+            from_date=body.get("from_date"),
+            to_date=body.get("to_date"),
+        )
+    except Exception as e:
+        logger.error("import_historical_data_error", error=str(e))
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/replay/start")
+async def start_market_replay(request: Request) -> dict[str, Any]:
+    """Start a market replay: streams cached historical candles bar-by-bar
+    over the live websocket while driving a strategy + paper-trade engine."""
+    body = await request.json()
+    strategy_name = body.get("strategy", "")
+    if not strategy_name:
+        raise HTTPException(400, "strategy is required")
+
+    tradingsymbol = (body.get("tradingsymbol") or "").strip().upper()
+    exchange = body.get("exchange", "NSE")
+    if not tradingsymbol:
+        raise HTTPException(400, "tradingsymbol is required")
+
+    svc = get_user_service(request)
+    instrument_token = await svc.resolve_instrument_token(tradingsymbol, exchange)
+    if not instrument_token:
+        raise HTTPException(404, f"Instrument not found: {exchange}:{tradingsymbol}")
+
+    try:
+        return await svc.start_replay(
+            strategy_name=strategy_name,
+            instrument_token=instrument_token,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            interval=body.get("interval", "5minute"),
+            days=int(body.get("days", 30)),
+            capital=float(body.get("capital", 100000)),
+            speed=float(body.get("speed", 10)),
+            strategy_params=body.get("strategy_params"),
+        )
+    except Exception as e:
+        logger.error("replay_start_error", error=str(e))
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/replay/stop")
+async def stop_market_replay(request: Request) -> dict[str, Any]:
+    return get_user_service(request).stop_replay()
+
+
+@app.get("/api/replay/status")
+async def market_replay_status(request: Request) -> dict[str, Any]:
+    return get_user_service(request).get_replay_status()
 
 
 # ─── Custom Strategy Builder ──────────────────────────────────
@@ -1226,6 +1306,36 @@ async def get_fno_strategies(request: Request) -> dict[str, Any]:
     """Get available F&O option strategies."""
     svc = get_user_service(request)
     return {"strategies": svc.get_fno_strategies()}
+
+
+@app.post("/api/data/import-fno-historical")
+async def import_fno_historical_data(request: Request) -> dict[str, Any]:
+    """Import historical underlying candles for an F&O index into the local DB cache.
+
+    Incremental: only fetches the gap since the last cached bar (same as
+    /api/data/import-historical, but resolves the token from the well-known
+    index map since Zerodha's index tradingsymbols don't match the plain
+    underlying name used by the F&O tabs, e.g. "NIFTY" -> "NIFTY 50").
+    """
+    body = await request.json()
+    underlying = (body.get("underlying") or "NIFTY").strip().upper()
+    svc = get_user_service(request)
+    instrument_token = svc.resolve_underlying_token(underlying, int(body.get("instrument_token", 0)))
+    if not instrument_token:
+        raise HTTPException(400, f"Unknown underlying: {underlying}")
+
+    try:
+        return await svc.import_historical_data(
+            instrument_token=instrument_token,
+            tradingsymbol=underlying,
+            interval=body.get("interval", "day"),
+            days=int(body.get("days", 365)),
+            from_date=body.get("from_date"),
+            to_date=body.get("to_date"),
+        )
+    except Exception as e:
+        logger.error("import_fno_historical_data_error", error=str(e))
+        raise HTTPException(500, str(e))
 
 
 @app.post("/api/fno-backtest/run")

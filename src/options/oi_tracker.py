@@ -389,3 +389,13 @@ class OITracker:
             "nifty": nifty_summary.model_dump(),
             "sensex": sensex_summary.model_dump(),
         }
+
+    def get_current_snapshots(self, underlying: str) -> list[dict[str, Any]]:
+        """Export the current per-instrument OI snapshots (for DB persistence)."""
+        underlying = underlying.upper()
+        spot = self._spot_prices.get(underlying, 0.0)
+        return [
+            {**snap.model_dump(), "spot_price": spot}
+            for snap in self._current.get(underlying, {}).values()
+        ]
+

@@ -92,6 +92,11 @@ class TrackerAgent:
                     self.open_orders_count = sum(
                         1 for o in orders if o.get("status") in ("OPEN", "TRIGGER PENDING")
                     )
+                    try:
+                        self.service._market_store.store_positions(net)
+                        self.service._market_store.store_orders(orders)
+                    except Exception as e:
+                        logger.error("tracker_agent_persist_failed", zerodha_id=self.zerodha_id, error=str(e))
                     self.last_error = None
                 except asyncio.TimeoutError:
                     self.last_error = f"sync timed out after {SYNC_TIMEOUT_SECONDS}s"

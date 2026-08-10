@@ -486,14 +486,15 @@ class OIFnOBridge:
                     failure_reasons=["No historical data available for backtest"],
                 )
 
-            # Run backtest
+            # Run backtest. FnOBacktestEngine doesn't take an arbitrary params dict -
+            # only pass the specific kwargs it actually understands from the mapping.
             engine = FnOBacktestEngine(
                 strategy_name=mapping.fno_strategy,
                 underlying=mapping.underlying,
                 initial_capital=self.thresholds.backtest_capital,
                 max_positions=self.thresholds.backtest_max_positions,
                 use_regime_filter=True,
-                strategy_params=mapping.strategy_params,
+                profit_target_pct=mapping.strategy_params.get("profit_target_pct", 50.0),
             )
 
             backtest_raw = engine.run(df, tradingsymbol=mapping.underlying)
