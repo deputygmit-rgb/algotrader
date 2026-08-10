@@ -1055,7 +1055,17 @@
             <!-- All Stocks View -->
             <div id="analysis-view-all" class="analysis-view">
                 <div class="card">
-                    <div class="card-title">All Scanned Stocks — Full Deep Analysis Snapshot</div>
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+                        <div class="card-title" style="margin-bottom:0">All Scanned Stocks — Full Deep Analysis Snapshot</div>
+                        <select id="all-stocks-sort" onchange="renderAllStocks(window._lastAllStocks)" style="margin-left:auto;padding:4px 8px;border-radius:4px;background:var(--card-bg);color:var(--text);border:1px solid var(--border);font-size:12px">
+                            <option value="trend_score">Sort: Trend Score</option>
+                            <option value="dist_52w_high_asc">Sort: Closest to 52W High</option>
+                            <option value="dist_52w_high_desc">Sort: Furthest from 52W High</option>
+                            <option value="rs_rating">Sort: RS Rating</option>
+                            <option value="change_1d">Sort: 1D %</option>
+                            <option value="change_20d">Sort: 20D %</option>
+                        </select>
+                    </div>
                     <div class="table-wrap" style="max-height:600px;overflow:auto">
                         <table>
                             <thead>
@@ -1066,6 +1076,7 @@
                                     <th>1D %</th>
                                     <th>5D %</th>
                                     <th>20D %</th>
+                                    <th>Dist 52W High</th>
                                     <th>Stage</th>
                                     <th>RS</th>
                                     <th>RSI</th>
@@ -1075,6 +1086,7 @@
                                     <th>Trend</th>
                                     <th>Accum</th>
                                     <th>Detail</th>
+                                    <th>Strategy</th>
                                 </tr>
                             </thead>
                             <tbody id="analysis-all-body"></tbody>
@@ -2395,6 +2407,52 @@
             <div style="display:flex;gap:8px;justify-content:flex-end">
                 <button class="btn btn-outline" onclick="hideModal('modal-oi-close')">Cancel</button>
                 <button class="btn btn-primary" onclick="confirmCloseOIPosition()">Close Position</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stock Strategy Test Modal -->
+    <div id="modal-stock-test" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-stock-test')">
+        <div class="modal" style="max-width:560px">
+            <div class="modal-title">Test Strategy — <span id="stock-test-symbol"></span></div>
+            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                Downloads 5min (100d), 15min (200d), hourly (400d) and daily (2000d) history and
+                backtests the selected strategy on each. Passing ANY ONE timeframe unlocks Execute.
+            </p>
+            <div class="form-group">
+                <label>Strategy</label>
+                <select id="stock-test-strategy">
+                    <option value="ema_crossover">EMA Crossover</option>
+                    <option value="rsi">RSI Strategy</option>
+                    <option value="vwap_breakout">VWAP Breakout</option>
+                    <option value="mean_reversion">Mean Reversion</option>
+                    <option value="scanner_strategy">Scanner Strategy (All-in-One)</option>
+                </select>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:12px">
+                <button class="btn btn-outline" onclick="hideModal('modal-stock-test')">Close</button>
+                <button class="btn btn-primary" id="btn-run-stock-test" onclick="runStockStrategyTest()">Run Test (4 timeframes)</button>
+            </div>
+            <div id="stock-test-status" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"></div>
+            <div id="stock-test-results"></div>
+            <div id="stock-test-execute-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+                <div class="form-group">
+                    <label>Execute on timeframe</label>
+                    <select id="stock-test-exec-tf"></select>
+                </div>
+                <div class="grid grid-2" style="margin-bottom:0">
+                    <div class="form-group"><label>Quantity (0 = auto ~₹25k)</label><input id="stock-test-qty" type="number" value="0" min="0"></div>
+                    <div class="form-group"><label>ATR SL / Target Mult</label>
+                        <div style="display:flex;gap:6px">
+                            <input id="stock-test-sl-mult" type="number" value="1.5" step="0.1" style="width:70px">
+                            <input id="stock-test-target-mult" type="number" value="3.0" step="0.1" style="width:70px">
+                        </div>
+                    </div>
+                </div>
+                <p style="font-size:11px;color:#ff9100;margin-bottom:8px">This places a REAL broker order (real money) with ATR-based protective stop-loss/target orders.</p>
+                <div style="display:flex;gap:8px;justify-content:flex-end">
+                    <button class="btn btn-primary" style="background:#ff9100" onclick="confirmExecuteStockSignal()">Execute Real Order</button>
+                </div>
             </div>
         </div>
     </div>

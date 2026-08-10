@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from src.analysis.scanner import StockScanner
+from src.analysis.indicators import compute_all_indicators
 from src.api.client import KiteClient
 from src.api.market_data import MarketDataProvider, PortfolioReporter
 from src.api.ticker import KiteTicker
@@ -1054,6 +1055,228 @@ class TradingService:
             "fetched_from": fetch_ranges[0][0] if fetch_ranges else requested_from_s,
             "fetched_to": to_date_s,
             "cached_range": {"from": new_min, "to": new_max},
+        }
+
+    # Timeframes checked by test_stock_strategy(), each with its own lookback window.
+    STOCK_TEST_TIMEFRAMES: list[tuple[str, int]] = [
+        ("5minute", 100),
+        ("15minute", 200),
+        ("60minute", 400),
+        ("day", 2000),
+    ]
+
+    @staticmethod
+    def _evaluate_equity_backtest(raw: dict[str, Any]) -> dict[str, Any]:
+        """Pass/fail a single-timeframe equity backtest against fixed quality
+        thresholds (mirrors OIFnOBridge's gate, relaxed min_trades since a
+        single timeframe/instrument backtest won't generate 30+ trades)."""
+        checks = {
+            "win_rate": (raw.get("win_rate", 0.0), 45.0, ">="),
+            "sharpe_ratio": (raw.get("sharpe_ratio", 0.0), 1.0, ">="),
+            "max_drawdown_pct": (abs(raw.get("max_drawdown_pct", 0.0)), 20.0, "<="),
+            "total_return_pct": (raw.get("total_return_pct", 0.0), 0.0, ">="),
+            "total_trades": (float(raw.get("total_trades", 0)), 5.0, ">="),
+        }
+        reasons = []
+        for name, (actual, threshold, op) in checks.items():
+            ok = actual >= threshold if op == ">=" else actual <= threshold
+            if not ok:
+                reasons.append(f"{name}: {actual:.2f} {op} {threshold:.2f} \u2717")
+        return {
+            "passed": len(reasons) == 0,
+            "win_rate": raw.get("win_rate", 0.0),
+            "sharpe_ratio": raw.get("sharpe_ratio", 0.0),
+            "max_drawdown_pct": raw.get("max_drawdown_pct", 0.0),
+            "total_return_pct": raw.get("total_return_pct", 0.0),
+            "total_trades": raw.get("total_trades", 0),
+            "failure_reasons": reasons,
+        }
+
+    async def test_stock_strategy(
+        self,
+        symbol: str,
+        strategy_name: str,
+        exchange: str = "NSE",
+        strategy_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Download historical data for a stock across 4 timeframes (5min/100d,
+        15min/200d, hourly/400d, daily/2000d) and backtest ``strategy_name`` on
+        each - used by the Analysis tab's per-stock "Test Strategy" action.
+        Overall pass = ANY ONE timeframe clearing the quality thresholds.
+        """
+        strategy = self._resolve_strategy(strategy_name, strategy_params)
+        if isinstance(strategy, dict):
+            return strategy  # error dict (unknown strategy)
+
+        token = await self.resolve_instrument_token(symbol, exchange)
+        if not token:
+            return {"error": f"Instrument not found: {exchange}:{symbol}"}
+
+        timeframe_results: dict[str, Any] = {}
+        for interval, days in self.STOCK_TEST_TIMEFRAMES:
+            try:
+                await self.import_historical_data(
+                    instrument_token=token, tradingsymbol=symbol, interval=interval, days=days,
+                )
+                rows = await self._resolve_ohlcv_rows(token, interval, days=days)
+                if not rows or len(rows) < 30:
+                    timeframe_results[interval] = {"passed": False, "error": "Insufficient historical data"}
+                    continue
+                df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+                df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
+                df.set_index("timestamp", inplace=True)
+
+                # Fresh strategy instance per timeframe - avoids leaking state
+                # (e.g. _prev_signal) between independent backtests.
+                tf_strategy = self._resolve_strategy(strategy_name, strategy_params)
+                engine = BacktestEngine(strategy=tf_strategy, initial_capital=100_000.0)
+                raw = engine.run(df, instrument_token=token, tradingsymbol=symbol, timeframe=interval)
+                if "error" in raw:
+                    timeframe_results[interval] = {"passed": False, "error": raw["error"]}
+                    continue
+                timeframe_results[interval] = self._evaluate_equity_backtest(raw)
+            except Exception as e:
+                logger.error("stock_strategy_test_failed", symbol=symbol, interval=interval, error=str(e))
+                timeframe_results[interval] = {"passed": False, "error": str(e)}
+
+        passing = [tf for tf, r in timeframe_results.items() if r.get("passed")]
+        overall_passed = len(passing) > 0
+        logger.info(
+            "stock_strategy_tested",
+            symbol=symbol,
+            strategy=strategy_name,
+            overall_passed=overall_passed,
+            passing_timeframes=passing,
+        )
+        return {
+            "symbol": symbol,
+            "strategy": strategy_name,
+            "timeframes": timeframe_results,
+            "overall_passed": overall_passed,
+            "passing_timeframes": passing,
+        }
+
+    async def execute_stock_strategy_signal(
+        self,
+        symbol: str,
+        strategy_name: str,
+        timeframe: str,
+        exchange: str = "NSE",
+        quantity: int = 0,
+        atr_sl_mult: float = 1.5,
+        atr_target_mult: float = 3.0,
+        strategy_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Place a REAL order for a stock that passed test_stock_strategy() on
+        ``timeframe``. Stop-loss/target are ATR-based (volatility-adjusted),
+        reusing ExecutionEngine's full safety stack - same pattern as the OI
+        strategy's real-order execution earlier this session.
+        """
+        strategy = self._resolve_strategy(strategy_name, strategy_params)
+        if isinstance(strategy, dict):
+            return strategy
+
+        if not self._execution._running:
+            return {"error": "Live trading isn't running, so no protective stop-loss/target order would be placed. Start live trading first."}
+
+        token = await self.resolve_instrument_token(symbol, exchange)
+        if not token:
+            return {"error": f"Instrument not found: {exchange}:{symbol}"}
+
+        days = dict(self.STOCK_TEST_TIMEFRAMES).get(timeframe, 365)
+        rows = await self._resolve_ohlcv_rows(token, timeframe, days=days)
+        if not rows or len(rows) < 30:
+            return {"error": f"Insufficient cached data for {symbol} on {timeframe}. Run 'Test Strategy' first."}
+
+        df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
+        df.set_index("timestamp", inplace=True)
+        df_plain = df.reset_index()
+
+        signal = strategy.generate_signal(df_plain, token)
+        if not signal or not getattr(signal, "transaction_type", None):
+            return {"error": f"No active entry signal for {symbol} right now on {timeframe} - the strategy isn't currently triggering."}
+
+        entry_price = float(df["close"].iloc[-1])
+        indicators = compute_all_indicators(df_plain)
+        atr = indicators.get("atr_14") or (entry_price * 0.01)  # 1% fallback if ATR unavailable
+        sl_points = round(atr * atr_sl_mult, 2)
+        target_points = round(atr * atr_target_mult, 2)
+
+        qty = quantity if quantity > 0 else max(1, int(25_000 / entry_price))
+
+        order_signal = Signal(
+            tradingsymbol=symbol,
+            exchange=Exchange(exchange),
+            transaction_type=signal.transaction_type,
+            quantity=qty,
+            order_type=OrderType.MARKET,
+            product=ProductType.MIS,
+            stop_loss=sl_points,
+            target=target_points,
+            strategy_name=f"stock_test_{strategy_name}",
+            confidence=0.0,
+            metadata={"symbol": symbol, "timeframe": timeframe, "atr": atr},
+        )
+
+        try:
+            order_id = await self._execution.execute_signal(order_signal)
+        except KillSwitchError as e:
+            logger.error("stock_signal_execute_kill_switch", symbol=symbol, error=str(e))
+            return {"error": "Kill switch is active - cannot place orders."}
+        except RiskLimitError as e:
+            logger.warning("stock_signal_execute_risk_blocked", symbol=symbol, error=str(e))
+            return {"error": f"Blocked by risk manager: {e}"}
+        except Exception as e:
+            logger.error("stock_signal_execute_order_failed", symbol=symbol, error=str(e))
+            return {"error": f"Order placement failed: {e}"}
+
+        if not order_id:
+            return {"error": "Order placement failed - no order ID returned by broker."}
+
+        self._journal.record_trade(
+            strategy=f"stock_test_{strategy_name}",
+            tradingsymbol=symbol,
+            exchange=exchange,
+            transaction_type=signal.transaction_type.value,
+            quantity=qty,
+            price=entry_price,
+            order_id=order_id,
+            status="ENTRY",
+            notes=f"ATR-based SL={sl_points} target={target_points} timeframe={timeframe}",
+        )
+
+        signal_data = {
+            "timestamp": datetime.now().isoformat(),
+            "strategy": f"stock_test_{strategy_name}",
+            "tradingsymbol": symbol,
+            "transaction_type": signal.transaction_type.value,
+            "quantity": qty,
+            "price": entry_price,
+            "confidence": 0.0,
+            "metadata": {"order_id": order_id, "timeframe": timeframe, "sl_points": sl_points, "target_points": target_points},
+        }
+        self._signal_log.append(signal_data)
+        await self._broadcast_ws({"type": "signal", "data": signal_data})
+
+        logger.info(
+            "stock_signal_executed",
+            symbol=symbol,
+            strategy=strategy_name,
+            order_id=order_id,
+            entry_price=entry_price,
+            sl_points=sl_points,
+            target_points=target_points,
+        )
+        return {
+            "success": True,
+            "order_id": order_id,
+            "symbol": symbol,
+            "entry_price": entry_price,
+            "quantity": qty,
+            "stop_loss_points": sl_points,
+            "target_points": target_points,
+            "atr": atr,
         }
 
     async def _on_ticks(self, ticks: list[Tick]) -> None:

@@ -666,6 +666,56 @@ async def analysis_deep_profile(request: Request, symbol: str) -> dict[str, Any]
     return await svc.analyze_stock_on_demand(sym)
 
 
+@app.post("/api/analysis/stock/test-strategy")
+async def analysis_stock_test_strategy(request: Request) -> dict[str, Any]:
+    """Download 5min/15min/hourly/daily history for a stock and backtest a
+    strategy on each timeframe (Analysis tab's per-stock "Test Strategy" action)."""
+    body = await request.json()
+    symbol = (body.get("symbol") or "").upper().strip()
+    strategy_name = body.get("strategy", "")
+    if not symbol:
+        raise HTTPException(400, "symbol is required")
+    if not strategy_name:
+        raise HTTPException(400, "strategy is required")
+    svc = get_user_service(request)
+    try:
+        return await svc.test_stock_strategy(
+            symbol=symbol,
+            strategy_name=strategy_name,
+            exchange=body.get("exchange", "NSE"),
+            strategy_params=body.get("strategy_params"),
+        )
+    except Exception as e:
+        logger.error("stock_test_strategy_error", symbol=symbol, error=str(e))
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/analysis/stock/execute")
+async def analysis_stock_execute(request: Request) -> dict[str, Any]:
+    """Place a real order for a stock that passed test-strategy on a given timeframe."""
+    body = await request.json()
+    symbol = (body.get("symbol") or "").upper().strip()
+    strategy_name = body.get("strategy", "")
+    timeframe = body.get("timeframe", "")
+    if not symbol or not strategy_name or not timeframe:
+        raise HTTPException(400, "symbol, strategy and timeframe are required")
+    svc = get_user_service(request)
+    try:
+        return await svc.execute_stock_strategy_signal(
+            symbol=symbol,
+            strategy_name=strategy_name,
+            timeframe=timeframe,
+            exchange=body.get("exchange", "NSE"),
+            quantity=int(body.get("quantity", 0)),
+            atr_sl_mult=float(body.get("atr_sl_mult", 1.5)),
+            atr_target_mult=float(body.get("atr_target_mult", 3.0)),
+            strategy_params=body.get("strategy_params"),
+        )
+    except Exception as e:
+        logger.error("stock_execute_error", symbol=symbol, error=str(e))
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/research/status")
 async def research_status(request: Request) -> dict[str, Any]:
     """Health status of the supervised stock-research MCP agent."""
