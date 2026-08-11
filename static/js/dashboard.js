@@ -2188,14 +2188,26 @@ function render52w(highStocks, lowStocks) {
     }
 }
 
+const _ALL_STOCKS_SORTERS = {
+    trend_score: (a, b) => (b.trend_score || 0) - (a.trend_score || 0),
+    dist_52w_high_asc: (a, b) => Math.abs(a.dist_from_52w_high ?? -999) - Math.abs(b.dist_from_52w_high ?? -999),
+    dist_52w_high_desc: (a, b) => Math.abs(b.dist_from_52w_high ?? -999) - Math.abs(a.dist_from_52w_high ?? -999),
+    rs_rating: (a, b) => (b.rs_rating || 0) - (a.rs_rating || 0),
+    change_1d: (a, b) => (b.change_1d || 0) - (a.change_1d || 0),
+    change_20d: (a, b) => (b.change_20d || 0) - (a.change_20d || 0),
+};
+
 function renderAllStocks(allStocks) {
     const el = document.getElementById('analysis-all-body');
     if (!el) return;
+    window._lastAllStocks = allStocks;
     if (!allStocks || !Object.keys(allStocks).length) {
-        el.innerHTML = '<tr><td colspan="15" style="color:var(--text-muted);text-align:center">No data</td></tr>';
+        el.innerHTML = '<tr><td colspan="17" style="color:var(--text-muted);text-align:center">No data</td></tr>';
         return;
     }
-    const sorted = Object.values(allStocks).sort((a, b) => (b.trend_score || 0) - (a.trend_score || 0));
+    const sortKey = document.getElementById('all-stocks-sort')?.value || 'trend_score';
+    const sorter = _ALL_STOCKS_SORTERS[sortKey] || _ALL_STOCKS_SORTERS.trend_score;
+    const sorted = Object.values(allStocks).sort(sorter);
     el.innerHTML = sorted.map(s => `<tr>
         <td><strong>${s.symbol}</strong></td>
         <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
@@ -2203,6 +2215,7 @@ function renderAllStocks(allStocks) {
         <td class="${pctClass(s.change_1d)}">${fmtPct(s.change_1d)}</td>
         <td class="${pctClass(s.change_5d)}">${fmtPct(s.change_5d)}</td>
         <td class="${pctClass(s.change_20d)}">${fmtPct(s.change_20d)}</td>
+        <td class="${pctClass(-Math.abs(s.dist_from_52w_high ?? 0))}">${s.dist_from_52w_high != null ? fmtPct(s.dist_from_52w_high) : '--'}</td>
         <td style="color:${stageColor(s.stage)};font-size:11px">${s.stage_name || '--'}</td>
         <td style="font-weight:600">${s.rs_rating != null ? s.rs_rating.toFixed(0) : '--'}</td>
         <td>${fmtNum(s.rsi_14)}</td>
@@ -2212,7 +2225,106 @@ function renderAllStocks(allStocks) {
         <td>${fmtNum(s.trend_score)}</td>
         <td>${accumBadge(s.accumulation)}</td>
         <td>${detailBtn(s.symbol)}</td>
+        <td><button class="btn btn-outline" style="font-size:10px;padding:2px 8px" onclick="openStockTestModal('${s.symbol}')">Test</button></td>
     </tr>`).join('');
+}
+
+// ─── Per-Stock Strategy Test (multi-timeframe backtest gate + real execution) ───
+
+const _STOCK_TF_LABELS = { '5minute': '5 Min (100d)', '15minute': '15 Min (200d)', '60minute': 'Hourly (400d)', 'day': 'Daily (2000d)' };
+let _stockTestSymbol = null;
+let _stockTestResult = null;
+
+function openStockTestModal(symbol) {
+    _stockTestSymbol = symbol;
+    _stockTestResult = null;
+    document.getElementById('stock-test-symbol').textContent = symbol;
+    document.getElementById('stock-test-results').innerHTML = '';
+    document.getElementById('stock-test-status').textContent = '';
+    document.getElementById('stock-test-execute-section').style.display = 'none';
+    showModal('modal-stock-test');
+}
+
+async function runStockStrategyTest() {
+    if (!_stockTestSymbol) return;
+    const strategy = document.getElementById('stock-test-strategy').value;
+    const statusEl = document.getElementById('stock-test-status');
+    const resultsEl = document.getElementById('stock-test-results');
+    const btn = document.getElementById('btn-run-stock-test');
+    btn.disabled = true;
+    statusEl.style.color = 'var(--text-muted)';
+    statusEl.textContent = 'Downloading history & backtesting 4 timeframes — this can take a few minutes on first run...';
+    resultsEl.innerHTML = '';
+    try {
+        const data = await API.postTimeout('/api/analysis/stock/test-strategy', {
+            symbol: _stockTestSymbol, strategy, exchange: 'NSE',
+        }, 10 * 60 * 1000);
+        if (data.error) {
+            statusEl.style.color = '#ff5252';
+            statusEl.textContent = 'Error: ' + data.error;
+            return;
+        }
+        _stockTestResult = data;
+        renderStockTestResults(data);
+    } catch (e) {
+        statusEl.style.color = '#ff5252';
+        statusEl.textContent = 'Failed: ' + (e.message || 'unknown error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderStockTestResults(data) {
+    const statusEl = document.getElementById('stock-test-status');
+    const resultsEl = document.getElementById('stock-test-results');
+    const rows = Object.entries(data.timeframes || {}).map(([tf, r]) => {
+        const pass = r.passed === true;
+        const color = pass ? '#00d4aa' : '#ff5252';
+        const metrics = r.error
+            ? `<span style="color:#ff5252">${r.error}</span>`
+            : `WR ${fmtNum(r.win_rate)}% · Sharpe ${fmtNum(r.sharpe_ratio)} · DD ${fmtNum(r.max_drawdown_pct)}% · Ret ${fmtNum(r.total_return_pct)}% · Trades ${r.total_trades ?? 0}` +
+              (r.failure_reasons?.length ? `<br><span style="font-size:10px;color:var(--text-muted)">${r.failure_reasons.join('; ')}</span>` : '');
+        return `<tr><td>${_STOCK_TF_LABELS[tf] || tf}</td>
+            <td style="color:${color};font-weight:700">${pass ? 'PASS' : 'FAIL'}</td>
+            <td style="font-size:11px">${metrics}</td></tr>`;
+    }).join('');
+    resultsEl.innerHTML = `<table style="width:100%"><thead><tr><th>Timeframe</th><th>Result</th><th>Metrics</th></tr></thead><tbody>${rows}</tbody></table>`;
+    if (data.overall_passed) {
+        statusEl.style.color = '#00d4aa';
+        statusEl.textContent = `Strategy passed on: ${data.passing_timeframes.join(', ')}`;
+        const tfSelect = document.getElementById('stock-test-exec-tf');
+        tfSelect.innerHTML = (data.passing_timeframes || []).map(tf =>
+            `<option value="${tf}">${_STOCK_TF_LABELS[tf] || tf}</option>`).join('');
+        document.getElementById('stock-test-execute-section').style.display = '';
+    } else {
+        statusEl.style.color = '#ff5252';
+        statusEl.textContent = 'Strategy failed all timeframes — execution locked.';
+        document.getElementById('stock-test-execute-section').style.display = 'none';
+    }
+}
+
+async function confirmExecuteStockSignal() {
+    if (!_stockTestSymbol || !_stockTestResult?.overall_passed) return;
+    const strategy = document.getElementById('stock-test-strategy').value;
+    const timeframe = document.getElementById('stock-test-exec-tf').value;
+    const quantity = parseInt(document.getElementById('stock-test-qty').value) || 0;
+    const atr_sl_mult = parseFloat(document.getElementById('stock-test-sl-mult').value) || 1.5;
+    const atr_target_mult = parseFloat(document.getElementById('stock-test-target-mult').value) || 3.0;
+    hideModal('modal-stock-test');
+    try {
+        const data = await API.post('/api/analysis/stock/execute', {
+            symbol: _stockTestSymbol, strategy, timeframe, exchange: 'NSE',
+            quantity, atr_sl_mult, atr_target_mult,
+        });
+        if (data.error) {
+            showToast('Execute failed: ' + data.error, 'error');
+            return;
+        }
+        showToast(`Order placed for ${data.symbol} @ ${data.entry_price} (SL ${data.stop_loss_points} / target ${data.target_points} pts, qty ${data.quantity})`, 'success');
+        loadSignals();
+    } catch (e) {
+        showToast('Execute failed: ' + (e.message || 'unknown error'), 'error');
+    }
 }
 
 // ─── Deep Profile Modal ───────────────────────────────────────
