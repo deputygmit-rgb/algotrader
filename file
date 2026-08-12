@@ -1,0 +1,27 @@
+
+import hashlib
+import requests
+from src.utils.config import get_settings
+
+s = get_settings()
+
+request_token = input("Paste NEW request token: ").strip()
+
+checksum = hashlib.sha256(
+    f"{s.kite_api_key}{request_token}{s.kite_api_secret}".encode()
+).hexdigest()
+
+payload = {
+    "api_key": s.kite_api_key,
+    "request_token": request_token,
+    "checksum": checksum,
+}
+
+print("Sending request...")
+r = requests.post(
+    "https://api.kite.trade/session/token",
+    data=payload,
+)
+
+print("HTTP:", r.status_code)
+print("Response:", r.text)

@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 import aiohttp
+import certifi
 
 from src.data.models import SessionData
 from src.utils.config import get_settings
@@ -150,12 +151,15 @@ class KiteAuthenticator:
 
     def _get_ssl_connector(self) -> aiohttp.TCPConnector:
         """Create a TCP connector respecting DISABLE_SSL_VERIFY setting."""
-        ssl_context = None
         if self._settings.disable_ssl_verify:
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-        return aiohttp.TCPConnector(ssl=ssl_context)
+            return aiohttp.TCPConnector(ssl=ssl_context)
+        else:
+            # Use certifi's CA bundle for proper SSL verification
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            return aiohttp.TCPConnector(ssl=ssl_context)
 
     async def invalidate_access_token(self) -> None:
         try:

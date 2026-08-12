@@ -7,6 +7,7 @@ import ssl
 from typing import Any, Optional
 
 import aiohttp
+import certifi
 from aiolimiter import AsyncLimiter
 
 from src.auth.authenticator import KiteAuthenticator
@@ -59,8 +60,7 @@ class KiteClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            # Skip SSL verification if disable_ssl_verify is set (for development only)
-            ssl_context = None
+            # Create SSL context with proper certificate verification
             if self._settings.disable_ssl_verify:
                 logger.error(
                     "security_warning",
@@ -69,6 +69,9 @@ class KiteClient:
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
+            else:
+                # Use certifi's CA bundle for proper SSL verification
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
             
             connector = aiohttp.TCPConnector(ssl=ssl_context)
             self._session = aiohttp.ClientSession(
