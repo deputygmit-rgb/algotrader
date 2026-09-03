@@ -157,6 +157,21 @@ class ExecutionEngine:
         if self._risk.is_kill_switch_active:
             raise KillSwitchError("Kill switch is active, cannot execute orders")
 
+        # Market-entry signals from strategies usually carry price=0/None, which
+        # makes RiskManager's exposure check a no-op (qty * 0). Backfill the real
+        # LTP so exposure/exposure-limit validation is meaningful. Fail-open: a
+        # failed LTP fetch must never block an otherwise-valid order.
+        if not signal.price and signal.order_type == OrderType.MARKET:
+            try:
+                exch = signal.exchange.value if hasattr(signal.exchange, "value") else str(signal.exchange)
+                ltp_map = await self._client.get_ltp([f"{exch}:{signal.tradingsymbol}"])
+                quote = ltp_map.get(f"{exch}:{signal.tradingsymbol}")
+                ltp = getattr(quote, "last_price", 0.0) if quote else 0.0
+                if ltp and ltp > 0:
+                    signal.price = float(ltp)
+            except Exception as e:
+                logger.debug("ltp_backfill_skipped", symbol=signal.tradingsymbol, error=str(e))
+
         is_valid, reason = self._risk.validate_signal(signal)
         if not is_valid:
             logger.warning("signal_rejected", reason=reason, signal=signal.model_dump())

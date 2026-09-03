@@ -239,6 +239,12 @@ def _compute_profitability(result: dict, th: dict) -> PillarResult:
     if expectancy_r < 0 or pf < 1.0:
         p.verdict = "FAIL"
         p.notes.append("Negative expectancy or profit factor <1 — strategy loses money")
+    elif sharpe < 0:
+        # Negative risk-adjusted return means the profits are not consistent —
+        # a couple of lucky outsized winners (profit_factor) must not pass a
+        # strategy whose Sharpe is below zero.
+        p.verdict = "FAIL"
+        p.notes.append(f"Negative Sharpe ratio ({sharpe:.2f}) — returns are not consistent")
     elif exp_v == "PASS" and pf_v in ("PASS", "WARN"):
         p.verdict = "PASS"
     elif any(v == "FAIL" for v in [exp_v, pf_v]):
@@ -820,12 +826,31 @@ def compute_health_report(
     for k in warn_pillars:
         warnings.append(f"{pillars[k].name}: {', '.join(pillars[k].notes) or 'Needs improvement'}")
 
-    # Critical blockers override
-    critical_fails = {"profitability", "drawdown"} & set(fail_pillars)
+    # Critical blockers override. A strategy is execution-ready only if it
+    # clears the score bar AND has no critical pillar failures AND has enough
+    # trades to be statistically meaningful AND shows consistent (non-negative
+    # Sharpe) risk-adjusted returns. Previously only profitability/drawdown
+    # gated readiness, which let a 3-trade, negative-Sharpe, 33%-win-rate
+    # backtest pass because expectancy/profit-factor dominated the score.
+    critical_fails = {"profitability", "drawdown", "trade_quality"} & set(fail_pillars)
+    total_trades = result.get("total_trades", 0)
+    sharpe = result.get("sharpe_ratio", 0)
+    too_few_trades = total_trades < 10
+    negative_sharpe = sharpe < 0
     # cast to native bool/float - pillar scores can be numpy scalars, and
     # `numpy_bool and bool` returns the numpy operand as-is when falsy
     overall = float(overall)
-    execution_ready = bool(overall >= 60 and len(critical_fails) == 0)
+    execution_ready = bool(
+        overall >= 60
+        and len(critical_fails) == 0
+        and not too_few_trades
+        and not negative_sharpe
+    )
+
+    if too_few_trades:
+        blockers.append(f"Insufficient trades ({total_trades}) — need at least 10 for reliable statistics")
+    if negative_sharpe:
+        blockers.append(f"Negative Sharpe ratio ({sharpe:.2f}) — returns are not consistent")
 
     if overall >= 75:
         overall_verdict = "PASS"

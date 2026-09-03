@@ -486,6 +486,10 @@ class CustomStrategy(BaseStrategy):
         if self._prev_signal.get(instrument_token) == direction.value:
             return None  # Already in this direction
 
+        # 200-DMA regime filter: BUY only above 200-DMA, SELL only below it
+        if not self._passes_dma200_filter(data, direction.value):
+            return None
+
         self._prev_signal[instrument_token] = direction.value
         return self._make_signal(
             tradingsymbol, direction, data, instrument_token,

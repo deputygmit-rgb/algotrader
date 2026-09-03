@@ -83,10 +83,20 @@ class TrackerAgent:
             if self.service.is_running and self.service.is_authenticated:
                 self._set_state("syncing")
                 try:
-                    positions, orders = await asyncio.wait_for(
-                        asyncio.gather(self.service.get_positions(), self.service.get_orders()),
-                        timeout=SYNC_TIMEOUT_SECONDS,
-                    )
+                    try:
+                        positions, orders = await asyncio.wait_for(
+                            asyncio.gather(self.service.get_positions(), self.service.get_orders()),
+                            timeout=SYNC_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        raise
+                    except Exception as fetch_err:
+                        # Broker parse/fetch failure (e.g. a null field crashing a
+                        # pydantic model) - log clearly and keep the loop alive.
+                        self.last_error = str(fetch_err)
+                        logger.error("tracker_agent_sync_failed", zerodha_id=self.zerodha_id, error=str(fetch_err))
+                        await self._wait(self.interval_seconds)
+                        continue
                     net = positions.get("net", []) if isinstance(positions, dict) else []
                     self.open_positions_count = sum(1 for p in net if p.get("quantity", 0) != 0)
                     self.open_orders_count = sum(
@@ -96,6 +106,7 @@ class TrackerAgent:
                         self.service._market_store.store_positions(net)
                         self.service._market_store.store_orders(orders)
                     except Exception as e:
+                        # Persistence is best-effort - never let it mark the sync failed.
                         logger.error("tracker_agent_persist_failed", zerodha_id=self.zerodha_id, error=str(e))
                     self.last_error = None
                 except asyncio.TimeoutError:

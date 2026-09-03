@@ -443,11 +443,27 @@ class PortfolioReporter:
             total_pnl = 0.0
 
             for h in holdings:
-                investment = h.average_price * h.quantity
-                value = h.last_price * h.quantity
-                pnl = value - investment
+                # Resolve the real share count. Zerodha can send quantity=0/null
+                # while the settled shares live in realised_quantity / opening_quantity.
+                # Prefer a non-zero realised/opening over a zero quantity; only treat
+                # the holding as zero-qty when every candidate is empty.
+                candidates = [
+                    h.quantity, h.realised_quantity, h.opening_quantity,
+                    h.t1_quantity, h.used_quantity,
+                ]
+                qty = next((c for c in candidates if c), 0)  # first non-zero/non-null
+
+                investment = h.average_price * qty
+                value = h.last_price * qty
+                # P&L: prefer the broker's own figure, but if it's 0/absent and we
+                # have a real qty + prices, compute it from prices so the row isn't
+                # a misleading 0.00.
+                computed_pnl = value - investment
+                pnl = h.pnl if h.pnl else computed_pnl
                 pnl_pct = (pnl / investment * 100) if investment > 0 else 0.0
-                day_change = (h.last_price - h.close_price) * h.quantity if h.close_price else 0.0
+                day_change = h.day_change if h.day_change else (
+                    (h.last_price - h.close_price) * qty if h.close_price else 0.0
+                )
 
                 total_investment += investment
                 current_value += value
@@ -456,7 +472,7 @@ class PortfolioReporter:
                 items.append({
                     "tradingsymbol": h.tradingsymbol,
                     "exchange": h.exchange,
-                    "quantity": h.quantity,
+                    "quantity": qty,
                     "average_price": round(h.average_price, 2),
                     "last_price": round(h.last_price, 2),
                     "close_price": round(h.close_price, 2) if h.close_price else None,

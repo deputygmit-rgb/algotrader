@@ -64,6 +64,13 @@ class SingleTriggerStrategy(BaseStrategy):
             "use_atr_sl": True,
             "atr_sl_multiple": 1.5,
             "min_bars": 50,
+            # 200-DMA regime filter is OFF for these single-trigger intraday
+            # strategies: they're short-window (min_bars~50) reversal/breakout
+            # triggers where a strict 200-DMA gate starves nearly every signal
+            # (a crossover often fires BEFORE price re-crosses the 200-DMA).
+            # It stays ON for long-window daily-trend strategies (scanner,
+            # golden_death_cross, stage_analysis) which set it explicitly.
+            "use_dma200_filter": False,
         }
         merged = {**defaults, **(params or {})}
         super().__init__(name, merged)
@@ -73,12 +80,18 @@ class SingleTriggerStrategy(BaseStrategy):
     def set_benchmark_data(self, benchmark_df: pd.DataFrame) -> None:
         self._benchmark_data = benchmark_df
 
+    def _min_bars(self) -> int:
+        """Minimum bars gate, scaled to the active timeframe (no-op on daily).
+        min_bars is a DAY-equivalent span: e.g. 210 for golden-cross means ~210
+        trading days, which is ~1313 bars on a 60-minute chart."""
+        return self.scale_period(self.params.get("min_bars", 50))
+
     async def on_tick(self, ticks: list[Tick]) -> list[Signal]:
         signals: list[Signal] = []
         for tick in ticks:
             self.add_tick_to_buffer(tick)
             df = self.get_bar_data(tick.instrument_token)
-            if df is not None and len(df) >= self.params.get("min_bars", 50):
+            if df is not None and len(df) >= self._min_bars():
                 signal = self.generate_signal(df, tick.instrument_token)
                 if signal:
                     signals.append(signal)
@@ -99,6 +112,10 @@ class SingleTriggerStrategy(BaseStrategy):
         prev = self._prev_signal.get(instrument_token)
         if prev == direction:
             return None  # Don't repeat same signal
+        # 200-DMA regime filter: BUY only above 200-DMA, SELL only below it
+        bar_data = self.get_bar_data(instrument_token)
+        if not self._passes_dma200_filter(bar_data, direction):
+            return None
         self._prev_signal[instrument_token] = direction
 
         sym = self.params.get("tradingsymbol_map", {}).get(
@@ -145,7 +162,7 @@ class MACDCrossoverStrategy(SingleTriggerStrategy):
         super().__init__("macd_crossover", params)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -174,18 +191,18 @@ class GoldenDeathCrossStrategy(SingleTriggerStrategy):
     """BUY on Golden Cross (SMA50 > SMA200), SELL on Death Cross."""
 
     def __init__(self, params: Optional[dict[str, Any]] = None) -> None:
-        defaults = {"min_bars": 210}
+        defaults = {"min_bars": 210, "use_dma200_filter": True}  # 200-DMA regime filter applies
         merged = {**defaults, **(params or {})}
         super().__init__("golden_death_cross", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 210:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
 
-        sma50 = sma(close, 50)
-        sma200 = sma(close, 200)
+        sma50 = sma(close, self.scale_period(50))
+        sma200 = sma(close, self.scale_period(200))
         if sma50 is None or sma200 is None or len(sma50) < 2:
             return None
 
@@ -216,7 +233,7 @@ class VolumeBreakoutAnalysisStrategy(SingleTriggerStrategy):
         super().__init__("volume_breakout_analysis", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -252,7 +269,7 @@ class BollingerBandsStrategy(SingleTriggerStrategy):
         super().__init__("bollinger_bands", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -294,7 +311,7 @@ class StochasticStrategy(SingleTriggerStrategy):
         super().__init__("stochastic", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -331,7 +348,7 @@ class IchimokuStrategy(SingleTriggerStrategy):
         super().__init__("ichimoku_cloud", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 60:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -372,13 +389,17 @@ class VCPStrategy(SingleTriggerStrategy):
         super().__init__("vcp_pattern", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 60:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
 
         try:
-            vcp = detect_vcp(data, lookback=60)
+            # detect_vcp uses its own internal 120-bar window (signature is
+            # detect_vcp(df, contractions)); there is no `lookback` kwarg -
+            # passing one raised TypeError every bar, silently swallowed by the
+            # bare except below -> the strategy produced zero trades.
+            vcp = detect_vcp(data)
             if vcp and vcp.get("detected"):
                 sl = self._compute_atr_sl(data, ltp, "BUY")
                 confidence = min(90.0, 50.0 + vcp.get("tightness", 0) * 10)
@@ -399,7 +420,7 @@ class PocketPivotStrategy(SingleTriggerStrategy):
         super().__init__("pocket_pivot", params)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -422,12 +443,12 @@ class StageAnalysisStrategy(SingleTriggerStrategy):
     """BUY in Stage 2 uptrend, SELL in Stage 4 downtrend."""
 
     def __init__(self, params: Optional[dict[str, Any]] = None) -> None:
-        defaults = {"min_bars": 210, "min_confidence": 70}
+        defaults = {"min_bars": 210, "min_confidence": 70, "use_dma200_filter": True}  # long-window trend strategy
         merged = {**defaults, **(params or {})}
         super().__init__("stage_analysis", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 210:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -464,12 +485,12 @@ class CCIExtremeStrategy(SingleTriggerStrategy):
         super().__init__("cci_extreme", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
 
-        period = self.params.get("cci_period", 20)
+        period = self.scale_period(self.params.get("cci_period", 20))
         tp = (data["high"] + data["low"] + close) / 3
         tp_sma = tp.rolling(period).mean()
         tp_mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
@@ -503,7 +524,7 @@ class MFIStrategy(SingleTriggerStrategy):
         super().__init__("mfi_strategy", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        if len(data) < 50:
+        if len(data) < self._min_bars():
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
@@ -538,13 +559,13 @@ class FiftyTwoWeekStrategy(SingleTriggerStrategy):
         super().__init__("52_week_hl", merged)
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int = 0) -> Optional[Signal]:
-        min_bars = self.params.get("min_bars", 252)
+        min_bars = self._min_bars()
         if len(data) < min_bars:
             return None
         close = data["close"]
         ltp = float(close.iloc[-1])
 
-        lookback = min(252, len(data))
+        lookback = min(self.scale_period(252), len(data))
         high_52w = float(data["high"].iloc[-lookback:].max())
         low_52w = float(data["low"].iloc[-lookback:].min())
 

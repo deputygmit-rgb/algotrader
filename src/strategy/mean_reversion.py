@@ -32,6 +32,9 @@ class MeanReversionStrategy(BaseStrategy):
             "use_atr_sl": True,
             "atr_sl_multiple": 1.5,
             "tradingsymbol_map": {},
+            # Mean reversion is explicitly counter-trend (fades extremes), so a
+            # trend-following 200-DMA gate is counterproductive — keep it OFF.
+            "use_dma200_filter": False,
         }
         merged = {**defaults, **(params or {})}
         super().__init__("mean_reversion", merged)
@@ -56,7 +59,8 @@ class MeanReversionStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        lookback = self.params["lookback_period"]
+        # lookback_period is a DAY-equivalent lookback scaled to the timeframe.
+        lookback = self.scale_period(self.params["lookback_period"])
         if len(data) < lookback:
             return None
 
@@ -85,6 +89,9 @@ class MeanReversionStrategy(BaseStrategy):
         prev = self._prev_signal.get(instrument_token)
 
         if z_score < -z_entry and prev != "BUY":
+            # 200-DMA regime filter: only BUY above the 200-DMA
+            if not self._passes_dma200_filter(data, "BUY"):
+                return None
             self._prev_signal[instrument_token] = "BUY"
             return Signal(
                 tradingsymbol=tradingsymbol,
@@ -100,6 +107,9 @@ class MeanReversionStrategy(BaseStrategy):
             )
 
         elif z_score > z_entry and prev != "SELL":
+            # 200-DMA regime filter: only SELL below the 200-DMA
+            if not self._passes_dma200_filter(data, "SELL"):
+                return None
             self._prev_signal[instrument_token] = "SELL"
             return Signal(
                 tradingsymbol=tradingsymbol,

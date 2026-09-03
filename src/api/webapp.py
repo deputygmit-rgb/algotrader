@@ -399,6 +399,14 @@ async def add_strategy(request: Request) -> dict[str, Any]:
     return get_user_service(request).add_strategy(name, params)
 
 
+@app.post("/api/strategies/promote-from-backtest")
+async def promote_strategy_from_backtest(request: Request) -> dict[str, Any]:
+    body = await request.json()
+    name = body.get("name", "")
+    params = body.get("params")
+    return await get_user_service(request).promote_backtest_to_live(name, params)
+
+
 @app.post("/api/strategies/remove")
 async def remove_strategy(request: Request) -> dict[str, Any]:
     body = await request.json()
@@ -1302,6 +1310,7 @@ async def run_backtest(request: Request) -> dict[str, Any]:
             strategy_name=body.get("strategy", "ema_crossover"),
             instrument_token=instrument_token,
             tradingsymbol=tradingsymbol,
+            exchange=exchange,
             interval=body.get("interval", "day"),
             days=body.get("days", 365),
             from_date=body.get("from_date"),

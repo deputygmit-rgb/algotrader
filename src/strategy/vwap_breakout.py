@@ -32,6 +32,9 @@ class VWAPBreakoutStrategy(BaseStrategy):
             "atr_sl_multiple": 1.5,
             "tradingsymbol_map": {},
             "vwap_period": 20,           # Rolling VWAP lookback
+            # VWAP breakout is a short-window intraday trigger; a strict 200-DMA
+            # gate starves it. Keep it OFF (trend strategies use it instead).
+            "use_dma200_filter": False,
         }
         merged = {**defaults, **(params or {})}
         super().__init__("vwap_breakout", merged)
@@ -56,7 +59,8 @@ class VWAPBreakoutStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        vwap_period = self.params.get("vwap_period", 20)
+        # vwap_period is a DAY-equivalent rolling lookback scaled to the timeframe.
+        vwap_period = self.scale_period(self.params.get("vwap_period", 20))
         min_bars = max(5, vwap_period)
         if len(data) < min_bars:
             return None
@@ -99,6 +103,9 @@ class VWAPBreakoutStrategy(BaseStrategy):
             distance_pct > threshold_pct
             and self._prev_signal.get(instrument_token) != "BUY"
         ):
+            # 200-DMA regime filter: only BUY above the 200-DMA
+            if not self._passes_dma200_filter(data, "BUY"):
+                return None
             self._prev_signal[instrument_token] = "BUY"
             return Signal(
                 tradingsymbol=tradingsymbol,
@@ -117,6 +124,9 @@ class VWAPBreakoutStrategy(BaseStrategy):
             distance_pct < -threshold_pct
             and self._prev_signal.get(instrument_token) != "SELL"
         ):
+            # 200-DMA regime filter: only SELL below the 200-DMA
+            if not self._passes_dma200_filter(data, "SELL"):
+                return None
             self._prev_signal[instrument_token] = "SELL"
             return Signal(
                 tradingsymbol=tradingsymbol,

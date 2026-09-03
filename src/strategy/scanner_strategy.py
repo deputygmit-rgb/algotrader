@@ -130,6 +130,7 @@ class ScannerStrategy(BaseStrategy):
             "min_trend_score": 40,
             "use_atr_sl": True,
             "atr_sl_multiple": 2.0,
+            "use_dma200_filter": True,  # BUY only above 200-DMA, SELL only below
             "require_stage2": False,
             "require_superperf": False,
             # Indicator thresholds
@@ -159,7 +160,7 @@ class ScannerStrategy(BaseStrategy):
         for tick in ticks:
             self.add_tick_to_buffer(tick)
             df = self.get_bar_data(tick.instrument_token)
-            if df is not None and len(df) >= 50:
+            if df is not None and len(df) >= self.scale_period(50):
                 signal = self.generate_signal(df, tick.instrument_token)
                 if signal:
                     signals.append(signal)
@@ -180,7 +181,7 @@ class ScannerStrategy(BaseStrategy):
         compute composite bullish/bearish scores, and emit BUY or SELL
         if thresholds are met.
         """
-        if len(data) < 50:
+        if len(data) < self.scale_period(50):
             return None
 
         close = data["close"]
@@ -230,11 +231,12 @@ class ScannerStrategy(BaseStrategy):
             instrument_token, f"TOKEN_{instrument_token}"
         )
 
-        # Check for BUY signal
+        # Check for BUY signal (200-DMA regime filter: BUY only above 200-DMA)
         if (
             bullish_score >= self.params["min_bullish_score"]
             and len(bullish_triggers) >= self.params["min_triggers"]
             and bullish_score > bearish_score
+            and self._passes_dma200_filter(data, "BUY")
         ):
             if self._prev_signal.get(instrument_token) != "BUY":
                 self._prev_signal[instrument_token] = "BUY"
@@ -265,11 +267,12 @@ class ScannerStrategy(BaseStrategy):
                     },
                 )
 
-        # Check for SELL signal
+        # Check for SELL signal (200-DMA regime filter: SELL only below 200-DMA)
         if (
             bearish_score >= self.params["min_bearish_score"]
             and len(bearish_triggers) >= self.params["min_triggers"]
             and bearish_score > bullish_score
+            and self._passes_dma200_filter(data, "SELL")
         ):
             if self._prev_signal.get(instrument_token) != "SELL":
                 self._prev_signal[instrument_token] = "SELL"
@@ -314,10 +317,15 @@ class ScannerStrategy(BaseStrategy):
         close = df["close"]
         p = self.params
 
-        # ── MACD crossover ──
-        if len(close) >= 27:
+        # ── MACD crossover (periods are day-equivalents scaled to timeframe) ──
+        if len(close) >= self.scale_period(27):
             try:
-                m = compute_macd(close)
+                m = compute_macd(
+                    close,
+                    fast=self.scale_period(12),
+                    slow=self.scale_period(26),
+                    signal=self.scale_period(9),
+                )
                 hist = m["histogram"]
                 if len(hist) >= 2:
                     if hist.iloc[-2] < 0 and hist.iloc[-1] > 0:
@@ -327,11 +335,11 @@ class ScannerStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # ── EMA 9/21 crossover ──
-        if len(close) >= 22:
+        # ── EMA 9/21 crossover (day-equivalent spans scaled to timeframe) ──
+        if len(close) >= self.scale_period(22):
             try:
-                fast = ema(close, 9)
-                slow = ema(close, 21)
+                fast = ema(close, self.scale_period(9))
+                slow = ema(close, self.scale_period(21))
                 if len(fast) >= 2 and len(slow) >= 2:
                     if fast.iloc[-2] <= slow.iloc[-2] and fast.iloc[-1] > slow.iloc[-1]:
                         triggers.append({"type": "bullish", "signal": "EMA 9/21 Bullish Cross", "weight": TRIGGER_WEIGHTS["ema_9_21_cross"]})
@@ -348,11 +356,11 @@ class ScannerStrategy(BaseStrategy):
             elif rsi_val > p["rsi_overbought"]:
                 triggers.append({"type": "bearish", "signal": f"RSI Overbought ({rsi_val:.1f})", "weight": TRIGGER_WEIGHTS["rsi_overbought"]})
 
-        # ── Golden / Death Cross ──
-        if len(close) >= 201:
+        # ── Golden / Death Cross (50/200 day-equivalent SMAs scaled) ──
+        if len(close) >= self.scale_period(201):
             try:
-                sma50 = sma(close, 50)
-                sma200 = sma(close, 200)
+                sma50 = sma(close, self.scale_period(50))
+                sma200 = sma(close, self.scale_period(200))
                 if len(sma50) >= 2 and len(sma200) >= 2:
                     if sma50.iloc[-2] < sma200.iloc[-2] and sma50.iloc[-1] > sma200.iloc[-1]:
                         triggers.append({"type": "bullish", "signal": "Golden Cross (50 SMA > 200 SMA)", "weight": TRIGGER_WEIGHTS["golden_cross"]})
@@ -370,7 +378,7 @@ class ScannerStrategy(BaseStrategy):
                 triggers.append({"type": "bearish", "signal": "Price below SMA 200", "weight": TRIGGER_WEIGHTS["ema_below_sma200"]})
 
         # ── Volume breakout / breakdown ──
-        if "volume" in df.columns and len(df) >= 20:
+        if "volume" in df.columns and len(df) >= self.scale_period(20):
             vol_ratio = ind.get("vol_ratio")
             change_1d = ind.get("change_1d", 0)
             if vol_ratio and vol_ratio > p["volume_breakout_ratio"]:

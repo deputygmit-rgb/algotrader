@@ -211,6 +211,8 @@ class OIStrategyConfig(BaseModel):
     stop_loss_pct: float = 30.0     # SL as % of entry premium
     target_pct: float = 50.0        # Target as % of entry premium
     trailing_sl_pct: float = 20.0   # Trailing SL once in profit
+    # Premium quality filter
+    min_premium: float = 50.0       # Min option premium (Rs) - signals below this are rejected
     # Execution
     min_confidence: float = 0.6     # Minimum signal confidence to display/execute (0-1)
     preferred_strategy: str = "directional"  # directional | spread | straddle
@@ -605,6 +607,26 @@ class OIStrategyEngine:
 
         if entry_price <= 0:
             # Can't generate signal without a valid entry price
+            return OISignal(
+                id=self._next_signal_id(),
+                underlying=ctx["underlying"],
+                signal_type=signal_type.value,
+                confidence=0.0,
+            )
+
+        # Minimum premium filter: low-premium (far-OTM / near-expiry) options
+        # have poor risk-reward and bad fills - reject any signal whose entry
+        # premium is below the configured minimum (default Rs 50).
+        if entry_price < self.config.min_premium:
+            logger.info(
+                "oi_signal_low_premium",
+                signal_type=signal_type.value,
+                strike=strike,
+                option_type=option_type,
+                entry_price=entry_price,
+                min_premium=self.config.min_premium,
+                msg="Entry premium below minimum - signal filtered out",
+            )
             return OISignal(
                 id=self._next_signal_id(),
                 underlying=ctx["underlying"],

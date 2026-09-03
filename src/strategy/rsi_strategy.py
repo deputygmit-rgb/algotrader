@@ -32,6 +32,9 @@ class RSIStrategy(BaseStrategy):
             "use_atr_sl": True,
             "atr_sl_multiple": 1.5,
             "tradingsymbol_map": {},
+            # RSI oversold/overbought is a short-window reversal trigger; a
+            # strict 200-DMA gate starves it on intraday data. Keep it OFF.
+            "use_dma200_filter": False,
         }
         merged = {**defaults, **(params or {})}
         super().__init__("rsi_strategy", merged)
@@ -67,7 +70,9 @@ class RSIStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        period = self.params["rsi_period"]
+        # rsi_period is a DAY-equivalent lookback; scale_period converts it to
+        # the right number of bars on the active timeframe (no-op on daily).
+        period = self.scale_period(self.params["rsi_period"])
         if len(data) < period + 1:
             return None
 
@@ -93,6 +98,9 @@ class RSIStrategy(BaseStrategy):
         prev = self._prev_signal.get(instrument_token)
 
         if prev_rsi <= oversold and current_rsi > oversold and prev != "BUY":
+            # 200-DMA regime filter: only BUY above the 200-DMA
+            if not self._passes_dma200_filter(data, "BUY"):
+                return None
             self._prev_signal[instrument_token] = "BUY"
             return Signal(
                 tradingsymbol=tradingsymbol,
@@ -108,6 +116,9 @@ class RSIStrategy(BaseStrategy):
             )
 
         elif prev_rsi >= overbought and current_rsi < overbought and prev != "SELL":
+            # 200-DMA regime filter: only SELL below the 200-DMA
+            if not self._passes_dma200_filter(data, "SELL"):
+                return None
             self._prev_signal[instrument_token] = "SELL"
             return Signal(
                 tradingsymbol=tradingsymbol,

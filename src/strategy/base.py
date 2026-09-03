@@ -13,6 +13,23 @@ logger = get_logger(__name__)
 
 
 class BaseStrategy(abc.ABC):
+    # Approximate trading bars per calendar DAY for each interval, used to
+    # scale day-based lookback periods into the active bar interval. NSE cash
+    # session ~6.25h; index/option sessions similar.
+    _BARS_PER_DAY: dict[str, float] = {
+        "minute": 375.0,
+        "3minute": 125.0,
+        "5minute": 75.0,
+        "10minute": 37.5,
+        "15minute": 25.0,
+        "30minute": 12.5,
+        "60minute": 6.25,
+        "hour": 6.25,
+        "day": 1.0,
+        "daily": 1.0,
+        "week": 1.0 / 5.0,
+    }
+
     def __init__(self, name: str, params: Optional[dict[str, Any]] = None) -> None:
         self.name = name
         self.params = params or {}
@@ -21,6 +38,40 @@ class BaseStrategy(abc.ABC):
         self._bar_data: dict[int, pd.DataFrame] = {}
         self._signals: list[Signal] = []
         self._last_signal_time: Optional[datetime] = None
+        # Active bar interval (set via set_timeframe by the engines). None =
+        # unknown -> day-based periods are used as-is (no scaling).
+        self._timeframe: Optional[str] = None
+
+    def set_timeframe(self, timeframe: str) -> None:
+        """Record the bar interval the strategy is being driven on.
+
+        Called by BacktestEngine / PaperTradingEngine / replay with the run's
+        interval so day-based lookback params can be scaled to the active bar
+        interval via scale_period(). Set param ``scale_periods_to_timeframe``
+        to False to disable scaling entirely.
+        """
+        self._timeframe = (timeframe or "").strip() or None
+
+    def _bars_per_day(self) -> float:
+        """Bars per calendar day for the active timeframe (1.0 if unknown/daily)."""
+        tf = (self._timeframe or "day").lower()
+        return self._BARS_PER_DAY.get(tf, 1.0)
+
+    def scale_period(self, days: float, min_bars: int = 1) -> int:
+        """Convert a DAY-based lookback into the number of bars for the active
+        interval. On daily/unknown timeframes this returns ``days`` unchanged
+        (rounded), so default behavior is preserved. On intraday it scales up
+        (e.g. 14 "days" of RSI on 60-minute bars -> ~88 hourly bars).
+
+        Returns at least ``min_bars``.
+        """
+        if not self.params.get("scale_periods_to_timeframe", True):
+            return max(min_bars, int(round(days)))
+        bpd = self._bars_per_day()
+        if bpd <= 1.0:
+            return max(min_bars, int(round(days)))
+        return max(min_bars, int(round(days * bpd)))
+
 
     @abc.abstractmethod
     async def on_tick(self, ticks: list[Tick]) -> list[Signal]:
@@ -56,3 +107,49 @@ class BaseStrategy(abc.ABC):
     def deactivate(self) -> None:
         self.is_active = False
         logger.info("strategy_deactivated", strategy=self.name)
+
+    def _passes_dma200_filter(self, data: Optional[pd.DataFrame], direction: str) -> bool:
+        """200-DMA trend-regime filter for stock ENTRY signals.
+
+        Bullish scenario (price trading ABOVE the 200-DMA) -> only BUY entries
+        are allowed. Bearish scenario (price BELOW the 200-DMA) -> only SELL
+        entries are allowed. This keeps stock trades aligned with the
+        dominant long-term trend instead of buying into downtrends.
+
+        Returns True (filter passes) only when disabled via the
+        ``use_dma200_filter`` param. When there isn't enough history to
+        compute a 200-period SMA the signal is BLOCKED (return False) — a
+        trade that can't be checked against the 200-DMA must not be taken.
+        Exit signals must never be passed here.
+        """
+        if not self.params.get("use_dma200_filter", True):
+            return True
+        # Scale the 200-DMA lookback to the active timeframe (no-op on daily):
+        # on 60-minute bars the 200-DAY average is ~1250 bars, not 200.
+        dma_period = self.scale_period(200)
+        if data is None or "close" not in data.columns or len(data) < dma_period:
+            logger.debug(
+                "dma200_insufficient_history",
+                strategy=self.name,
+                direction=direction,
+                bars=0 if data is None else len(data),
+                needed_bars=dma_period,
+            )
+            return False  # no 200-DMA regime determinable -> no trade
+        close = data["close"]
+        sma_200 = float(close.rolling(dma_period).mean().iloc[-1])
+        if pd.isna(sma_200) or sma_200 <= 0:
+            return True
+        ltp = float(close.iloc[-1])
+        above = ltp > sma_200
+        allowed = above if direction == "BUY" else not above
+        if not allowed:
+            logger.debug(
+                "dma200_regime_block",
+                strategy=self.name,
+                direction=direction,
+                ltp=ltp,
+                sma_200=round(sma_200, 2),
+                regime="BULLISH" if above else "BEARISH",
+            )
+        return allowed

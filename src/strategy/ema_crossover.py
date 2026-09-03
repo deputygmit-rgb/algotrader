@@ -33,6 +33,10 @@ class EMACrossoverStrategy(BaseStrategy):
             "min_volume_ratio": 0.0,   # Volume filter (0=disabled)
             "use_atr_sl": True,        # Use ATR for stop loss
             "atr_sl_multiple": 1.5,    # Stop loss = Entry - 1.5*ATR
+            # EMA(9/21) crossover is a short-window trigger; a strict 200-DMA
+            # gate starves its crossovers on intraday data. Keep it OFF here —
+            # the regime filter belongs to long-window trend strategies.
+            "use_dma200_filter": False,
         }
         merged = {**defaults, **(params or {})}
         super().__init__("ema_crossover", merged)
@@ -57,11 +61,15 @@ class EMACrossoverStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        if len(data) < self.params["slow_period"]:
+        # fast/slow_period are DAY-equivalent EMA spans scaled to the timeframe
+        # (no-op on daily bars). Scale the min-bars gate by the slow period.
+        fast_p = self.scale_period(self.params["fast_period"])
+        slow_p = self.scale_period(self.params["slow_period"])
+        if len(data) < slow_p:
             return None
 
-        fast_ema = data["close"].ewm(span=self.params["fast_period"], adjust=False).mean()
-        slow_ema = data["close"].ewm(span=self.params["slow_period"], adjust=False).mean()
+        fast_ema = data["close"].ewm(span=fast_p, adjust=False).mean()
+        slow_ema = data["close"].ewm(span=slow_p, adjust=False).mean()
 
         current_fast = fast_ema.iloc[-1]
         current_slow = slow_ema.iloc[-1]
@@ -73,6 +81,11 @@ class EMACrossoverStrategy(BaseStrategy):
         bearish_cross = prev_fast >= prev_slow and current_fast < current_slow
 
         if not bullish_cross and not bearish_cross:
+            return None
+
+        # 200-DMA regime filter: BUY only above 200-DMA, SELL only below it
+        cross_direction = "BUY" if bullish_cross else "SELL"
+        if not self._passes_dma200_filter(data, cross_direction):
             return None
 
         # Filter 1: Check ADX for trend strength (only if enabled)

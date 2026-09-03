@@ -24,8 +24,8 @@ NIFTY_500_SYMBOLS: list[str] = [
     "BHEL", "BIOCON", "BIRLASOFT", "BLUESTARCO", "BOSCHLTD",
     "BPCL", "BRIGADE", "BRITANNIA", "BSE", "BSOFT",
     # ── C ──
-    "CADILAHC", "CAMS", "CANBK", "CANFINHOME", "CARBORUNIV",
-    "CASTROLIND", "CDSL", "CEATLTD", "CENTRALBK", "CENTURYTEX",
+    "CAMS", "CANBK", "CANFINHOME", "CARBORUNIV",
+    "CASTROLIND", "CDSL", "CEATLTD", "CENTRALBK", "CENTURYPLY",
     "CESC", "CGPOWER", "CHAMBLFERT", "CHOLAFIN", "CIPLA",
     "CLEAN", "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL",
     "CONCOR", "COROMANDEL", "CROMPTON", "CUMMINSIND", "CYIENT",
@@ -177,7 +177,7 @@ NIFTY_500_SECTOR_MAP: dict[str, str] = {
     "ALKEM": "Pharma", "IPCALAB": "Pharma", "GLAXO": "Pharma", "SANOFI": "Pharma",
     "PFIZER": "Pharma", "ABBOTINDIA": "Pharma", "GLENMARK": "Pharma", "GRANULES": "Pharma",
     "LAURUSLABS": "Pharma", "SUVENPHAR": "Pharma", "ERIS": "Pharma", "SOLARA": "Pharma",
-    "CADILAHC": "Pharma", "ZYDUSLIFE": "Pharma", "SYNGENE": "Pharma",
+    "ZYDUSLIFE": "Pharma", "SYNGENE": "Pharma", "AARTIIND": "Pharma",
 
     # ── Healthcare ──
     "APOLLOHOSP": "Healthcare", "MAXHEALTH": "Healthcare", "FORTIS": "Healthcare",
@@ -263,7 +263,7 @@ NIFTY_500_SECTOR_MAP: dict[str, str] = {
     "GMRAIRPORT": "Logistics",
 
     # ── Textiles ──
-    "CENTURYTEX": "Textiles", "WELSPUNLIV": "Textiles", "TRIDENT": "Textiles",
+    "CENTURYPLY": "Textiles", "WELSPUNLIV": "Textiles", "TRIDENT": "Textiles",
 
     # ── Specialty ──
     "GRAPHITE": "Specialty", "RAIN": "Specialty", "CASTROLIND": "Specialty",

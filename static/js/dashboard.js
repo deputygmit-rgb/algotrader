@@ -219,9 +219,18 @@ function updatePortfolioSection(data) {
     }
 
     if (data.holdings) {
+        // Resolve the real share count: broker may send quantity=0/null while
+        // settled shares live in realised_quantity/opening_quantity/t1_quantity.
+        const qtyOf = (h) => {
+            const cands = [h.quantity, h.realised_quantity, h.opening_quantity, h.t1_quantity, h.used_quantity];
+            for (const c of cands) { if (c) return c; }
+            return 0;
+        };
         let totalVal = 0;
         const holdings = data.holdings || [];
-        holdings.forEach(h => { totalVal += (h.last_price || 0) * (h.quantity || 0); });
+        holdings.forEach(h => {
+            totalVal += (h.last_price || 0) * qtyOf(h);
+        });
         document.getElementById('holdings-value').textContent = formatNum(totalVal, 0);
         document.getElementById('holdings-count').textContent = holdings.length + ' stocks';
 
@@ -229,11 +238,15 @@ function updatePortfolioSection(data) {
         if (hBody) {
             if (holdings.length) {
                 hBody.innerHTML = holdings.slice(0, 20).map(h => {
-                    const pnl = ((h.last_price || 0) - (h.average_price || 0)) * (h.quantity || 0);
+                    const q = qtyOf(h);
+                    // Prefer broker pnl, but compute from prices when it's 0/absent
+                    // and we have a real qty (so the row isn't a misleading 0.00).
+                    const computed = ((h.last_price || 0) - (h.average_price || 0)) * q;
+                    const pnl = (h.pnl !== null && h.pnl !== undefined && h.pnl !== 0) ? h.pnl : computed;
                     const sym = h.tradingsymbol || '';
                     return `<tr>
                         <td><strong>${sym}</strong></td>
-                        <td>${h.quantity}</td>
+                        <td>${q}</td>
                         <td>${formatNum(h.average_price)}</td>
                         <td>${formatNum(h.last_price)}</td>
                         <td class="${pnlClass(pnl)}">${formatNum(pnl)}</td>
@@ -479,6 +492,31 @@ async function addStrategy() {
         showToast(`Added ${name}`, 'success');
         hideModal('modal-add-strategy');
         loadStatus();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+// Promote an execution-ready equity backtest to a live (tick-driven) strategy.
+async function promoteBacktestToLive(strategyName) {
+    try {
+        const res = await API.post('/api/strategies/promote-from-backtest', { name: strategyName });
+        if (res.error) {
+            const blockers = (res.blockers || []).join('; ');
+            showToast(res.error + (blockers ? ' — ' + blockers : ''), 'error');
+            return;
+        }
+        // Surface whether the symbol actually got subscribed + seeded so the
+        // user knows if it will fire immediately or needs live trading started.
+        let msg = `Added ${res.name} (${res.symbol}) to live strategies`;
+        if (res.live_trading_running) {
+            msg += res.subscribed && res.bar_data_seeded
+                ? ' — subscribed & seeded, live now'
+                : ' — added, but subscribe/seed incomplete';
+        } else {
+            msg += ' — start live trading to activate';
+        }
+        showToast(msg, res.subscribed ? 'success' : 'info');
+        loadStatus();
+        switchTab('strategies');
     } catch (e) { showToast(e.message, 'error'); }
 }
 
@@ -5717,6 +5755,15 @@ function displayHealthReport(health, prefix) {
         '<span style="font-size:28px;font-weight:800;color:' + badgeColors[verdict] + '">' + score.toFixed(0) + '</span>' +
         '<div><div style="font-size:14px;font-weight:600;color:' + readyColor + '">' + readyIcon + ' ' + readyText + '</div>' +
         '<div style="font-size:11px;color:var(--text-muted)">Score threshold: 60 | No critical pillar failures</div></div></div>';
+
+    // Promote-to-live: only when execution-ready, and only meaningful for an
+    // equity backtest (a live tick-driven strategy). Shown next to the verdict.
+    if (ready && prefix === 'bt') {
+        const stratName = document.getElementById('bt-strategy') ? document.getElementById('bt-strategy').value : '';
+        if (overallEl) overallEl.innerHTML +=
+            '<div style="margin-bottom:8px"><button class="btn btn-sm btn-primary" onclick="promoteBacktestToLive(\'' + stratName + '\')">⬆ Add to Live Strategies</button>' +
+            '<span style="font-size:11px;color:var(--text-muted);margin-left:8px">Runs on live ticks once live trading is on; appears in the Strategies tab</span></div>';
+    }
 
     // 8 Pillars
     const pillars = health.pillars || {};

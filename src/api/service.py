@@ -512,12 +512,24 @@ class TradingService:
 
     async def _oi_bridge_market_data_fetcher(self, underlying: str, days: int):
         """market_data_fetcher callable for OIFnOBridge.backtest_strategy():
-        returns (DataFrame, instrument_token) for the underlying's spot/index history."""
+        returns (DataFrame, instrument_token) for the underlying's spot/index history.
+
+        Uses the interval configured on the bridge thresholds (intraday by
+        default) so weekly-expiry option structures get intraday bars and the
+        regime filter has enough bars to engage. Falls back to daily if the
+        intraday cache/broker returns nothing."""
         import pandas as pd
         token = self.resolve_underlying_token(underlying)
         if not token:
             return None, 0
-        rows = await self._resolve_ohlcv_rows(token, "day", days=days)
+        interval = getattr(self._oi_fno_bridge.thresholds, "backtest_interval", "60minute")
+        rows = await self._resolve_ohlcv_rows(token, interval, days=days)
+        if not rows and interval != "day":
+            logger.warning(
+                "oi_bridge_intraday_unavailable_falling_back_daily",
+                underlying=underlying, interval=interval,
+            )
+            rows = await self._resolve_ohlcv_rows(token, "day", days=days)
         if not rows:
             return None, token
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
@@ -801,6 +813,12 @@ class TradingService:
             "bull_call_spread": BullCallSpreadStrategy,
             "bear_put_spread": BearPutSpreadStrategy,
         }
+        # Merge the analysis strategies so they can be registered for live
+        # trading too (the Add-Strategy modal offers macd_crossover etc., which
+        # previously fell through to "Unknown strategy" because they were only
+        # merged in _resolve_strategy, not here).
+        from src.strategy.analysis_strategies import ANALYSIS_STRATEGIES
+        strategy_map.update(ANALYSIS_STRATEGIES)
         cls = strategy_map.get(name)
         if cls:
             strategy = cls(params)
@@ -811,9 +829,103 @@ class TradingService:
                 strategy = custom
             else:
                 return {"error": f"Unknown strategy: {name}", "available": list(strategy_map.keys())}
+        # Avoid duplicate registration of the same strategy name.
+        if any(s.name == strategy.name for s in self._strategies):
+            return {"error": f"Strategy '{strategy.name}' is already added"}
         self._strategies.append(strategy)
         logger.info("strategy_added", name=name)
         return {"success": True, "name": strategy.name}
+
+    async def promote_backtest_to_live(
+        self, strategy_name: str, params: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        """Promote the last backtested strategy to a live (tick-driven) strategy,
+        then subscribe to its symbol and seed bar data so it actually fires.
+
+        Only allowed when the cached backtest's health report marks it
+        execution-ready. This is the bridge between "backtest passed" and
+        "showing in the Strategy tab and generating signals" — without it an
+        execution-ready backtest never ran live, and a registered strategy with
+        no subscribed/seeded symbol never produced a signal.
+        """
+        result = self._backtest_results
+        if not result or "error" in result:
+            return {"error": "Run a backtest first."}
+        if result.get("strategy_name") and result["strategy_name"] != strategy_name:
+            logger.warning(
+                "promote_strategy_mismatch",
+                requested=strategy_name, backtested=result.get("strategy_name"),
+            )
+        health = result.get("health_report") or {}
+        if not health.get("execution_ready"):
+            return {
+                "error": "Strategy is not execution-ready — resolve the health report blockers first.",
+                "blockers": health.get("blockers", []),
+            }
+
+        # Resolve the instrument the backtest ran on so the live strategy can be
+        # fed ticks for it. Prefer the token captured at backtest time.
+        symbol = result.get("tradingsymbol", "")
+        exchange = result.get("exchange", "NSE")
+        token = result.get("instrument_token", 0)
+        if not token and symbol:
+            token = await self.resolve_instrument_token(symbol, exchange) or 0
+        if not token:
+            return {"error": f"Could not resolve an instrument token for {exchange}:{symbol}."}
+
+        # Carry the symbol->token mapping into the strategy's params so its
+        # generated signals carry the real tradingsymbol instead of TOKEN_<id>.
+        params = dict(params or {})
+        tmap = dict(params.get("tradingsymbol_map", {}))
+        tmap[token] = symbol
+        # Some strategies key the map by str(token); cover both.
+        tmap[str(token)] = symbol
+        params["tradingsymbol_map"] = tmap
+
+        added = self.add_strategy(strategy_name, params)
+        if "error" in added:
+            return added
+
+        # Subscribe + seed bar data so the strategy actually receives ticks and
+        # has enough history to emit signals (200-DMA filter needs history).
+        subscribed = False
+        seeded = False
+        try:
+            await self._ticker.subscribe([token], TickMode.QUOTE)
+            if token not in self._subscribed_tokens:
+                self._subscribed_tokens.append(token)
+            subscribed = True
+        except Exception as e:
+            logger.warning("promote_subscribe_failed", token=token, error=str(e))
+        try:
+            # Seed the SAME interval the strategy was backtested on so live
+            # signals are computed on the validated timeframe (not always 5m).
+            seed_interval = Interval(result.get("interval", "5minute"))
+            await self._seed_bar_data([token], interval=seed_interval)
+            seeded = True
+        except Exception as e:
+            logger.warning("promote_seed_failed", token=token, error=str(e))
+
+        logger.info(
+            "strategy_promoted_to_live",
+            name=strategy_name, symbol=symbol, token=token,
+            subscribed=subscribed, seeded=seeded, live=self._running,
+        )
+        note = "Added to live strategies."
+        if self._running:
+            note += " Subscribed + bar data seeded — it will generate signals on live ticks now."
+        else:
+            note += " Live trading isn't running — start it to begin receiving signals for the subscribed symbol."
+        return {
+            "success": True,
+            "name": strategy_name,
+            "symbol": symbol,
+            "instrument_token": token,
+            "subscribed": subscribed,
+            "bar_data_seeded": seeded,
+            "live_trading_running": self._running,
+            "note": note,
+        }
 
     def remove_strategy(self, name: str) -> dict[str, Any]:
         self._strategies = [s for s in self._strategies if s.name != name]
@@ -889,11 +1001,10 @@ class TradingService:
         for ws in dead:
             self._ws_clients.remove(ws)
 
-    async def _seed_bar_data(self, tokens: list[int]) -> None:
+    async def _seed_bar_data(self, tokens: list[int], interval: Interval = Interval.MINUTE_5, days: int = 5) -> None:
         from datetime import timedelta
         to_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        from_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
-        interval = Interval.MINUTE_5
+        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         for token in tokens:
             try:
                 candles = await self._client.get_historical_data(
@@ -1065,6 +1176,26 @@ class TradingService:
         ("day", 2000),
     ]
 
+    # Extra calendar days to fetch before the requested window so the 200-DMA
+    # regime filter (BaseStrategy._passes_dma200_filter) has its 200 bars of
+    # history by the time the user's period starts. Without this, a day/365d
+    # backtest only has ~250 bars total and the filter can't engage for the
+    # first ~200 bars (entries would be blocked for 80% of the run).
+    _WARMUP_CAL_DAYS: dict[str, int] = {
+        "day": 320, "60minute": 55, "30minute": 30, "15minute": 16,
+        "10minute": 12, "5minute": 7, "3minute": 5, "minute": 3,
+    }
+
+    @classmethod
+    def _with_dma200_warmup(cls, strategy: Any, interval: str, days: int, from_date: str | None) -> int:
+        """Extend the fetch window with warm-up history when the strategy's
+        200-DMA filter is enabled and no explicit start date was given."""
+        if from_date:
+            return days  # user pinned an explicit start - respect it
+        if not getattr(strategy, "params", {}).get("use_dma200_filter", True):
+            return days
+        return days + cls._WARMUP_CAL_DAYS.get(interval, 320)
+
     @staticmethod
     def _evaluate_equity_backtest(raw: dict[str, Any]) -> dict[str, Any]:
         """Pass/fail a single-timeframe equity backtest against fixed quality
@@ -1193,6 +1324,10 @@ class TradingService:
         df.set_index("timestamp", inplace=True)
         df_plain = df.reset_index()
 
+        # Seed bar data so strategies whose filters read via get_bar_data()
+        # (e.g. the 200-DMA regime filter in SingleTriggerStrategy) see the
+        # same dataframe we're about to generate a signal from.
+        strategy.update_bar_data(token, df_plain)
         signal = strategy.generate_signal(df_plain, token)
         if not signal or not getattr(signal, "transaction_type", None):
             return {"error": f"No active entry signal for {symbol} right now on {timeframe} - the strategy isn't currently triggering."}
@@ -1535,6 +1670,28 @@ class TradingService:
             exit_order=exit_order_id,
         )
 
+        # Echo the closed trade into the Signals feed for promoted/live equity
+        # strategies too (not just OI) so a completed trade round-trips into the
+        # Signals tab the user is watching. OI positions already append their own
+        # signal entry below, so skip those to avoid a duplicate.
+        if not tracked.strategy_name.startswith("oi_strategy_"):
+            exit_signal_data = {
+                "timestamp": datetime.now().isoformat(),
+                "strategy": tracked.strategy_name,
+                "tradingsymbol": tracked.tradingsymbol,
+                "transaction_type": exit_txn,
+                "quantity": tracked.quantity,
+                "price": tracked.exit_price or 0.0,
+                "confidence": 0,
+                "metadata": {
+                    "action": "exit", "order_id": exit_order_id,
+                    "entry_price": tracked.entry_price, "pnl": tracked.pnl,
+                    "reason": exit_reason,
+                },
+            }
+            self._signal_log.append(exit_signal_data)
+            await self._broadcast_ws({"type": "signal", "data": exit_signal_data})
+
         # If this was an OI-strategy position, sync the OIStrategyEngine's own
         # position record + its journal entry + Signals feed - whether the exit
         # was triggered by a broker-side SL/target fill, manual close, or MIS
@@ -1623,9 +1780,13 @@ class TradingService:
         if isinstance(strategy, dict):  # error dict
             return strategy
 
+        # Extend fetch with warm-up history so the 200-DMA regime filter is
+        # active across the whole requested window (see _with_dma200_warmup).
+        fetch_days = self._with_dma200_warmup(strategy, interval, days, None)
+
         # Fetch historical data (DB cache first, live Kite fetch as fallback)
         try:
-            rows = await self._resolve_ohlcv_rows(instrument_token, interval, days=days)
+            rows = await self._resolve_ohlcv_rows(instrument_token, interval, days=fetch_days)
         except Exception as e:
             logger.error("paper_trade_data_fetch_failed", error=str(e))
             return {"error": f"Failed to fetch data: {str(e)}"}
@@ -2229,6 +2390,7 @@ class TradingService:
         strategy_name: str,
         instrument_token: int = 0,
         tradingsymbol: str = "BACKTEST",
+        exchange: str = "NSE",
         interval: str = "day",
         days: int = 365,
         from_date: str | None = None,
@@ -2247,8 +2409,12 @@ class TradingService:
         if isinstance(strategy, dict):
             return strategy  # error dict
 
+        # Extend fetch with warm-up history so the 200-DMA regime filter is
+        # active across the whole requested window (see _with_dma200_warmup).
+        fetch_days = self._with_dma200_warmup(strategy, interval, days, from_date)
+
         # Fetch historical data (DB cache first, live Kite fetch as fallback)
-        rows = await self._resolve_ohlcv_rows(instrument_token, interval, days, from_date, to_date)
+        rows = await self._resolve_ohlcv_rows(instrument_token, interval, fetch_days, from_date, to_date)
         if not rows:
             return {"error": "No historical data available. Check instrument token and date range."}
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
@@ -2268,7 +2434,22 @@ class TradingService:
 
         result = engine.run(df, instrument_token, tradingsymbol)
         result["generated_at"] = datetime.now().isoformat()
+        if fetch_days != days:
+            result["warmup_note"] = (
+                f"Fetched {fetch_days}d (requested {days}d + warm-up) so the 200-DMA "
+                "regime filter is active across the whole requested window; no trades "
+                "occur in the warm-up stretch at the start."
+            )
         self._backtest_results = result
+        # Stash symbol/exchange/token so an execution-ready backtest can be
+        # promoted to a live strategy and auto-subscribed without re-entry.
+        self._backtest_results["tradingsymbol"] = tradingsymbol
+        self._backtest_results["exchange"] = exchange
+        self._backtest_results["instrument_token"] = instrument_token
+        # Capture the validated timeframe so promote can seed the SAME interval
+        # the strategy was backtested on (fixes live-on-5min vs backtest-on-X
+        # mismatch).
+        self._backtest_results["interval"] = interval
 
         # Compute strategy health report and embed in result
         try:
@@ -2827,6 +3008,9 @@ class TradingService:
         speed: float,
     ) -> None:
         strategy = engine.strategy
+        # Tell the strategy the replay interval so it scales lookbacks to it.
+        if hasattr(strategy, "set_timeframe"):
+            strategy.set_timeframe(timeframe)
         df = df.reset_index(drop=True)
         total = len(df)
         delay = max(0.0, 1.0 / max(speed, 0.01))

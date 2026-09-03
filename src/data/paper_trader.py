@@ -352,6 +352,11 @@ class PaperTradingEngine:
         strategy = self.strategy
         strategy_name = getattr(strategy, "name", str(strategy))
 
+        # Tell the strategy the bar interval so it can scale day-based lookback
+        # periods to the active timeframe (see BaseStrategy.set_timeframe).
+        if hasattr(strategy, "set_timeframe"):
+            strategy.set_timeframe(timeframe)
+
         df = data.copy()
         if "timestamp" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
             df["timestamp"] = df.index
@@ -371,14 +376,21 @@ class PaperTradingEngine:
                 pos = self._positions.get(tradingsymbol)
                 current_qty = pos.quantity if pos else 0
                 qty = max(1, int(getattr(signal, "quantity", 1) or 1))
+                # A signal tagged action=exit means "close only" - never reverse
+                # into a new counter-trend position.
+                is_exit_signal = bool(getattr(signal, "metadata", None) and signal.metadata.get("action") == "exit")
                 if signal.transaction_type == TransactionType.BUY and current_qty <= 0:
-                    self.place_order(
-                        tradingsymbol, TransactionType.BUY, qty + abs(current_qty), price, timestamp=bar_ts
-                    )
+                    order_qty = abs(current_qty) if is_exit_signal else qty + abs(current_qty)
+                    if order_qty > 0:
+                        self.place_order(
+                            tradingsymbol, TransactionType.BUY, order_qty, price, timestamp=bar_ts
+                        )
                 elif signal.transaction_type == TransactionType.SELL and current_qty >= 0:
-                    self.place_order(
-                        tradingsymbol, TransactionType.SELL, qty + abs(current_qty), price, timestamp=bar_ts
-                    )
+                    order_qty = abs(current_qty) if is_exit_signal else qty + abs(current_qty)
+                    if order_qty > 0:
+                        self.place_order(
+                            tradingsymbol, TransactionType.SELL, order_qty, price, timestamp=bar_ts
+                        )
 
             self.update_prices({tradingsymbol: price})
 

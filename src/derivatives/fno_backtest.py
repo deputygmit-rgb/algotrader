@@ -139,6 +139,28 @@ class FnOBacktestEngine:
         df = data.copy().reset_index(drop=True)
         closes = df["close"].values
 
+        # Weekly-expiry option structures are meant to trade on intraday bars.
+        # If a very large intraday frame is passed straight through, the per-bar
+        # synthetic chain build + SPAN margin calc becomes prohibitively slow, so
+        # resample anything beyond ~3k bars down to daily (preserves the regime
+        # filter's lookback while keeping runtime sane). Daily data (the common
+        # case) is unaffected.
+        if len(df) > 3000 and isinstance(data.index, pd.DatetimeIndex):
+            agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+            df = (
+                data.resample("1D")
+                .agg({k: v for k, v in agg.items() if k in data.columns})
+                .dropna(subset=["close"])
+                .reset_index(drop=True)
+            )
+            closes = df["close"].values
+            logger.info(
+                "fno_backtest_resampled_daily",
+                strategy=self.strategy_name,
+                original_bars=len(data),
+                resampled_bars=len(df),
+            )
+
         # State tracking
         capital = self.initial_capital
         positions: list[MultiLegPosition] = []

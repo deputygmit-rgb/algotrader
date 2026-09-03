@@ -4,7 +4,25 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from pydantic_core import PydanticUndefined
+
+
+def _broker_none_to_default(v: Any, field: Any) -> Any:
+    """Coerce broker-sent ``None`` to a non-Optional field's declared default.
+
+    Kite (and other broker APIs) return explicit ``null`` for many fields
+    (e.g. ``guid``, ``exchange_order_id``, ``status_message``). Pydantic v2
+    rejects ``None`` for fields declared as plain ``str``/``int``/``float``,
+    which previously crashed the entire order book parse. This helper returns
+    the field's default (or a sensible empty value) instead of ``None``.
+    """
+    if v is not None:
+        return v
+    default = getattr(field, "default", PydanticUndefined)
+    if default is PydanticUndefined:
+        return v
+    return default
 
 
 class Exchange(str, Enum):
@@ -197,6 +215,8 @@ class OrderModifyRequest(BaseModel):
 
 
 class Order(BaseModel):
+    model_config = {"extra": "ignore"}
+
     order_id: str = ""
     parent_order_id: Optional[str] = None
     exchange_order_id: Optional[str] = None
@@ -229,8 +249,20 @@ class Order(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     guid: str = ""
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def _none_to_default(cls, v: Any, info: Any) -> Any:
+        # Broker returns explicit null for many fields (e.g. guid); coerce to
+        # the declared default so one null never crashes the whole order book.
+        if v is None:
+            field = cls.model_fields.get(info.field_name)
+            return _broker_none_to_default(v, field)
+        return v
+
 
 class Trade(BaseModel):
+    model_config = {"extra": "ignore"}
+
     trade_id: str = ""
     order_id: str = ""
     exchange_order_id: Optional[str] = None
@@ -247,6 +279,8 @@ class Trade(BaseModel):
 
 
 class Position(BaseModel):
+    model_config = {"extra": "ignore"}
+
     tradingsymbol: str = ""
     exchange: str = ""
     instrument_token: int = 0
@@ -277,6 +311,13 @@ class Position(BaseModel):
     day_sell_price: float = 0.0
     day_sell_value: float = 0.0
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def _none_to_default(cls, v: Any, info: Any) -> Any:
+        if v is None:
+            return _broker_none_to_default(v, cls.model_fields.get(info.field_name))
+        return v
+
 
 class Positions(BaseModel):
     net: list[Position] = Field(default_factory=list)
@@ -284,6 +325,8 @@ class Positions(BaseModel):
 
 
 class Holding(BaseModel):
+    model_config = {"extra": "ignore"}
+
     tradingsymbol: str = ""
     exchange: str = ""
     instrument_token: int = 0
@@ -306,6 +349,13 @@ class Holding(BaseModel):
     pnl: float = 0.0
     day_change: float = 0.0
     day_change_percentage: float = 0.0
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _none_to_default(cls, v: Any, info: Any) -> Any:
+        if v is None:
+            return _broker_none_to_default(v, cls.model_fields.get(info.field_name))
+        return v
 
 
 class Instrument(BaseModel):

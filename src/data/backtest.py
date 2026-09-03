@@ -381,6 +381,10 @@ class BacktestEngine:
 
             if signal and not sl_triggered and not tp_triggered:
                 price = bar["close"]
+                # A signal tagged action=exit (mean-reversion z-exit, custom-builder
+                # exit rules, ...) means "close the open position" - it must NOT
+                # reverse into a new counter-trend position.
+                is_exit_signal = bool(getattr(signal, "metadata", None) and signal.metadata.get("action") == "exit")
 
                 if signal.transaction_type == TransactionType.BUY and position <= 0:
                     if position < 0:
@@ -401,6 +405,12 @@ class BacktestEngine:
                             "hold_bars": i - entry_bar,
                             "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
                         })
+                        position = 0
+                        active_stop_loss = 0.0
+                        active_target_price = 0.0
+
+                    if is_exit_signal:
+                        continue  # exit-only signal: position closed above, no new entry
 
                     qty = self._size_position(capital, price, signal)
                     fill_price = self._cost_model.get_fill_price(price, True)
@@ -459,6 +469,12 @@ class BacktestEngine:
                             "hold_bars": i - entry_bar,
                             "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
                         })
+                        position = 0
+                        active_stop_loss = 0.0
+                        active_target_price = 0.0
+
+                    if is_exit_signal:
+                        continue  # exit-only signal: position closed above, no new entry
 
                     qty = self._size_position(capital, price, signal)
                     fill_price = self._cost_model.get_fill_price(price, False)
