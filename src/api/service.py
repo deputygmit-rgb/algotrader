@@ -119,6 +119,8 @@ class TradingService:
         self._running = False
         self._subscribed_tokens: list[int] = []
         self._live_ticks: dict[int, dict[str, Any]] = {}
+        self._last_tick_at: Optional[float] = None   # wall-clock time of the last tick batch (feed health)
+        self._tick_count = 0
         self._signal_log: list[dict[str, Any]] = []
         self._ws_clients: list[Any] = []
         self._lock = asyncio.Lock()
@@ -1434,6 +1436,8 @@ class TradingService:
         }
 
     async def _on_ticks(self, ticks: list[Tick]) -> None:
+        self._last_tick_at = time.time()
+        self._tick_count += len(ticks)
         quote_rows: list[dict[str, Any]] = []
         now_mono = time.monotonic()
         for tick in ticks:
@@ -2049,9 +2053,9 @@ class TradingService:
         """Fetch data & run full analysis for any NSE stock on-demand."""
         return await self._scanner.analyze_stock_on_demand(self._client, symbol)
 
-    def get_sector_analysis(self) -> dict[str, Any]:
+    def get_sector_analysis(self, universe: str | None = None) -> dict[str, Any]:
         """Get sector-level analysis from cached scan data."""
-        return self._scanner.get_sector_analysis()
+        return self._scanner.get_sector_analysis(universe)
 
     # ────────────────────────────────────────────────────────────
     # Historical Chart Data

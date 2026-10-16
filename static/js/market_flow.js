@@ -449,13 +449,14 @@ const MarketFlow = (() => {
         tip.style.top = clamp(my + 16, 8, H - th - 8) + 'px';
     }
 
-    function pin(sym, scroll = true) {
-        pinSym = pinSym === sym ? null : sym;
+    // Click on any stock (strand, tag, card): highlight it here and open its
+    // technical analysis. Pinning is not toggled so it stays highlighted
+    // after the analysis is closed.
+    function select(sym, scroll = true) {
+        pinSym = sym;
         renderPanels();
-        if (pinSym && scroll) {
-            const card = document.querySelector(`#mf-cards .mf-card[data-sym="${CSS.escape(pinSym)}"]`);
-            card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
+        if (scroll) document.querySelector(`#mf-cards .mf-card[data-sym="${CSS.escape(sym)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        if (typeof openStock === 'function') openStock(sym);
     }
 
     // ── panels ──────────────────────────────────────────────────────────
@@ -550,13 +551,15 @@ const MarketFlow = (() => {
         canvas.addEventListener('click', e => {
             const rect = canvas.getBoundingClientRect();
             if (onRail(e.clientX - rect.left, e.clientY - rect.top)) return;
-            if (hoverSym) pin(hoverSym); else if (pinSym) { pinSym = null; renderPanels(); }
+            if (hoverSym) select(hoverSym); else if (pinSym) { pinSym = null; renderPanels(); }
         });
         for (const id of ['mf-cards', 'mf-grid-bull', 'mf-grid-bear']) {
             const el = $(id);
             el.addEventListener('mouseover', e => { const c = e.target.closest('[data-sym]'); hoverSym = c ? c.dataset.sym : null; });
             el.addEventListener('mouseleave', () => { hoverSym = null; });
-            el.addEventListener('click', e => { const c = e.target.closest('[data-sym]'); if (c) pin(c.dataset.sym, id !== 'mf-cards'); });
+            el.addEventListener('click', e => {
+                const c = e.target.closest('[data-sym]'); if (c) select(c.dataset.sym, id !== 'mf-cards');
+            });
         }
         segmented('mf-lens', v => { lens = v; rebuild(); renderPanels(); });
         segmented('mf-universe', v => { universe = v; pinSym = null; rebuild(); renderPanels(); });
@@ -578,12 +581,25 @@ const MarketFlow = (() => {
 
     function start() {
         if (!started) { bind(); started = true; loadHistory(); }
+        poll();   // fetch right away; layout waits for the first resize
         requestAnimationFrame(() => {
             resize();
             if (!rafId) { lastFrame = 0; rafId = requestAnimationFrame(frame); }
-            poll();
         });
     }
 
-    return { start };
+    // Open the flow pinned on one stock (used by the stock analysis view).
+    function focus(sym) {
+        start();
+        pinSym = sym;
+        const waitForData = () => {
+            if (!snap) { setTimeout(waitForData, 300); return; }
+            if (!snap.rows.some(r => r.symbol === sym)) { banner(`${sym} is not in the F&O universe, so it has no strand here.`); return; }
+            renderPanels();
+            document.querySelector(`#mf-cards .mf-card[data-sym="${CSS.escape(sym)}"]`)?.scrollIntoView({ block: 'nearest' });
+        };
+        waitForData();
+    }
+
+    return { start, focus };
 })();

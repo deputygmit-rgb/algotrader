@@ -12,6 +12,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.agent.activity import AgentActivity
 from src.agent.market_hours import is_market_open
 from src.utils.logger import get_logger
 
@@ -46,6 +47,7 @@ class ScannerAgent:
         self.last_scan_at: Optional[str] = None
         self.last_error: Optional[str] = None
         self.scan_count = 0
+        self.activity = AgentActivity()
 
     def start(self) -> None:
         if self._task is not None:
@@ -67,14 +69,19 @@ class ScannerAgent:
 
     def wake(self) -> None:
         """Skip the remaining wait and re-check conditions immediately."""
+        self.activity.record("info", "Woken — re-checking now")
         self._wake_event.set()
 
     def _set_state(self, state: str) -> None:
         if state != self._state:
             logger.info("scanner_agent_state", zerodha_id=self.zerodha_id, state=state)
+            # the cycle result already tells the story of each work/sleep round trip
+            if {self._state, state} != {"scanning", "waiting_next_cycle"}:
+                self.activity.record("state", state)
             self._state = state
 
     async def _wait(self, timeout: float) -> None:
+        self.activity.waiting(timeout)
         try:
             await asyncio.wait_for(self._wake_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -93,6 +100,7 @@ class ScannerAgent:
                 await self._wait(IDLE_POLL_SECONDS)
                 continue
             self._set_state("scanning")
+            self.activity.cycle_start()
             try:
                 result = await asyncio.wait_for(
                     self.service.run_analysis_scan(universe=self.universe),
@@ -100,16 +108,21 @@ class ScannerAgent:
                 )
                 if result.get("error"):
                     self.last_error = result["error"]
+                    self.activity.cycle_end(False, f"Scan returned an error: {result['error']}")
                 else:
                     self.last_error = None
                     self.scan_count += 1
+                    n = result.get("analyzed_stocks") or result.get("total_stocks")
+                    self.activity.cycle_end(True, f"Scan complete — {n} stocks analysed", stocks=n)
                 self.last_scan_at = datetime.now().isoformat()
             except asyncio.TimeoutError:
                 self.last_error = f"scan timed out after {SCAN_TIMEOUT_SECONDS}s"
                 logger.error("scanner_agent_scan_timeout", zerodha_id=self.zerodha_id, timeout=SCAN_TIMEOUT_SECONDS)
+                self.activity.cycle_end(False, f"Scan cancelled at the {SCAN_TIMEOUT_SECONDS}s timeout — results discarded")
             except Exception as e:
                 self.last_error = str(e)
                 logger.error("scanner_agent_scan_failed", zerodha_id=self.zerodha_id, error=str(e))
+                self.activity.cycle_end(False, f"Scan failed: {e}")
             self._set_state("waiting_next_cycle")
             await self._wait(self.interval_seconds)
 
@@ -119,6 +132,9 @@ class ScannerAgent:
         exc = task.exception()
         if exc:
             logger.error("scanner_agent_failed", zerodha_id=self.zerodha_id, error=str(exc))
+            self._alive = False
+            self._state = "crashed"
+            self.activity.record("error", f"Agent crashed: {exc}", "error")
 
     def status(self) -> dict[str, Any]:
         return {
@@ -129,4 +145,6 @@ class ScannerAgent:
             "scan_count": self.scan_count,
             "universe": self.universe,
             "interval_seconds": self.interval_seconds,
+            "timeout_seconds": SCAN_TIMEOUT_SECONDS,
+            "activity": self.activity.snapshot(),
         }

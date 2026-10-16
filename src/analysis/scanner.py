@@ -62,17 +62,15 @@ def _sanitize_numpy(obj: Any) -> Any:
 # NIFTY 50 Core (kept for backward compat) + NIFTY 500 Universe
 # ────────────────────────────────────────────────────────────────
 
-NIFTY_50_SYMBOLS = [
-    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
-    "HINDUNILVR", "SBIN", "BHARTIARTL", "KOTAKBANK", "LT",
-    "BAJFINANCE", "AXISBANK", "MARUTI", "TATAMOTORS", "SUNPHARMA",
-    "WIPRO", "TATASTEEL", "ASIANPAINT", "TECHM", "POWERGRID",
-    "ADANIENT", "ULTRACEMCO", "NTPC", "TITAN", "BAJAJFINSV",
-    "HCLTECH", "INDUSINDBK", "NESTLEIND", "JSWSTEEL", "DRREDDY",
-    "CIPLA", "COALINDIA", "ONGC", "BPCL", "EICHERMOT",
-    "GRASIM", "APOLLOHOSP", "TATACONSUM", "DIVISLAB", "HEROMOTOCO",
-    "HINDALCO", "SBILIFE", "BRITANNIA", "M&M", "BAJAJ-AUTO",
-    "ADANIPORTS", "HDFCLIFE", "ITC", "SHRIRAMFIN", "BEL",
+NIFTY_50_SYMBOLS = [  # official constituents, https://niftyindices.com/IndexConstituent/ind_nifty50list.csv (2026-10-16)
+    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
+    "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE", "BEL", "BHARTIARTL", "BSE",
+    "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL", "GRASIM",
+    "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDALCO", "HINDUNILVR", "ICICIBANK",
+    "INDIGO", "INFY", "ITC", "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M",
+    "MARUTI", "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID",
+    "RELIANCE", "SBILIFE", "SBIN", "SHRIRAMFIN", "SUNPHARMA", "TATACONSUM",
+    "TATASTEEL", "TCS", "TECHM", "TITAN", "TMPV", "TRENT", "ULTRACEMCO",
 ]
 
 # Sector map now uses NIFTY 500 comprehensive mapping
@@ -81,6 +79,8 @@ SECTOR_MAP: dict[str, str] = NIFTY_500_SECTOR_MAP
 NIFTY_50_TOKENS: dict[str, int] = {}
 # Broader token cache for any resolved NSE instrument
 _ALL_NSE_TOKENS: dict[str, int] = {}
+# Trade-for-trade / REIT / SME series that Kite suffixes onto the tradingsymbol
+_NON_EQ_SERIES = {"BE", "BZ", "RR", "IV", "SM", "ST", "BL", "GS", "E1"}
 
 
 class StockScanner:
@@ -109,6 +109,9 @@ class StockScanner:
         # doesn't lose the other's last scan, and a running scan doesn't blank out
         # the previously completed one.
         self._universe_reports: dict[str, dict[str, Any]] = {}
+        # Per-universe scan results, so a NIFTY 50 scan does not replace the
+        # NIFTY 500 sector breakdown (and vice versa).
+        self._universe_results: dict[str, dict[str, dict[str, Any]]] = {}
 
     @property
     def last_scan_time(self) -> Optional[str]:
@@ -130,11 +133,21 @@ class StockScanner:
         try:
             instruments = await client.get_instruments("NSE")
             token_map: dict[str, int] = {}
+            series_listed: dict[str, int] = {}
             for inst in instruments:
                 if inst.instrument_type in ("EQ", ""):
                     _ALL_NSE_TOKENS[inst.tradingsymbol] = inst.instrument_token
                     if inst.tradingsymbol in symbols:
                         token_map[inst.tradingsymbol] = inst.instrument_token
+                    base, _, series = inst.tradingsymbol.rpartition("-")
+                    if base and series in _NON_EQ_SERIES:
+                        series_listed.setdefault(base, inst.instrument_token)
+            # Stocks in BE / RR / ... series are listed as e.g. "HFCL-BE";
+            # index files name them "HFCL". Fall back to the suffixed listing.
+            for base, token in series_listed.items():
+                _ALL_NSE_TOKENS.setdefault(base, token)
+                if base in symbols and base not in token_map:
+                    token_map[base] = token
             # Keep backward compat
             for s in NIFTY_50_SYMBOLS:
                 if s in _ALL_NSE_TOKENS:
@@ -304,7 +317,10 @@ class StockScanner:
                     except Exception as e:
                         logger.warning("analysis_quote_enrichment_failed", batch=batch, error=str(e))
 
-            self._analysis_cache = results
+            # merge, not replace: deep profiles stay available for every stock
+            # scanned in any universe
+            self._analysis_cache.update(results)
+            self._universe_results[universe] = results
             self._last_scan_time = datetime.now()
 
             report = self._build_report(results)
@@ -547,13 +563,23 @@ class StockScanner:
     # Sector Analysis
     # ────────────────────────────────────────────────────────────
 
-    def get_sector_analysis(self) -> dict[str, Any]:
-        """Generate sector-level analysis from cached scan data."""
-        if not self._analysis_cache:
+    def get_sector_analysis(self, universe: str | None = None) -> dict[str, Any]:
+        """Generate sector-level analysis from cached scan data.
+
+        With ``universe`` the breakdown covers exactly that universe's last
+        scan; without it, every stock analysed so far.
+        """
+        if universe:
+            source = self._universe_results.get(universe)
+            if not source:
+                return {"error": f"No {universe.upper()} scan data yet. Run a scan for this universe first."}
+        else:
+            source = self._analysis_cache
+        if not source:
             return {"error": "No scan data available. Run a scan first."}
 
         sectors: dict[str, list[dict]] = {}
-        for sym, data in self._analysis_cache.items():
+        for sym, data in source.items():
             sector = SECTOR_MAP.get(sym, "Other")
             sectors.setdefault(sector, []).append(data)
 
@@ -600,6 +626,8 @@ class StockScanner:
         return _sanitize_numpy({
             "sectors": dict(ranked),
             "sector_count": len(sector_report),
+            "stock_count": len(source),
+            "universe": universe,
             "scan_time": self._last_scan_time.isoformat() if self._last_scan_time else None,
         })
 

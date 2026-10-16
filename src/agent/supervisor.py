@@ -12,9 +12,11 @@ described by the user-facing "scan -> verify -> execute -> track" workflow.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 from src.agent.executor_agent import ExecutorAgent
+from src.agent.market_hours import is_market_open
 from src.agent.scanner_agent import ScannerAgent
 from src.agent.tracker_agent import TrackerAgent
 from src.agent.verifier_agent import VerifierAgent
@@ -42,6 +44,8 @@ class TradingServiceAgent:
         self.service = service
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._alive = True
+        self.created_at = datetime.now().isoformat(timespec="seconds")
+        self.last_heartbeat_at: Optional[str] = None
         self.scanner = ScannerAgent(zerodha_id, service)
         self.verifier = VerifierAgent(zerodha_id, service)
         self.executor = ExecutorAgent(zerodha_id, service)
@@ -66,6 +70,7 @@ class TradingServiceAgent:
     async def _heartbeat(self) -> None:
         while self._alive:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            self.last_heartbeat_at = datetime.now().isoformat(timespec="seconds")
             try:
                 logger.debug(
                     "agent_heartbeat",
@@ -95,6 +100,12 @@ class TradingServiceAgent:
         return {
             "zerodha_id": self.zerodha_id,
             "is_running": self.service.is_running,
+            "authenticated": self.service.is_authenticated,
+            "market_open": is_market_open(),
+            "created_at": self.created_at,
+            "last_heartbeat_at": self.last_heartbeat_at,
+            "heartbeat_seconds": HEARTBEAT_INTERVAL_SECONDS,
+            "server_time": datetime.now().isoformat(timespec="seconds"),
             "scanner": self.scanner.status(),
             "verifier": self.verifier.status(),
             "executor": self.executor.status(),

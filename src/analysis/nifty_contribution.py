@@ -16,60 +16,62 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.analysis.nifty500 import get_sector
+
 NIFTY_INDEX_SYMBOL = "NIFTY 50"
 
-# symbol -> (approx. weight %, sector)
+# symbol -> (approx. weight %, NSE official sector)
 NIFTY50_WEIGHTS: dict[str, tuple[float, str]] = {
-    "HDFCBANK": (13.0, "Financials"),
-    "ICICIBANK": (8.9, "Financials"),
-    "RELIANCE": (8.5, "Energy"),
-    "INFY": (4.8, "IT"),
-    "BHARTIARTL": (4.7, "Telecom"),
-    "LT": (3.9, "Industrials"),
-    "ITC": (3.4, "FMCG"),
-    "SBIN": (3.2, "Financials"),
-    "AXISBANK": (3.0, "Financials"),
-    "TCS": (2.8, "IT"),
-    "KOTAKBANK": (2.7, "Financials"),
-    "M&M": (2.6, "Auto"),
-    "BAJFINANCE": (2.2, "Financials"),
-    "HINDUNILVR": (1.9, "FMCG"),
-    "ETERNAL": (1.8, "Consumer"),
-    "MARUTI": (1.8, "Auto"),
-    "SUNPHARMA": (1.5, "Pharma"),
-    "HCLTECH": (1.4, "IT"),
+    "HDFCBANK": (13.0, "Financial Services"),
+    "ICICIBANK": (8.9, "Financial Services"),
+    "RELIANCE": (8.5, "Oil Gas & Consumable Fuels"),
+    "INFY": (4.8, "Information Technology"),
+    "BHARTIARTL": (4.7, "Telecommunication"),
+    "LT": (3.9, "Construction"),
+    "ITC": (3.4, "Fast Moving Consumer Goods"),
+    "SBIN": (3.2, "Financial Services"),
+    "AXISBANK": (3.0, "Financial Services"),
+    "TCS": (2.8, "Information Technology"),
+    "KOTAKBANK": (2.7, "Financial Services"),
+    "M&M": (2.6, "Automobile and Auto Components"),
+    "BAJFINANCE": (2.2, "Financial Services"),
+    "HINDUNILVR": (1.9, "Fast Moving Consumer Goods"),
+    "ETERNAL": (1.8, "Consumer Services"),
+    "MARUTI": (1.8, "Automobile and Auto Components"),
+    "SUNPHARMA": (1.5, "Healthcare"),
+    "HCLTECH": (1.4, "Information Technology"),
     "NTPC": (1.4, "Power"),
-    "TITAN": (1.3, "Consumer"),
-    "BEL": (1.3, "Industrials"),
-    "ULTRACEMCO": (1.2, "Materials"),
-    "TATASTEEL": (1.2, "Metals"),
+    "TITAN": (1.3, "Consumer Durables"),
+    "BEL": (1.3, "Capital Goods"),
+    "ULTRACEMCO": (1.2, "Construction Materials"),
+    "TATASTEEL": (1.2, "Metals & Mining"),
     "POWERGRID": (1.1, "Power"),
-    "INDIGO": (1.0, "Industrials"),
-    "HINDALCO": (1.0, "Metals"),
-    "TRENT": (0.9, "Consumer"),
-    "TMPV": (0.9, "Auto"),
-    "ASIANPAINT": (0.9, "Materials"),
-    "BAJAJFINSV": (0.9, "Financials"),
-    "JIOFIN": (0.9, "Financials"),
-    "ADANIPORTS": (0.9, "Industrials"),
-    "GRASIM": (0.9, "Materials"),
-    "ONGC": (0.8, "Energy"),
-    "JSWSTEEL": (0.8, "Metals"),
-    "BAJAJ-AUTO": (0.8, "Auto"),
-    "TECHM": (0.8, "IT"),
-    "SHRIRAMFIN": (0.8, "Financials"),
-    "EICHERMOT": (0.8, "Auto"),
-    "NESTLEIND": (0.7, "FMCG"),
-    "COALINDIA": (0.7, "Energy"),
-    "CIPLA": (0.7, "Pharma"),
-    "SBILIFE": (0.7, "Financials"),
-    "HDFCLIFE": (0.7, "Financials"),
-    "MAXHEALTH": (0.6, "Pharma"),
-    "TATACONSUM": (0.6, "FMCG"),
-    "DRREDDY": (0.6, "Pharma"),
-    "APOLLOHOSP": (0.6, "Pharma"),
-    "WIPRO": (0.6, "IT"),
-    "ADANIENT": (0.5, "Industrials"),
+    "INDIGO": (1.0, "Services"),
+    "HINDALCO": (1.0, "Metals & Mining"),
+    "TRENT": (0.9, "Consumer Services"),
+    "TMPV": (0.9, "Automobile and Auto Components"),
+    "ASIANPAINT": (0.9, "Consumer Durables"),
+    "BAJAJFINSV": (0.9, "Financial Services"),
+    "JIOFIN": (0.9, "Financial Services"),
+    "ADANIPORTS": (0.9, "Services"),
+    "GRASIM": (0.9, "Construction Materials"),
+    "ONGC": (0.8, "Oil Gas & Consumable Fuels"),
+    "JSWSTEEL": (0.8, "Metals & Mining"),
+    "BAJAJ-AUTO": (0.8, "Automobile and Auto Components"),
+    "TECHM": (0.8, "Information Technology"),
+    "SHRIRAMFIN": (0.8, "Financial Services"),
+    "EICHERMOT": (0.8, "Automobile and Auto Components"),
+    "NESTLEIND": (0.7, "Fast Moving Consumer Goods"),
+    "COALINDIA": (0.7, "Oil Gas & Consumable Fuels"),
+    "CIPLA": (0.7, "Healthcare"),
+    "SBILIFE": (0.7, "Financial Services"),
+    "HDFCLIFE": (0.7, "Financial Services"),
+    "MAXHEALTH": (0.6, "Healthcare"),
+    "TATACONSUM": (0.6, "Fast Moving Consumer Goods"),
+    "DRREDDY": (0.6, "Healthcare"),
+    "APOLLOHOSP": (0.6, "Healthcare"),
+    "BSE": (0.6, "Financial Services"),
+    "ADANIENT": (0.5, "Metals & Mining"),
 }
 
 
@@ -96,7 +98,8 @@ def compute_nifty_contribution(quotes: dict[str, dict[str, Any]]) -> dict[str, A
     index_prev = _prev_close(index_q)
 
     usable: list[tuple[str, float, str, dict[str, Any]]] = []
-    for symbol, (weight, sector) in NIFTY50_WEIGHTS.items():
+    for symbol, (weight, _) in NIFTY50_WEIGHTS.items():
+        sector = get_sector(symbol)   # NSE's official classification
         q = quotes.get(f"NSE:{symbol}")
         if q and q.get("last_price") and _prev_close(q) > 0:
             usable.append((symbol, weight, sector, q))

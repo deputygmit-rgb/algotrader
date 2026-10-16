@@ -345,7 +345,7 @@ class DemoFnoSimulator:
         names += [s for s in NIFTY_500_SYMBOLS if s not in NIFTY50_WEIGHTS][: max(0, size - len(names))]
         expiry = (date.today() + timedelta(days=20)).isoformat()
         self.universe = [
-            FnoContract(n, f"{n}DEMOFUT", 0, 0, 1, expiry, NIFTY50_WEIGHTS.get(n, (0, get_sector(n)))[1])
+            FnoContract(n, f"{n}DEMOFUT", 0, 0, 1, expiry, get_sector(n))
             for n in names
         ]
         self.baselines: dict[str, dict[str, Any]] = {}

@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.agent.activity import AgentActivity
 from src.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -42,6 +43,8 @@ class TrackerAgent:
         self.last_error: Optional[str] = None
         self.open_positions_count: int = 0
         self.open_orders_count: int = 0
+        self.open_positions: list[dict[str, Any]] = []   # compact snapshot for the dashboard
+        self.activity = AgentActivity()
 
     def start(self) -> None:
         if self._task is not None:
@@ -63,14 +66,17 @@ class TrackerAgent:
 
     def wake(self) -> None:
         """Skip the remaining wait and re-sync immediately."""
+        self.activity.record("info", "Woken — re-syncing now")
         self._wake_event.set()
 
     def _set_state(self, state: str) -> None:
         if state != self._state:
             logger.info("tracker_agent_state", zerodha_id=self.zerodha_id, state=state)
+            self.activity.record("state", state)
             self._state = state
 
     async def _wait(self, timeout: float) -> None:
+        self.activity.waiting(timeout)
         try:
             await asyncio.wait_for(self._wake_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -82,6 +88,7 @@ class TrackerAgent:
         while self._alive:
             if self.service.is_running and self.service.is_authenticated:
                 self._set_state("syncing")
+                self.activity.cycle_start()
                 try:
                     try:
                         positions, orders = await asyncio.wait_for(
@@ -95,12 +102,24 @@ class TrackerAgent:
                         # pydantic model) - log clearly and keep the loop alive.
                         self.last_error = str(fetch_err)
                         logger.error("tracker_agent_sync_failed", zerodha_id=self.zerodha_id, error=str(fetch_err))
+                        self.activity.cycle_end(False, f"Broker sync failed: {fetch_err}")
                         await self._wait(self.interval_seconds)
                         continue
                     net = positions.get("net", []) if isinstance(positions, dict) else []
+                    prev = (self.open_positions_count, self.open_orders_count)
                     self.open_positions_count = sum(1 for p in net if p.get("quantity", 0) != 0)
                     self.open_orders_count = sum(
                         1 for o in orders if o.get("status") in ("OPEN", "TRIGGER PENDING")
+                    )
+                    self.open_positions = [
+                        {"symbol": p.get("tradingsymbol"), "quantity": p.get("quantity"), "pnl": p.get("pnl")}
+                        for p in net if p.get("quantity", 0) != 0
+                    ][:20]
+                    changed = prev != (self.open_positions_count, self.open_orders_count) or self.activity.cycles == 0
+                    self.activity.cycle_end(
+                        True,
+                        f"Synced — {self.open_positions_count} open positions, {self.open_orders_count} open orders",
+                        record=changed,
                     )
                     try:
                         self.service._market_store.store_positions(net)
@@ -112,9 +131,11 @@ class TrackerAgent:
                 except asyncio.TimeoutError:
                     self.last_error = f"sync timed out after {SYNC_TIMEOUT_SECONDS}s"
                     logger.error("tracker_agent_sync_timeout", zerodha_id=self.zerodha_id, timeout=SYNC_TIMEOUT_SECONDS)
+                    self.activity.cycle_end(False, f"Broker sync timed out after {SYNC_TIMEOUT_SECONDS}s")
                 except Exception as e:
                     self.last_error = str(e)
                     logger.error("tracker_agent_sync_failed", zerodha_id=self.zerodha_id, error=str(e))
+                    self.activity.cycle_end(False, f"Sync failed: {e}")
                 self.last_synced_at = datetime.now().isoformat()
             else:
                 self._set_state("waiting_live_trading")
@@ -126,6 +147,9 @@ class TrackerAgent:
         exc = task.exception()
         if exc:
             logger.error("tracker_agent_failed", zerodha_id=self.zerodha_id, error=str(exc))
+            self._alive = False
+            self._state = "crashed"
+            self.activity.record("error", f"Agent crashed: {exc}", "error")
 
     def status(self) -> dict[str, Any]:
         return {
@@ -135,4 +159,7 @@ class TrackerAgent:
             "last_error": self.last_error,
             "open_positions_count": self.open_positions_count,
             "open_orders_count": self.open_orders_count,
+            "open_positions": self.open_positions,
+            "interval_seconds": self.interval_seconds,
+            "activity": self.activity.snapshot(),
         }

@@ -138,6 +138,57 @@ function pnlClass(val) {
     return 'neutral';
 }
 
+// ── Stock links ──────────────────────────────────────────────────────
+// Any element with data-stock="SYMBOL" opens that stock's technical
+// analysis (one delegated handler, so every table, card and tape item is
+// linked the same way). Derivatives route to their underlying; index
+// underlyings have no stock analysis, so they open the OI Tracker.
+const INDEX_UNDERLYINGS = new Set([
+    'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50', 'SENSEX', 'BANKEX',
+    'NIFTY 50', 'NIFTY BANK', 'NIFTY FIN SERVICE', 'NIFTY IT', 'INDIA VIX',
+]);
+const DERIVATIVE_RE = /^(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)|\d{2}[1-9OND]\d{2})(?:\d+(?:\.\d+)?(?:CE|PE)|FUT)$/;
+let lastHoldings = [];
+let lastPositions = [];
+
+function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function underlyingOf(sym) {
+    let s = String(sym || '').trim().toUpperCase();
+    if (s.includes(':')) s = s.split(':').pop();
+    s = s.replace(/-(EQ|BE|BZ|SM|ST)$/, '');
+    const m = s.match(DERIVATIVE_RE);
+    return m ? m[1] : s;
+}
+
+function stockLink(sym, label) {
+    if (!sym) return '';
+    return `<span class="t-sym" data-stock="${escHtml(sym)}" title="Technical analysis">${escHtml(label ?? sym)}</span>`;
+}
+
+function openStock(sym) {
+    const u = underlyingOf(sym);
+    if (!u) return;
+    if (INDEX_UNDERLYINGS.has(u)) {
+        document.querySelector('[data-tab="oi-tracker"]')?.click();
+        showToast(`${u} is an index — opened OI Tracker`, 'info');
+        return;
+    }
+    openDeepProfile(u);
+}
+
+document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-stock]');
+    if (!el) return;
+    // other controls inside a linked row (checkboxes, inputs, other buttons) keep working
+    const ctl = e.target.closest('button, a, input, select, label');
+    if (ctl && !ctl.hasAttribute('data-stock')) return;
+    e.preventDefault();
+    openStock(el.dataset.stock);
+});
+
 async function loadFullStatus() {
     try {
         const data = await API.get('/api/status?full=true');
@@ -224,6 +275,7 @@ function updatePortfolioSection(data) {
         const qtyOf = (h) => Number(h.total_quantity ?? h.quantity) || 0;
         let totalVal = 0;
         const holdings = data.holdings || [];
+        lastHoldings = holdings;
         holdings.forEach(h => {
             totalVal += (h.last_price || 0) * qtyOf(h);
         });
@@ -239,14 +291,14 @@ function updatePortfolioSection(data) {
                     // and we have a real qty (so the row isn't a misleading 0.00).
                     const computed = ((h.last_price || 0) - (h.average_price || 0)) * q;
                     const pnl = (h.pnl !== null && h.pnl !== undefined && h.pnl !== 0) ? h.pnl : computed;
-                    const sym = (h.tradingsymbol || '').replace(/'/g, "\\'");
-                    return `<tr>
-                        <td><strong>${sym}</strong></td>
+                    const sym = h.tradingsymbol || '';
+                    return `<tr class="t-row-link" data-stock="${escHtml(sym)}">
+                        <td><strong>${escHtml(sym)}</strong></td>
                         <td>${q}</td>
                         <td>${formatNum(h.average_price)}</td>
                         <td>${formatNum(h.last_price)}</td>
                         <td class="${pnlClass(pnl)}">${formatNum(pnl)}</td>
-                        <td><button class="btn btn-outline" style="font-size:10px;padding:2px 6px" onclick="openDeepProfile('${sym}')">Review</button></td>
+                        <td><button class="btn btn-outline" style="font-size:10px;padding:2px 6px" data-stock="${escHtml(sym)}">Review</button></td>
                     </tr>`;
                 }).join('');
             } else {
@@ -257,6 +309,7 @@ function updatePortfolioSection(data) {
 
     if (data.positions) {
         const positions = data.positions.net || [];
+        lastPositions = positions;
         let totalPnl = 0;
         positions.forEach(p => { totalPnl += (p.pnl || 0); });
         document.getElementById('positions-pnl').textContent = formatNum(totalPnl);
@@ -267,14 +320,14 @@ function updatePortfolioSection(data) {
         if (pBody) {
             if (positions.length) {
                 pBody.innerHTML = positions.map(p => {
-                    const sym = (p.tradingsymbol || '').replace(/'/g, "\\'");
-                    return `<tr>
-                        <td><strong>${p.tradingsymbol}</strong></td>
+                    const sym = p.tradingsymbol || '';
+                    return `<tr class="t-row-link" data-stock="${escHtml(sym)}">
+                        <td><strong>${escHtml(sym)}</strong></td>
                         <td>${p.quantity}</td>
                         <td>${formatNum(p.average_price)}</td>
                         <td>${formatNum(p.last_price)}</td>
                         <td class="${pnlClass(p.pnl)}">${formatNum(p.pnl)}</td>
-                        <td><button class="btn btn-outline" style="font-size:10px;padding:2px 6px" onclick="openDeepProfile('${sym}')">Review</button></td>
+                        <td><button class="btn btn-outline" style="font-size:10px;padding:2px 6px" data-stock="${escHtml(sym)}">Review</button></td>
                     </tr>`;
                 }).join('');
             } else {
@@ -401,7 +454,7 @@ function updateTicksTable(ticks) {
     }
     el.innerHTML = Object.values(ticks).map(t => `
         <tr>
-            <td><span style="font-weight:600;color:#00d4aa">${getInstrumentName(t.token)}</span><br><span style="font-size:10px;color:#5c6e7e">${t.token}</span></td>
+            <td><span style="font-weight:600;color:#00d4aa">${stockLink(getInstrumentName(t.token))}</span><br><span style="font-size:10px;color:#5c6e7e">${t.token}</span></td>
             <td style="font-weight:600">${formatNum(t.ltp)}</td>
             <td class="${pnlClass(t.change)}">${formatNum(t.change)}</td>
             <td>${formatNum(t.high)} / ${formatNum(t.low)}</td>
@@ -417,7 +470,7 @@ function updateSignalsLog(signal) {
     const html = `
         <div class="signal-entry ${cls}">
             <div class="signal-header">
-                <strong>${signal.tradingsymbol} ${signal.transaction_type}</strong>
+                <strong>${stockLink(signal.tradingsymbol)} ${signal.transaction_type}</strong>
                 <span class="signal-time">${new Date(signal.timestamp).toLocaleTimeString()}</span>
             </div>
             <div class="signal-detail">
@@ -475,7 +528,10 @@ function connectWS() {
             else if (msg.type === 'replay_tick') updateReplayTick(msg.data);
             else if (msg.type === 'replay_complete') finishReplay(msg.data);
             else if (msg.type === 'replay_error') replayFailed(msg.data);
-            else if (msg.type === 'scan_progress') updateScanProgress(msg.data);
+            else if (msg.type === 'scan_progress') {
+                updateScanProgress(msg.data);
+                if (typeof AgentsView !== 'undefined') AgentsView.scanProgress(msg.data);
+            }
         } catch (err) { console.error('WS parse error:', err); }
     };
 
@@ -879,7 +935,7 @@ async function loadOrders() {
         el.innerHTML = orders.map(o => `
             <tr>
                 <td>${o.order_id?.slice(0, 12) || ''}</td>
-                <td>${o.tradingsymbol}</td>
+                <td>${stockLink(o.tradingsymbol)}</td>
                 <td class="${o.transaction_type === 'BUY' ? 'positive' : 'negative'}">${o.transaction_type}</td>
                 <td>${o.quantity}</td>
                 <td>${formatNum(o.price)}</td>
@@ -902,7 +958,7 @@ async function loadPositions() {
         }
         el.innerHTML = positions.map(p => `
             <tr>
-                <td>${p.tradingsymbol}</td>
+                <td>${stockLink(p.tradingsymbol)}</td>
                 <td>${p.exchange}</td>
                 <td>${p.quantity}</td>
                 <td>${formatNum(p.average_price)}</td>
@@ -1551,7 +1607,7 @@ function renderFutIndexTable(entries) {
         return;
     }
     body.innerHTML = entries.map(e => `<tr>
-        <td style="font-weight:600">${e.symbol || ''}</td>
+        <td style="font-weight:600">${stockLink(e.symbol || '')}</td>
         <td style="font-size:11px">${e.expiry || ''}</td>
         <td>${formatNum(e.ltp || 0)}</td>
         <td class="${chgClass(e.change_pct)}">${fmtPct(e.change_pct)}</td>
@@ -1570,7 +1626,7 @@ function renderFutBuildupTable(entries, bodyId) {
         return;
     }
     body.innerHTML = entries.map(e => `<tr>
-        <td style="font-weight:600;font-size:12px">${e.symbol || ''}</td>
+        <td style="font-weight:600;font-size:12px">${stockLink(e.symbol || '')}</td>
         <td style="font-size:11px;color:var(--text-muted)">${e.sector || '--'}</td>
         <td>${formatNum(e.ltp || 0)}</td>
         <td class="${chgClass(e.change_pct)}" style="font-weight:600">${fmtPct(e.change_pct)}</td>
@@ -1586,7 +1642,7 @@ function renderFutAllStocks(entries) {
         return;
     }
     body.innerHTML = entries.map(e => `<tr>
-        <td style="font-weight:600;font-size:12px">${e.symbol || ''}</td>
+        <td style="font-weight:600;font-size:12px">${stockLink(e.symbol || '')}</td>
         <td style="font-size:11px;color:var(--text-muted)">${e.sector || '--'}</td>
         <td style="font-size:11px">${e.expiry || ''}</td>
         <td>${formatNum(e.ltp || 0)}</td>
@@ -1610,7 +1666,7 @@ function renderFutRollover(entries) {
         const sig = (e.signal || '').toUpperCase();
         const sigCls = sig.includes('POSITIVE') ? 'positive' : sig.includes('NEGATIVE') ? 'negative' : 'neutral';
         return `<tr>
-            <td style="font-weight:600">${e.symbol || ''}</td>
+            <td style="font-weight:600">${stockLink(e.symbol || '')}</td>
             <td style="font-size:11px">${e.current_expiry || ''}</td>
             <td style="font-size:11px">${e.next_expiry || ''}</td>
             <td>${formatLargeNum(e.current_oi || 0)}</td>
@@ -1721,7 +1777,7 @@ function renderMostActiveTable(entries) {
     }
     el.innerHTML = entries.map(e => `
         <tr>
-            <td style="font-size:11px">${e.symbol || ''}</td>
+            <td style="font-size:11px">${stockLink(e.symbol || '')}</td>
             <td><span class="type-tag ${e.type === 'CE' ? 'type-equity' : 'type-option'}">${e.type}</span></td>
             <td>${formatNum(e.strike, 0)}</td>
             <td>${formatLargeNum(e.oi)}</td>
@@ -1739,7 +1795,7 @@ function renderOILosersTable(entries) {
     }
     el.innerHTML = entries.map(e => `
         <tr>
-            <td style="font-size:11px">${e.symbol || ''}</td>
+            <td style="font-size:11px">${stockLink(e.symbol || '')}</td>
             <td><span class="type-tag ${e.type === 'CE' ? 'type-equity' : 'type-option'}">${e.type}</span></td>
             <td>${formatNum(e.strike, 0)}</td>
             <td>${formatLargeNum(e.oi)}</td>
@@ -1786,20 +1842,30 @@ function switchAnalysisView(view) {
     if (el) el.classList.add('active');
     const btn = document.querySelector(`.analysis-view-btn[data-view="${view}"]`);
     if (btn) btn.classList.add('active');
-    // Load sector data on-demand
-    if (view === 'sectors' && !document.getElementById('analysis-sectors-body').innerHTML.trim()) {
-        loadSectorAnalysis();
-    }
+    // Always reload: the breakdown depends on the selected universe and the latest scan
+    if (view === 'sectors') loadSectorAnalysis();
 }
 
 async function loadAnalysis() {
     const universe = document.getElementById('scan-universe')?.value || 'nifty50';
     try {
         const data = await API.get('/api/analysis/results?universe=' + universe);
+        const status = document.getElementById('scan-status');
         if (data.scanned) {
             analysisData = data;
             renderAnalysis(data);
+            if (status && !_scanInProgress) {
+                const label = universe === 'nifty500' ? 'NIFTY 500' : 'NIFTY 50';
+                const n = data.analyzed_stocks ?? (data.all_stocks || []).length;
+                status.textContent = `Showing last ${label} scan · ${n} stocks`;
+                status.style.color = 'var(--text-muted)';
+            }
+        } else if (status) {
+            const label = universe === 'nifty500' ? 'NIFTY 500' : 'NIFTY 50';
+            status.textContent = `No ${label} scan yet — tables still show the previous universe. Click Run Full Scan.`;
+            status.style.color = '#ff9100';
         }
+        if (document.getElementById('analysis-view-sectors')?.classList.contains('active')) loadSectorAnalysis();
     } catch (e) {}
 }
 
@@ -1831,6 +1897,7 @@ async function runAnalysisScan() {
             const requested = data.requested_stocks ?? data.total_stocks ?? analyzed;
             status.textContent = `Deep analysis complete: ${analyzed} / ${requested} stocks analyzed`;
             status.style.color = '#00d4aa';
+            if (document.getElementById('analysis-view-sectors')?.classList.contains('active')) loadSectorAnalysis();
             showToast(`${label} scan complete`, 'success');
         } else {
             status.textContent = data.error || data.message || 'Scan failed';
@@ -1952,7 +2019,7 @@ function renderAnalysis(data) {
     const superBody = document.getElementById('analysis-super-body');
     if (data.super_performers && data.super_performers.length) {
         superBody.innerHTML = data.super_performers.map(s => `<tr>
-            <td><strong>${s.symbol}</strong></td>
+            <td><strong>${stockLink(s.symbol)}</strong></td>
             <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
             <td>${fmtNum(s.ltp)}</td>
             <td><span class="${gradeClass(s.super_performance?.grade)}" style="font-weight:700">${s.super_performance?.grade || '--'}</span></td>
@@ -1976,7 +2043,7 @@ function renderAnalysis(data) {
     if (!data.super_performers?.length && topTrendBody.length) {
         superBody.innerHTML += '<tr><td colspan="14" style="color:#ff9100;text-align:center;font-size:12px;padding-top:12px">Top Trending Stocks (by score):</td></tr>';
         superBody.innerHTML += topTrendBody.slice(0, 5).map(s => `<tr>
-            <td><strong>${s.symbol}</strong></td>
+            <td><strong>${stockLink(s.symbol)}</strong></td>
             <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
             <td>${fmtNum(s.ltp)}</td>
             <td><span class="${gradeClass(s.super_performance?.grade)}">${s.super_performance?.grade || '--'}</span></td>
@@ -2024,7 +2091,7 @@ function renderStage2(stocks) {
         return;
     }
     el.innerHTML = stocks.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
         <td>${fmtNum(s.ltp)}</td>
         <td style="font-weight:600">${s.rs_rating != null ? s.rs_rating.toFixed(0) : '--'}</td>
@@ -2048,7 +2115,7 @@ function renderRSLeaders(stocks) {
         return;
     }
     el.innerHTML = stocks.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
         <td>${fmtNum(s.ltp)}</td>
         <td style="font-weight:700;color:${s.rs_rating >= 80 ? '#00d4aa' : s.rs_rating >= 50 ? '#ffe066' : '#ff5252'}">${s.rs_rating != null ? s.rs_rating.toFixed(0) : '--'}</td>
@@ -2070,7 +2137,7 @@ function renderVCPSetups(stocks) {
         return;
     }
     el.innerHTML = stocks.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
         <td>${fmtNum(s.ltp)}</td>
         <td style="color:#e040fb;font-weight:600">${fmtNum(s.vcp_pivot)}</td>
@@ -2090,7 +2157,7 @@ function renderAccumulation(accumulating, distributing) {
     if (accEl) {
         if (accumulating && accumulating.length) {
             accEl.innerHTML = accumulating.map(s => `<tr>
-                <td><strong>${s.symbol}</strong></td>
+                <td><strong>${stockLink(s.symbol)}</strong></td>
                 <td>${fmtNum(s.ltp)}</td>
                 <td style="color:#00d4aa;font-weight:700">${s.accumulation?.score || 0}</td>
                 <td>${s.obv_trend || '--'}</td>
@@ -2105,7 +2172,7 @@ function renderAccumulation(accumulating, distributing) {
     if (distEl) {
         if (distributing && distributing.length) {
             distEl.innerHTML = distributing.map(s => `<tr>
-                <td><strong>${s.symbol}</strong></td>
+                <td><strong>${stockLink(s.symbol)}</strong></td>
                 <td>${fmtNum(s.ltp)}</td>
                 <td style="color:#ff5252;font-weight:700">${s.accumulation?.score || 0}</td>
                 <td>${s.obv_trend || '--'}</td>
@@ -2120,39 +2187,86 @@ function renderAccumulation(accumulating, distributing) {
 }
 
 async function loadSectorAnalysis() {
+    const universe = document.getElementById('scan-universe')?.value || 'nifty50';
+    const body = document.getElementById('analysis-sectors-body');
     try {
-        const data = await API.get('/api/analysis/sectors');
+        const data = await API.get('/api/analysis/sectors?universe=' + encodeURIComponent(universe));
         if (data.error) {
-            document.getElementById('analysis-sectors-body').innerHTML = `<tr><td colspan="10" style="color:#ff5252;text-align:center">${data.error}</td></tr>`;
+            body.innerHTML = `<tr><td colspan="10" style="color:#ff5252;text-align:center">${escHtml(data.error)}</td></tr>`;
+            document.getElementById('sector-heatmap').innerHTML = '';
+            setSectorSummary('');
             return;
         }
-        renderSectors(data);
+        renderSectors(data, universe);
     } catch (e) {
-        document.getElementById('analysis-sectors-body').innerHTML = '<tr><td colspan="10" style="color:#ff5252;text-align:center">Failed to load sectors</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" style="color:#ff5252;text-align:center">Failed to load sectors</td></tr>';
     }
 }
 
-function renderSectors(data) {
+function setSectorSummary(text) {
+    let el = document.getElementById('sector-summary');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'sector-summary';
+        el.className = 'metric-label';
+        el.style.margin = '-4px 0 12px';
+        document.getElementById('sector-heatmap').before(el);
+    }
+    el.textContent = text;
+}
+
+// Stock chips for a sector's drill-down row, enriched from the universe's scan report.
+function sectorStockRows(symbols, universe) {
+    const bySym = {};
+    if (analysisData && (analysisData.universe || 'nifty50') === universe) {
+        (analysisData.all_stocks || []).forEach(x => { bySym[x.symbol] = x; });
+    }
+    return symbols
+        .map(sym => bySym[sym] || { symbol: sym })
+        .sort((a, b) => (b.trend_score ?? -1) - (a.trend_score ?? -1))
+        .map(x => `<span class="sector-chip">${stockLink(x.symbol)}` +
+            (x.change_1d !== undefined && x.change_1d !== null ? ` <span class="${pctClass(x.change_1d)}">${fmtPct(x.change_1d)}</span>` : '') +
+            (x.trend_score !== undefined && x.trend_score !== null ? ` <span style="color:var(--text-muted)">T${Number(x.trend_score).toFixed(0)}</span>` : '') +
+            '</span>').join('');
+}
+
+function toggleSector(name, forceOpen = false) {
+    const row = document.querySelector(`#analysis-sectors-body tr.sector-detail[data-sector="${CSS.escape(name)}"]`);
+    if (!row) return;
+    row.hidden = forceOpen ? false : !row.hidden;
+    const head = row.previousElementSibling;
+    const mark = head.querySelector('.sector-caret');
+    if (mark) mark.textContent = row.hidden ? '▸' : '▾';
+    if (!row.hidden) head.scrollIntoView({ block: forceOpen ? 'center' : 'nearest', behavior: 'smooth' });
+}
+
+function renderSectors(data, universe) {
     const sectors = data.sectors || {};
+    const label = universe === 'nifty500' ? 'NIFTY 500' : universe === 'nifty50' ? 'NIFTY 50' : 'All scanned';
+    setSectorSummary(`${label} · ${data.stock_count ?? '?'} stocks in ${data.sector_count ?? Object.keys(sectors).length} sectors · click a sector to see its stocks`);
     // Heatmap
     const heatmap = document.getElementById('sector-heatmap');
     if (heatmap) {
         heatmap.innerHTML = Object.entries(sectors).map(([name, s]) => {
             const chg = s.avg_change_20d || 0;
             const bg = chg > 2 ? '#00d4aa' : chg > 0 ? '#00d4aa88' : chg > -2 ? '#ff525288' : '#ff5252';
-            return `<div style="background:${bg}22;border:1px solid ${bg};border-radius:8px;padding:12px 16px;min-width:120px;text-align:center">
-                <div style="font-weight:700;color:${bg}">${name}</div>
+            return `<div class="sector-tile-link" data-sector="${escHtml(name)}" style="background:${bg}22;border:1px solid ${bg};border-radius:8px;padding:12px 16px;min-width:120px;text-align:center">
+                <div style="font-weight:700;color:${bg}">${escHtml(name)}</div>
                 <div style="font-size:20px;font-weight:700;color:${bg}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%</div>
                 <div style="font-size:11px;color:var(--text-muted)">${s.stock_count} stocks · RS ${s.avg_rs_rating?.toFixed(0) || '--'}</div>
                 <div style="font-size:10px;color:var(--text-muted)">Trend: ${s.avg_trend_score?.toFixed(0) || '--'}</div>
             </div>`;
         }).join('');
+        heatmap.onclick = (e) => {
+            const t = e.target.closest('[data-sector]');
+            if (t) toggleSector(t.dataset.sector, true);
+        };
     }
-    // Table
+    // Table: each sector row expands to show its stocks
     const tbody = document.getElementById('analysis-sectors-body');
     if (tbody) {
-        tbody.innerHTML = Object.entries(sectors).map(([name, s]) => `<tr>
-            <td><strong>${name}</strong></td>
+        tbody.innerHTML = Object.entries(sectors).map(([name, s]) => `<tr class="sector-row" data-sector="${escHtml(name)}">
+            <td><strong><span class="sector-caret">▸</span> ${escHtml(name)}</strong></td>
             <td>${s.stock_count}</td>
             <td class="${pctClass(s.avg_change_1d)}">${fmtPct(s.avg_change_1d)}</td>
             <td class="${pctClass(s.avg_change_5d)}">${fmtPct(s.avg_change_5d)}</td>
@@ -2161,8 +2275,14 @@ function renderSectors(data) {
             <td style="font-weight:600">${s.avg_rs_rating?.toFixed(0) || '--'}</td>
             <td>${s.avg_trend_score?.toFixed(0) || '--'}</td>
             <td>${s.super_performers || 0}</td>
-            <td style="color:#00d4aa">${s.best_stock?.symbol || '--'} (${s.best_stock?.trend_score?.toFixed(0) || '--'})</td>
-        </tr>`).join('');
+            <td style="color:#00d4aa">${stockLink(s.best_stock?.symbol || '')} (${s.best_stock?.trend_score?.toFixed(0) || '--'})</td>
+        </tr>
+        <tr class="sector-detail" data-sector="${escHtml(name)}" hidden><td colspan="10"><div class="sector-chips">${sectorStockRows(s.stocks || [], universe)}</div></td></tr>`).join('');
+        tbody.onclick = (e) => {
+            if (e.target.closest('[data-stock]')) return;   // stock links open the analysis
+            const r = e.target.closest('tr.sector-row');
+            if (r) toggleSector(r.dataset.sector);
+        };
     }
 }
 
@@ -2174,7 +2294,7 @@ function renderGainersLosers(id, stocks, changeKey) {
         return;
     }
     el.innerHTML = stocks.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td>${fmtNum(s.ltp)}</td>
         <td class="${pctClass(s[changeKey])}" style="font-weight:600">${fmtPct(s[changeKey])}</td>
         <td>${fmtNum(s.rsi_14)}</td>
@@ -2191,7 +2311,7 @@ function renderMonthly(id, stocks) {
         return;
     }
     el.innerHTML = stocks.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td>${fmtNum(s.ltp)}</td>
         <td class="${pctClass(s.change_20d)}" style="font-weight:600">${fmtPct(s.change_20d)}</td>
         <td>${fmtNum(s.sma_50)}</td>
@@ -2210,7 +2330,7 @@ function renderTriggers(id, stocks, type) {
     el.innerHTML = stocks.map(s => {
         const filtered = (s.triggers || []).filter(t => t.type === type);
         return filtered.map(t => `<tr>
-            <td><strong>${s.symbol}</strong></td>
+            <td><strong>${stockLink(s.symbol)}</strong></td>
             <td>${fmtNum(s.ltp)}</td>
             <td class="${pctClass(s.change_1d)}">${fmtPct(s.change_1d)}</td>
             <td>${t.signal}</td>
@@ -2227,7 +2347,7 @@ function renderVolumeSurges(stocks) {
         return;
     }
     el.innerHTML = stocks.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td>${fmtNum(s.ltp)}</td>
         <td class="${pctClass(s.change_1d)}">${fmtPct(s.change_1d)}</td>
         <td style="color:#ff9100;font-weight:600">${s.vol_ratio ? s.vol_ratio.toFixed(1) + 'x' : '--'}</td>
@@ -2243,7 +2363,7 @@ function render52w(highStocks, lowStocks) {
     if (highEl) {
         if (highStocks && highStocks.length) {
             highEl.innerHTML = highStocks.map(s => `<tr>
-                <td><strong>${s.symbol}</strong></td>
+                <td><strong>${stockLink(s.symbol)}</strong></td>
                 <td>${fmtNum(s.ltp)}</td>
                 <td>${fmtNum(s.high_52w)}</td>
                 <td class="${pctClass(s.dist_from_52w_high)}">${fmtPct(s.dist_from_52w_high)}</td>
@@ -2257,7 +2377,7 @@ function render52w(highStocks, lowStocks) {
     if (lowEl) {
         if (lowStocks && lowStocks.length) {
             lowEl.innerHTML = lowStocks.map(s => `<tr>
-                <td><strong>${s.symbol}</strong></td>
+                <td><strong>${stockLink(s.symbol)}</strong></td>
                 <td>${fmtNum(s.ltp)}</td>
                 <td>${fmtNum(s.low_52w)}</td>
                 <td class="${pctClass(-Math.abs(s.dist_from_52w_low || 0))}">${fmtPct(s.dist_from_52w_low)}</td>
@@ -2293,7 +2413,7 @@ function renderAllStocks(allStocks) {
     const sorter = _ALL_STOCKS_SORTERS[sortKey] || _ALL_STOCKS_SORTERS.trend_score;
     const sorted = Object.values(allStocks).sort(sorter);
     el.innerHTML = sorted.map(s => `<tr>
-        <td><strong>${s.symbol}</strong></td>
+        <td><strong>${stockLink(s.symbol)}</strong></td>
         <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
         <td>${fmtNum(s.ltp)}</td>
         <td>${s.al != null ? fmtNum(s.al) : '--'}</td>
@@ -2427,34 +2547,120 @@ async function openDeepProfile(symbol) {
         return;
     }
 
-    title.textContent = symbol + ' — Deep Analysis Profile';
-    body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Loading deep analysis...</div>';
+    // The modal is declared inside the Analysis tab; hoist it to <body> so it
+    // is visible when opened from any other tab (Overview, Market Flow, ...).
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
+
+    title.textContent = symbol + ' — Technical Analysis';
+    const actions = `<div class="dp-actions">
+            <button class="btn btn-outline btn-sm" onclick="stockAction('chart','${escHtml(symbol)}')">Chart</button>
+            <button class="btn btn-outline btn-sm" onclick="stockAction('backtest','${escHtml(symbol)}')">Backtest</button>
+            <button class="btn btn-outline btn-sm" onclick="stockAction('flow','${escHtml(symbol)}')">Market Flow</button>
+        </div>`;
+    body.innerHTML = actions + holdingContextHtml(symbol, null) +
+        '<div id="dp-analysis"><div style="text-align:center;padding:40px;color:var(--text-muted)">Running technical analysis… (first look at a stock fetches its history)</div></div>';
     modal.style.display = 'flex';
+    const requested = symbol;
 
     try {
-        const data = await API.get('/api/analysis/deep/' + symbol);
+        const data = await API.get('/api/analysis/deep/' + encodeURIComponent(symbol));
+        if (title.textContent.indexOf(requested + ' ') !== 0) return;   // user opened another stock meanwhile
         const payload = data && typeof data === 'object' ? (data.profile || data.deep_profile || data.result || data) : null;
+        const target = document.getElementById('dp-analysis');
 
         if (!payload || (typeof payload === 'object' && payload.error)) {
             const msg = payload?.error || 'No deep analysis data available for this symbol.';
-            body.innerHTML = `<div style="color:#ff5252;text-align:center">${msg}</div>`;
+            target.innerHTML = `<div style="color:#ff5252;text-align:center">${escHtml(msg)}</div>`;
             return;
         }
 
         if (payload && typeof payload === 'object' && Object.keys(payload).length === 0) {
-            body.innerHTML = '<div style="color:#ff5252;text-align:center">No deep analysis data returned for this symbol.</div>';
+            target.innerHTML = '<div style="color:#ff5252;text-align:center">No deep analysis data returned for this symbol.</div>';
             return;
         }
 
-        renderDeepProfile(body, payload);
+        // re-render the holding block now that support/resistance is known
+        const ctx = document.getElementById('dp-holding');
+        if (ctx) ctx.outerHTML = holdingContextHtml(symbol, payload);
+        renderDeepProfile(target, payload);
     } catch (e) {
-        body.innerHTML = `<div style="color:#ff5252;text-align:center">Failed to load: ${e.message}</div>`;
+        const target = document.getElementById('dp-analysis');
+        if (target) target.innerHTML = `<div style="color:#ff5252;text-align:center">Failed to load: ${escHtml(e.message)}</div>`;
+    }
+}
+
+// "Your holding" block shown above the analysis when the stock is in the
+// user's holdings or has open derivative positions on it.
+function holdingContextHtml(symbol, d) {
+    const h = lastHoldings.find(x => (x.tradingsymbol || '') === symbol);
+    const pos = lastPositions.filter(p => underlyingOf(p.tradingsymbol) === symbol && Number(p.quantity));
+    if (!h && !pos.length) return '';
+    const pct = (a, b) => (b ? ((a - b) / b * 100) : 0);
+    const sgn = (n, dgt = 2) => (n > 0 ? '+' : '') + formatNum(n, dgt);
+    let html = '<div id="dp-holding" class="dp-holding">';
+
+    if (h) {
+        const qty = Number(h.total_quantity ?? h.quantity) || 0;
+        const avg = Number(h.average_price) || 0;
+        const ltp = Number(h.last_price) || 0;
+        const pnl = Number(h.pnl) || (ltp - avg) * qty;
+        const close = Number(h.close_price) || 0;
+        const day = close ? (ltp - close) * qty : null;
+        let levels = '';
+        if (d) {
+            const sr = d.support_resistance || {};
+            const sup = [...(sr.support || []), d.pivot_s1].filter(v => v && v < ltp).sort((a, b) => b - a)[0];
+            const res = [...(sr.resistance || []), d.pivot_r1].filter(v => v && v > ltp).sort((a, b) => a - b)[0];
+            const v = d.verdict || {};
+            levels = `
+                <div><span>Nearest support</span><b>${sup ? formatNum(sup) + ` (${formatNum(pct(sup, ltp))}%)` : '—'}</b></div>
+                <div><span>Nearest resistance</span><b>${res ? formatNum(res) + ` (+${formatNum(pct(res, ltp))}%)` : '—'}</b></div>
+                <div><span>Analysis verdict</span><b>${escHtml(v.action || '—')}</b></div>`;
+        }
+        html += `<div class="dp-h-title">YOUR HOLDING</div>
+            <div class="dp-h-grid">
+                <div><span>Qty</span><b>${qty}</b></div>
+                <div><span>Avg / LTP</span><b>${formatNum(avg)} / ${formatNum(ltp)}</b></div>
+                <div><span>P&amp;L</span><b class="${pnlClass(pnl)}">${sgn(pnl)} (${sgn(pct(ltp, avg))}%)</b></div>
+                <div><span>Value</span><b>${formatNum(ltp * qty, 0)}</b></div>
+                <div><span>Day change</span><b class="${pnlClass(day || 0)}">${day === null ? '—' : sgn(day)}</b></div>
+                ${levels}
+            </div>`;
+    }
+    if (pos.length) {
+        html += `<div class="dp-h-title" style="margin-top:${h ? 10 : 0}px">OPEN POSITIONS ON ${escHtml(symbol)}</div>` +
+            pos.map(p => `<div class="dp-h-pos"><span>${escHtml(p.tradingsymbol)}</span><span>${p.quantity} @ ${formatNum(p.average_price)}</span>` +
+                `<span>LTP ${formatNum(p.last_price)}</span><b class="${pnlClass(p.pnl)}">${sgn(Number(p.pnl) || 0)}</b></div>`).join('');
+    }
+    return html + '</div>';
+}
+
+// Jump from the analysis view to another tool, pre-filled with the stock.
+function stockAction(kind, symbol) {
+    closeDeepProfile();
+    if (kind === 'chart') {
+        const el = document.getElementById('chart-symbol');
+        if (el) el.value = symbol;
+        document.querySelector('[data-tab="charts"]')?.click();
+        if (typeof loadChart === 'function') loadChart();
+    } else if (kind === 'backtest') {
+        const el = document.getElementById('bt-symbol');
+        if (el) el.value = symbol;
+        document.querySelector('[data-tab="backtest"]')?.click();
+    } else if (kind === 'flow') {
+        document.querySelector('[data-tab="market-flow"]')?.click();
+        if (typeof MarketFlow !== 'undefined') MarketFlow.focus(symbol);
     }
 }
 
 function closeDeepProfile() {
     document.getElementById('deep-profile-modal').style.display = 'none';
 }
+
+document.addEventListener('keydown', (e) => {
+    const modal = document.getElementById('deep-profile-modal');
+    if (e.key === 'Escape' && modal && modal.style.display === 'flex') closeDeepProfile();
+});
 
 function renderDeepProfile(el, d) {
     if (!el) return;
@@ -4174,7 +4380,7 @@ async function loadMarketOverview() {
         }
         body.innerHTML = symbols.map(s => {
             const chgColor = (s.change || 0) >= 0 ? '#00d4aa' : '#ff5252';
-            return '<tr><td><strong>' + s.symbol + '</strong></td>' +
+            return '<tr class="t-row-link" data-stock="' + escHtml(s.symbol) + '"><td><strong>' + escHtml(s.symbol) + '</strong></td>' +
                 '<td>' + (s.last_price || '--') + '</td>' +
                 '<td style="color:' + chgColor + '">' + (s.change || 0).toFixed(2) + '</td>' +
                 '<td style="color:' + chgColor + '">' + (s.change_pct || 0).toFixed(2) + '%</td>' +

@@ -13,10 +13,12 @@
         <div class="header-left">
             <span class="logo">Kite Trading Agent</span>
             <span id="status-badge" class="status-badge status-offline">OFFLINE</span>
-            {% if zerodha_id %}<span class="status-badge" style="color:var(--t-a)">{{ zerodha_id }}</span>{% endif %}
+            {% if zerodha_id %}<span id="t-zid" class="status-badge" style="color:var(--t-a)">{{ zerodha_id }}</span>{% endif %}
         </div>
         <div class="header-right">
             <span class="t-head-meta"><span data-t-session></span><span class="t-clock" data-t-clock></span></span>
+            <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
+            <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and P&amp;L on the Overview (Alt+P)">MASK: ON</button>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
             <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Login to Zerodha</button>
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
@@ -55,6 +57,7 @@
             <button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>
             <button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>
             <button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>
+            <button class="tab" data-tab="agents" onclick="switchTab('agents');AgentsView.start()">Agents</button>
             <span class="t-kbd" onclick="Terminal.open()" title="Command palette"><kbd>Ctrl</kbd>+<kbd>K</kbd> jump</span>
         </div>
 
@@ -840,7 +843,66 @@
                 <span><b>S1 / R1 / R2</b> nearest floor-pivot support / resistances from the previous session</span>
                 <span><b>vol</b> cash volume vs 20-session average, pro-rated to time of day</span>
                 <span><b>OI</b> near-month futures OI vs previous close</span>
-                <span>Drag the time rail (left) to replay the last 60 min · click any strand, tag or card to pin it</span>
+                <span>Drag the time rail (left) to replay the last 60 min · click any strand, tag or card to open its technical analysis</span>
+            </div>
+        </div>
+
+        <div id="tab-agents" class="tab-content">
+            <div class="t-hud">
+                <div class="t-hud-l"><span class="t-hud-title">AGENTS</span><span class="t-hud-sub">SCANNER · VERIFIER · EXECUTOR · TRACKER — LIVE STATE</span></div>
+                <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
+            </div>
+            <div class="ag-context" id="ag-context"><span class="ag-chip idle">Loading agent status…</span></div>
+                <div class="card ag-topo-card">
+                    <div class="card-title">Agent topology <span class="ag-note">each agent works independently against the trading service — they do not hand data to each other (see docs/agents)</span></div>
+                    <svg id="ag-topo" viewBox="0 0 900 300" preserveAspectRatio="xMidYMid meet">
+                        <path class="ag-link" data-link="kite" d="M450 128 L450 60"/>
+                        <path class="ag-link" data-link="scanner" d="M222 70 C330 70 340 150 360 150"/>
+                        <path class="ag-link" data-link="executor" d="M222 230 C330 230 340 150 360 150"/>
+                        <path class="ag-link" data-link="verifier" d="M678 70 C570 70 560 150 540 150"/>
+                        <path class="ag-link" data-link="tracker" d="M678 230 C570 230 560 150 540 150"/>
+                        <g class="ag-node ag-ext" transform="translate(450,36)">
+                            <rect x="-92" y="-22" width="184" height="44" rx="4"/>
+                            <text class="ag-node-name" y="5">ZERODHA KITE API</text>
+                        </g>
+                        <g class="ag-node ag-hub" data-node="service" transform="translate(450,150)">
+                            <rect x="-90" y="-26" width="180" height="52" rx="4"/>
+                            <text class="ag-node-name" y="-4">TRADING SERVICE</text>
+                            <text class="ag-node-state" y="14">—</text>
+                        </g>
+                        <g class="ag-node" data-node="scanner" transform="translate(130,70)">
+                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
+                            <text class="ag-node-name" y="-6">⌖ SCANNER</text>
+                            <text class="ag-node-state" y="14">—</text>
+                        </g>
+                        <g class="ag-node" data-node="executor" transform="translate(130,230)">
+                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
+                            <text class="ag-node-name" y="-6">⚡ EXECUTOR</text>
+                            <text class="ag-node-state" y="14">—</text>
+                        </g>
+                        <g class="ag-node" data-node="verifier" transform="translate(770,70)">
+                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
+                            <text class="ag-node-name" y="-6">⛨ VERIFIER</text>
+                            <text class="ag-node-state" y="14">—</text>
+                        </g>
+                        <g class="ag-node" data-node="tracker" transform="translate(770,230)">
+                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
+                            <text class="ag-node-name" y="-6">◎ TRACKER</text>
+                            <text class="ag-node-state" y="14">—</text>
+                        </g>
+                    </svg>
+                </div>
+            <div class="ag-cards" id="ag-cards"></div>
+            <div class="ag-detail card" id="ag-detail" hidden></div>
+            <div class="card">
+                <div class="card-title">Activity timeline
+                    <span class="mf-tabs ag-filter" id="ag-filter" style="float:right">
+                        <button class="on" data-f="all">ALL</button><button data-f="issues">ISSUES</button>
+                        <button data-f="scanner">SCANNER</button><button data-f="verifier">VERIFIER</button>
+                        <button data-f="executor">EXECUTOR</button><button data-f="tracker">TRACKER</button>
+                    </span>
+                </div>
+                <div class="ag-timeline" id="ag-timeline"></div>
             </div>
         </div>
 
@@ -2634,6 +2696,7 @@
     <script src="/static/js/dashboard.js?v={{ js_version }}"></script>
     <script src="/static/js/market_flow.js?v={{ flow_js_version }}"></script>
     <script src="/static/js/terminal.js?v={{ terminal_js_version }}"></script>
+    <script src="/static/js/agents.js?v={{ agents_js_version }}"></script>
     <div class="t-pal-overlay" id="t-pal">
         <div class="t-pal">
             <input id="t-pal-input" type="text" placeholder="Jump to…  (↑↓ to move, Enter to open, Esc to close)" autocomplete="off">

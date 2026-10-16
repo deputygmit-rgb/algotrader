@@ -244,6 +244,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         "css_version": _static_version("css/dashboard.css"),
         "terminal_css_version": _static_version("css/terminal.css"),
         "terminal_js_version": _static_version("js/terminal.js"),
+        "agents_js_version": _static_version("js/agents.js"),
     })
 
 
@@ -790,9 +791,9 @@ async def research_stock(request: Request, symbol: str) -> dict[str, Any]:
 
 
 @app.get("/api/analysis/sectors")
-async def analysis_sectors(request: Request) -> dict[str, Any]:
-    """Get sector-level analysis from cached scan data."""
-    return get_user_service(request).get_sector_analysis()
+async def analysis_sectors(request: Request, universe: Optional[str] = None) -> dict[str, Any]:
+    """Sector-level analysis from cached scan data, for ``?universe=`` if given."""
+    return get_user_service(request).get_sector_analysis(universe)
 
 
 # ─── Paper Trading ─────────────────────────────────────────────
