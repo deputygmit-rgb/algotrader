@@ -10,6 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.agent.mcp_driver import MCPDriverSupervisorAgent
+from src.analysis.nifty_contribution import DemoQuoteSimulator, compute_nifty_contribution
+from src.analysis.fno_flow import DemoFnoSimulator, FlowHistory, compute_fno_flow
+from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import otp_auth
 from src.auth.user_config import UserConfigService
@@ -18,6 +21,17 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 mcp_driver = MCPDriverSupervisorAgent.get_instance()
+_nifty_demo = DemoQuoteSimulator()
+_fno_demo: DemoFnoSimulator | None = None
+_fno_demo_history = FlowHistory()
+
+
+def _get_fno_demo() -> DemoFnoSimulator:
+    global _fno_demo
+    if _fno_demo is None:
+        _fno_demo = DemoFnoSimulator()
+        _fno_demo.seed_history(_fno_demo_history)
+    return _fno_demo
 
 
 @asynccontextmanager
@@ -200,6 +214,13 @@ async def logout(request: Request) -> Any:
     return response
 
 
+def _static_version(rel_path: str) -> str:
+    try:
+        return str(int(os.path.getmtime(os.path.join(BASE_DIR, "static", rel_path))))
+    except OSError:
+        return "1"
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     if not is_logged_in(request):
@@ -219,6 +240,10 @@ async def dashboard(request: Request) -> HTMLResponse:
         "zerodha_id": zerodha_id,
         "csrf_token": otp_auth.get_csrf_token(session_token),
         "js_version": js_version,
+        "flow_js_version": _static_version("js/market_flow.js"),
+        "css_version": _static_version("css/dashboard.css"),
+        "terminal_css_version": _static_version("css/terminal.css"),
+        "terminal_js_version": _static_version("js/terminal.js"),
     })
 
 
@@ -256,6 +281,14 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
             result["profile"] = profile
         except Exception:
             result["profile"] = None
+        try:
+            trades_today = await svc.get_trades_today_count()
+        except Exception:
+            trades_today = None
+        if result["positions"] is not None or result["holdings"] is not None:
+            result["account"] = build_account_summary(
+                result["positions"], result["holdings"], result["margins"], trades_today
+            )
     return result
 
 
@@ -1180,6 +1213,49 @@ async def get_market_overview(request: Request) -> dict[str, Any]:
     raw = request.query_params.get("symbols", "")
     symbols = [s.strip() for s in raw.split(",") if s.strip()] or None
     return await svc.get_market_overview(symbols)
+
+
+@app.get("/api/market/nifty-contribution")
+async def get_nifty_contribution(request: Request) -> dict[str, Any]:
+    """Point contribution of each Nifty 50 constituent to the index move.
+    ``?demo=1`` returns simulated data for previewing the view."""
+    if request.query_params.get("demo") == "1":
+        result = compute_nifty_contribution(_nifty_demo.quotes())
+        result["demo"] = True
+        return result
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Zerodha not authenticated"}
+    return await svc.get_nifty_contribution()
+
+
+@app.get("/api/market/fno-flow")
+async def get_fno_flow(request: Request) -> dict[str, Any]:
+    """F&O universe flow: per-stock price, futures OI build-up, levels, score.
+    ``?demo=1`` returns simulated data."""
+    if request.query_params.get("demo") == "1":
+        from datetime import datetime as _dt
+        sim = _get_fno_demo()
+        sim.step()
+        now = _dt.now()
+        result = compute_fno_flow(sim.universe, sim.quotes(), sim.baselines, now)
+        _fno_demo_history.record(result, now)
+        return {**result, "demo": True, "baseline_loading": False}
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Zerodha not authenticated"}
+    return await svc.get_fno_flow()
+
+
+@app.get("/api/market/fno-flow/history")
+async def get_fno_flow_history(request: Request, minutes: int = 60) -> dict[str, Any]:
+    """Minute snapshots ({symbol: [chg%, oi%, score]}) for the time rail."""
+    minutes = max(1, min(minutes, 375))
+    if request.query_params.get("demo") == "1":
+        from datetime import datetime as _dt
+        _get_fno_demo()
+        return {"points": _fno_demo_history.since(minutes, _dt.now())}
+    return {"points": get_user_service(request).get_fno_flow_history(minutes)}
 
 
 @app.get("/api/market/ticks")

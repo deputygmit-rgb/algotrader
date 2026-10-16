@@ -219,13 +219,9 @@ function updatePortfolioSection(data) {
     }
 
     if (data.holdings) {
-        // Resolve the real share count: broker may send quantity=0/null while
-        // settled shares live in realised_quantity/opening_quantity/t1_quantity.
-        const qtyOf = (h) => {
-            const cands = [h.quantity, h.realised_quantity, h.opening_quantity, h.t1_quantity, h.used_quantity];
-            for (const c of cands) { if (c) return c; }
-            return 0;
-        };
+        // total_quantity is resolved server-side (settled + T1 + MTF, with
+        // fallbacks); see _resolve_holding_quantity in src/api/market_data.py.
+        const qtyOf = (h) => Number(h.total_quantity ?? h.quantity) || 0;
         let totalVal = 0;
         const holdings = data.holdings || [];
         holdings.forEach(h => {
@@ -243,7 +239,7 @@ function updatePortfolioSection(data) {
                     // and we have a real qty (so the row isn't a misleading 0.00).
                     const computed = ((h.last_price || 0) - (h.average_price || 0)) * q;
                     const pnl = (h.pnl !== null && h.pnl !== undefined && h.pnl !== 0) ? h.pnl : computed;
-                    const sym = h.tradingsymbol || '';
+                    const sym = (h.tradingsymbol || '').replace(/'/g, "\\'");
                     return `<tr>
                         <td><strong>${sym}</strong></td>
                         <td>${q}</td>
@@ -270,33 +266,76 @@ function updatePortfolioSection(data) {
         const pBody = document.getElementById('overview-positions-body');
         if (pBody) {
             if (positions.length) {
-                pBody.innerHTML = positions.map(p => `<tr>
-                    <td><strong>${p.tradingsymbol}</strong></td>
-                    <td>${p.quantity}</td>
-                    <td>${formatNum(p.average_price)}</td>
-                    <td>${formatNum(p.last_price)}</td>
-                    <td class="${pnlClass(p.pnl)}">${formatNum(p.pnl)}</td>
-                </tr>`).join('');
+                pBody.innerHTML = positions.map(p => {
+                    const sym = (p.tradingsymbol || '').replace(/'/g, "\\'");
+                    return `<tr>
+                        <td><strong>${p.tradingsymbol}</strong></td>
+                        <td>${p.quantity}</td>
+                        <td>${formatNum(p.average_price)}</td>
+                        <td>${formatNum(p.last_price)}</td>
+                        <td class="${pnlClass(p.pnl)}">${formatNum(p.pnl)}</td>
+                        <td><button class="btn btn-outline" style="font-size:10px;padding:2px 6px" onclick="openDeepProfile('${sym}')">Review</button></td>
+                    </tr>`;
+                }).join('');
             } else {
-                pBody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);text-align:center">No positions</td></tr>';
+                pBody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center">No positions</td></tr>';
             }
         }
     }
 }
 
+// Last Zerodha-account summary from /api/status?full=true. The light status
+// poll has no account data, so it must not overwrite these tiles.
+let lastAccount = null;
+
+function setMetric(id, value, decimals = 2, signed = true) {
+    const el = document.getElementById(id);
+    el.textContent = formatNum(value, decimals);
+    el.className = `metric-value ${signed ? pnlClass(value) : ''}`;
+}
+
+function setLabel(id, html) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+}
+
 function updateOverviewCards(data) {
     const j = data.journal || {};
     const r = data.risk || {};
-    document.getElementById('daily-pnl').textContent = formatNum(j.daily_pnl || 0);
-    document.getElementById('daily-pnl').className = `metric-value ${pnlClass(j.daily_pnl || 0)}`;
-    document.getElementById('total-pnl').textContent = formatNum(j.total_pnl || 0);
-    document.getElementById('total-pnl').className = `metric-value ${pnlClass(j.total_pnl || 0)}`;
-    document.getElementById('total-trades').textContent = j.total_trades || 0;
-    document.getElementById('exposure').textContent = formatNum(r.total_exposure || 0, 0);
-    const utilPct = r.utilization_pct || 0;
-    document.getElementById('exposure-bar').style.width = `${Math.min(utilPct, 100)}%`;
-    document.getElementById('exposure-bar').style.background =
-        utilPct > 80 ? 'var(--accent-red)' : utilPct > 50 ? 'var(--accent-orange)' : 'var(--accent-green)';
+    if (data.account) lastAccount = data.account;
+    const a = lastAccount;
+    const bot = `Bot journal: ${formatNum(j.daily_pnl || 0)} today · ${formatNum(j.total_pnl || 0)} all-time`;
+
+    if (a) {
+        setMetric('daily-pnl', a.day_pnl);
+        setLabel('daily-pnl-label', `Positions M2M ${formatNum(a.positions_day_pnl)} + holdings ${formatNum(a.holdings_day_pnl)}`);
+        setMetric('total-pnl', a.total_pnl);
+        setLabel('total-pnl-label', `Positions ${formatNum(a.positions_pnl)} + holdings ${formatNum(a.holdings_pnl)}`);
+        setMetric('total-trades', a.trades_today ?? 0, 0, false);
+        setLabel('total-trades-label', `Executed today (Zerodha) · bot journal ${j.total_trades || 0} all-time`);
+        setMetric('exposure', a.exposure, 0, false);
+        setLabel('exposure-label', `${a.open_positions} open position${a.open_positions === 1 ? '' : 's'} · margin used ${a.utilisation_pct.toFixed(1)}%`);
+        setUtilisation(a.utilisation_pct);
+    } else {
+        // Not connected to Zerodha: show the bot's own journal, labelled as such.
+        setMetric('daily-pnl', j.daily_pnl || 0);
+        setLabel('daily-pnl-label', 'Bot journal · trades closed today');
+        setMetric('total-pnl', j.total_pnl || 0);
+        setLabel('total-pnl-label', 'Bot journal · all-time');
+        setMetric('total-trades', j.total_trades || 0, 0, false);
+        setLabel('total-trades-label', 'Bot journal entries · all-time');
+        setMetric('exposure', r.total_exposure || 0, 0, false);
+        setLabel('exposure-label', 'Risk manager · updates while live');
+        setUtilisation(r.utilization_pct || 0);
+    }
+    const botEl = document.getElementById('daily-pnl-bot');
+    if (botEl) botEl.textContent = a ? bot : '';
+}
+
+function setUtilisation(pct) {
+    const bar = document.getElementById('exposure-bar');
+    bar.style.width = `${Math.min(pct, 100)}%`;
+    bar.style.background = pct > 80 ? 'var(--accent-red)' : pct > 50 ? 'var(--accent-orange)' : 'var(--accent-green)';
 }
 
 function updateStrategiesList(strategies) {
@@ -424,10 +463,13 @@ function connectWS() {
             else if (msg.type === 'signal') updateSignalsLog(msg.data);
             else if (msg.type === 'pong') { /* heartbeat reply */ }
             else if (msg.type === 'positions') {
-                const pnlEl = document.getElementById('daily-pnl');
-                if (pnlEl && msg.pnl !== undefined) {
-                    pnlEl.textContent = formatNum(msg.pnl);
-                    pnlEl.className = `metric-value ${pnlClass(msg.pnl)}`;
+                // msg.pnl is positions' total P&L, not the day's; recompute the
+                // day figure from today's M2M plus the last holdings day change.
+                const net = (msg.data && msg.data.net) || [];
+                if (lastAccount) {
+                    const m2m = net.reduce((s, p) => s + (Number(p.m2m) || 0), 0);
+                    lastAccount = { ...lastAccount, positions_day_pnl: m2m, day_pnl: m2m + lastAccount.holdings_day_pnl };
+                    updateOverviewCards({});
                 }
             }
             else if (msg.type === 'replay_tick') updateReplayTick(msg.data);
@@ -1785,7 +1827,9 @@ async function runAnalysisScan() {
         } else if (data.scanned) {
             analysisData = data;
             renderAnalysis(data);
-            status.textContent = `Deep analysis complete: ${data.total_stocks} stocks analyzed`;
+            const analyzed = data.analyzed_stocks ?? data.total_stocks ?? 0;
+            const requested = data.requested_stocks ?? data.total_stocks ?? analyzed;
+            status.textContent = `Deep analysis complete: ${analyzed} / ${requested} stocks analyzed`;
             status.style.color = '#00d4aa';
             showToast(`${label} scan complete`, 'success');
         } else {
@@ -2233,6 +2277,8 @@ const _ALL_STOCKS_SORTERS = {
     rs_rating: (a, b) => (b.rs_rating || 0) - (a.rs_rating || 0),
     change_1d: (a, b) => (b.change_1d || 0) - (a.change_1d || 0),
     change_20d: (a, b) => (b.change_20d || 0) - (a.change_20d || 0),
+    al: (a, b) => (b.al ?? 0) - (a.al ?? 0),
+    time_high: (a, b) => String(b.time_high || '').localeCompare(String(a.time_high || '')),
 };
 
 function renderAllStocks(allStocks) {
@@ -2250,6 +2296,10 @@ function renderAllStocks(allStocks) {
         <td><strong>${s.symbol}</strong></td>
         <td style="font-size:11px;color:var(--text-muted)">${s.sector || '--'}</td>
         <td>${fmtNum(s.ltp)}</td>
+        <td>${s.al != null ? fmtNum(s.al) : '--'}</td>
+        <td>${s.time_high || '--'}</td>
+        <td>${s.all_time_high != null ? fmtNum(s.all_time_high) : '--'}</td>
+        <td class="${pctClass(-Math.abs(s.dist_from_all_time_high ?? 0))}">${s.dist_from_all_time_high != null ? fmtPct(s.dist_from_all_time_high) : '--'}</td>
         <td class="${pctClass(s.change_1d)}">${fmtPct(s.change_1d)}</td>
         <td class="${pctClass(s.change_5d)}">${fmtPct(s.change_5d)}</td>
         <td class="${pctClass(s.change_20d)}">${fmtPct(s.change_20d)}</td>
@@ -2371,16 +2421,32 @@ async function openDeepProfile(symbol) {
     const modal = document.getElementById('deep-profile-modal');
     const body = document.getElementById('deep-profile-body');
     const title = document.getElementById('deep-profile-title');
+
+    if (!modal || !body || !title) {
+        showToast('Deep profile modal is not available on this page.', 'error');
+        return;
+    }
+
     title.textContent = symbol + ' — Deep Analysis Profile';
     body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Loading deep analysis...</div>';
     modal.style.display = 'flex';
+
     try {
         const data = await API.get('/api/analysis/deep/' + symbol);
-        if (data.error) {
-            body.innerHTML = `<div style="color:#ff5252;text-align:center">${data.error}</div>`;
+        const payload = data && typeof data === 'object' ? (data.profile || data.deep_profile || data.result || data) : null;
+
+        if (!payload || (typeof payload === 'object' && payload.error)) {
+            const msg = payload?.error || 'No deep analysis data available for this symbol.';
+            body.innerHTML = `<div style="color:#ff5252;text-align:center">${msg}</div>`;
             return;
         }
-        renderDeepProfile(body, data);
+
+        if (payload && typeof payload === 'object' && Object.keys(payload).length === 0) {
+            body.innerHTML = '<div style="color:#ff5252;text-align:center">No deep analysis data returned for this symbol.</div>';
+            return;
+        }
+
+        renderDeepProfile(body, payload);
     } catch (e) {
         body.innerHTML = `<div style="color:#ff5252;text-align:center">Failed to load: ${e.message}</div>`;
     }
@@ -2391,8 +2457,23 @@ function closeDeepProfile() {
 }
 
 function renderDeepProfile(el, d) {
-    const v = d.verdict || {};
+    if (!el) return;
+
+    const payload = (d && typeof d === 'object' && d.profile && typeof d.profile === 'object') ? d.profile : d;
+
+    if (!payload || typeof payload !== 'object' || Object.keys(payload).length === 0) {
+        el.innerHTML = '<div style="color:#ff5252;text-align:center;padding:32px">No deep analysis data available.</div>';
+        return;
+    }
+
+    // Lower sections still read from `d`; point it at the unwrapped payload.
+    d = payload;
+    const v = payload.verdict || {};
     const verdictColor = v.action?.includes('BUY') ? '#00d4aa' : v.action?.includes('SELL') ? '#ff5252' : '#ff9100';
+    const marketCtx = payload.market_context || {};
+    const sectorCtx = payload.sector_context || {};
+    const marketTrend = marketCtx.trend || 'unknown';
+    const sectorTrend = sectorCtx.trend || 'unknown';
     el.innerHTML = `
         <!-- Verdict Banner -->
         <div style="background:${verdictColor}15;border:1px solid ${verdictColor};border-radius:8px;padding:16px;margin-bottom:16px;text-align:center">
@@ -2401,23 +2482,46 @@ function renderDeepProfile(el, d) {
             ${v.reasons?.length ? `<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">${v.reasons.join(' · ')}</div>` : ''}
         </div>
 
+        <div class="card" style="padding:12px;margin-bottom:12px">
+            <div style="font-weight:700;margin-bottom:8px">Recommendation</div>
+            <div style="font-size:12px;color:var(--text-muted)">${v.recommendation_text || 'Review the market and sector context before committing capital.'}</div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+            <div class="card" style="padding:12px;text-align:center">
+                <div style="font-size:11px;color:var(--text-muted)">Major Index</div>
+                <div style="font-size:18px;font-weight:700;color:${marketTrend==='bullish'?'#00d4aa':marketTrend==='bearish'?'#ff5252':'#ffaa00'}">${marketTrend.toUpperCase()}</div>
+                <div style="font-size:11px;color:var(--text-muted)">${marketCtx.change_1d != null ? `${fmtNum(marketCtx.change_1d)}% 1D` : 'N/A'} · ${marketCtx.change_5d != null ? `${fmtNum(marketCtx.change_5d)}% 5D` : 'N/A'}</div>
+            </div>
+            <div class="card" style="padding:12px;text-align:center">
+                <div style="font-size:11px;color:var(--text-muted)">Sector</div>
+                <div style="font-size:18px;font-weight:700;color:${sectorTrend==='bullish'?'#00d4aa':sectorTrend==='bearish'?'#ff5252':'#ffaa00'}">${sectorTrend.toUpperCase()}</div>
+                <div style="font-size:11px;color:var(--text-muted)">${sectorCtx.sector || payload.sector || 'Sector'} · ${sectorCtx.avg_trend_score != null ? `Trend ${fmtNum(sectorCtx.avg_trend_score)}` : 'Awaiting sector data'}</div>
+            </div>
+            <div class="card" style="padding:12px;text-align:center">
+                <div style="font-size:11px;color:var(--text-muted)">Stock Regime</div>
+                <div style="font-size:18px;font-weight:700;color:${(payload.trend_score||0)>=60?'#00d4aa':(payload.trend_score||0)<=40?'#ff5252':'#ffaa00'}">${payload.stage_name || 'STAGE ' + (payload.stage ?? '--')}</div>
+                <div style="font-size:11px;color:var(--text-muted)">Trend score ${fmtNum(payload.trend_score)} · RS ${payload.rs_rating != null ? payload.rs_rating.toFixed(0) : '--'}</div>
+            </div>
+        </div>
+
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
             <!-- Stage -->
             <div class="card" style="padding:12px;text-align:center">
                 <div style="font-size:11px;color:var(--text-muted)">Weinstein Stage</div>
-                <div style="font-size:22px;font-weight:700;color:${stageColor(d.stage)}">${d.stage_name || '--'}</div>
-                <div style="font-size:11px;color:var(--text-muted)">Confidence: ${d.stage_confidence || 0}%</div>
+                <div style="font-size:22px;font-weight:700;color:${stageColor(payload.stage)}">${payload.stage_name || '--'}</div>
+                <div style="font-size:11px;color:var(--text-muted)">Confidence: ${payload.stage_confidence || 0}%</div>
             </div>
             <!-- RS Rating -->
             <div class="card" style="padding:12px;text-align:center">
                 <div style="font-size:11px;color:var(--text-muted)">RS Rating (vs NIFTY 50)</div>
-                <div style="font-size:22px;font-weight:700;color:${(d.rs_rating||50)>=70?'#00d4aa':(d.rs_rating||50)>=40?'#ffe066':'#ff5252'}">${d.rs_rating != null ? d.rs_rating.toFixed(0) : '--'}</div>
+                <div style="font-size:22px;font-weight:700;color:${(payload.rs_rating||50)>=70?'#00d4aa':(payload.rs_rating||50)>=40?'#ffe066':'#ff5252'}">${payload.rs_rating != null ? payload.rs_rating.toFixed(0) : '--'}</div>
                 <div style="font-size:11px;color:var(--text-muted)">Scale: 1-99</div>
             </div>
             <!-- Trend Score -->
             <div class="card" style="padding:12px;text-align:center">
                 <div style="font-size:11px;color:var(--text-muted)">Trend Score</div>
-                <div style="font-size:22px;font-weight:700;color:${(d.trend_score||0)>=60?'#00d4aa':(d.trend_score||0)>=30?'#ffe066':'#ff5252'}">${fmtNum(d.trend_score)}</div>
+                <div style="font-size:22px;font-weight:700;color:${(payload.trend_score||0)>=60?'#00d4aa':(payload.trend_score||0)>=30?'#ffe066':'#ff5252'}">${fmtNum(payload.trend_score)}</div>
                 <div style="font-size:11px;color:var(--text-muted)">Scale: 0-100</div>
             </div>
         </div>
@@ -2533,8 +2637,10 @@ function renderDeepProfile(el, d) {
                     <div>PP: ${fmtNum(d.pivot_pp)}</div>
                     <div style="color:#ff5252">R1: ${fmtNum(d.pivot_r1)}</div>
                     <div style="color:#00d4aa">S1: ${fmtNum(d.pivot_s1)}</div>
-                    <div>52W High: ${fmtNum(d.high_52w)} (${fmtPct(d.dist_from_52w_high)})</div>
-                    <div>52W Low: ${fmtNum(d.low_52w)} (${fmtPct(d.dist_from_52w_low)})</div>
+                    <div>Day High: <span class="${pctClass(d.change_1d)}">${fmtNum(d.day_high)}</span>${d.time_high ? ` <span style="color:var(--text-muted)">(${d.time_high})</span>` : ''}</div>
+                    <div>52W High: <span>${fmtNum(d.high_52w)}</span> <span class="${pctClass(d.dist_from_52w_high)}">(${fmtPct(d.dist_from_52w_high)})</span></div>
+                    <div>52W Low: <span>${fmtNum(d.low_52w)}</span> <span class="${pctClass(d.dist_from_52w_low)}">(${fmtPct(d.dist_from_52w_low)})</span></div>
+                    <div>All-Time High: <span>${fmtNum(d.all_time_high)}</span> <span class="${pctClass(d.dist_from_all_time_high)}">(${fmtPct(d.dist_from_all_time_high)})</span></div>
                 </div>
             </div>
         </div>

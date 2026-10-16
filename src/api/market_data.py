@@ -311,7 +311,12 @@ class MarketDataProvider:
                     "timestamp": str(q.timestamp) if q.timestamp else None,
                     "last_price": q.last_price,
                     "last_quantity": q.last_quantity,
+                    "last_trade_time": q.last_trade_time,
                     "average_price": q.average_price,
+                    "al": q.al if q.al is not None else q.average_price,
+                    "time_high": q.time_high or q.day_high_time,
+                    "day_high": q.day_high or (q.ohlc.high if q.ohlc else None),
+                    "day_low": q.day_low or (q.ohlc.low if q.ohlc else None),
                     "volume": q.volume,
                     "buy_quantity": q.buy_quantity,
                     "sell_quantity": q.sell_quantity,
@@ -402,6 +407,8 @@ class MarketDataProvider:
                     "symbol": key.split(":")[-1] if ":" in key else key,
                     "exchange": key.split(":")[0] if ":" in key else "NSE",
                     "last_price": q.last_price,
+                    "average_price": q.average_price,
+                    "al": q.al if q.al is not None else q.average_price,
                     "change": round(change, 2),
                     "change_pct": round(change_pct, 2),
                     "volume": q.volume,
@@ -409,6 +416,7 @@ class MarketDataProvider:
                     "high": q.ohlc.high if q.ohlc else None,
                     "low": q.ohlc.low if q.ohlc else None,
                     "close": q.ohlc.close if q.ohlc else None,
+                    "time_high": q.time_high or q.day_high_time,
                     "buy_quantity": q.buy_quantity,
                     "sell_quantity": q.sell_quantity,
                 })
@@ -423,6 +431,112 @@ class MarketDataProvider:
 # ────────────────────────────────────────────────────────────────
 # Portfolio Reports Service
 # ────────────────────────────────────────────────────────────────
+
+def _as_number(value: Any) -> float:
+    """Broker numbers may arrive as int, float, numeric string, "" or None."""
+    if value is None or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _field(holding: Any, name: str) -> Any:
+    return holding.get(name) if isinstance(holding, dict) else getattr(holding, name, None)
+
+
+def _resolve_holding_quantity(holding: Any) -> int:
+    """Total shares held, as Kite counts them.
+
+    Kite splits a holding across fields: ``quantity`` (settled), ``t1_quantity``
+    (bought, awaiting T+1 settlement) and ``mtf.quantity`` (bought on Margin
+    Trading Facility; MTF-only holdings report ``quantity=0``). The total is
+    their sum. If that is zero we fall back to the other quantity fields some
+    payloads populate instead, and finally to the quantity implied by the
+    broker's own P&L, so a row never shows 0 shares with a non-zero P&L.
+    """
+    mtf = _field(holding, "mtf")
+    mtf_qty = _as_number(mtf.get("quantity")) if isinstance(mtf, dict) else 0.0
+    total = _as_number(_field(holding, "quantity")) + _as_number(_field(holding, "t1_quantity")) + mtf_qty
+    if total > 0:
+        return int(round(total))
+
+    raw = {n: _field(holding, n) for n in (
+        "quantity", "t1_quantity", "mtf", "realised_quantity", "opening_quantity",
+        "authorised_quantity", "collateral_quantity", "used_quantity", "pnl")}
+    for name in ("realised_quantity", "realized_quantity", "opening_quantity",
+                 "authorised_quantity", "collateral_quantity", "used_quantity"):
+        value = _as_number(_field(holding, name))
+        if value > 0:
+            logger.info("holding_qty_fallback", symbol=_field(holding, "tradingsymbol"), source=name, raw=raw)
+            return int(round(value))
+
+    pnl = _as_number(_field(holding, "pnl"))
+    diff = _as_number(_field(holding, "last_price")) - _as_number(_field(holding, "average_price"))
+    if pnl and abs(diff) > 1e-9:
+        implied = pnl / diff
+        if implied > 0 and abs(implied - round(implied)) < 0.01:
+            logger.warning("holding_qty_from_pnl", symbol=_field(holding, "tradingsymbol"), qty=round(implied), raw=raw)
+            return int(round(implied))
+    logger.warning("holding_qty_unresolved", symbol=_field(holding, "tradingsymbol"), raw=raw)
+    return 0
+
+
+def build_account_summary(
+    positions: dict[str, Any] | None,
+    holdings: list[dict[str, Any]] | None,
+    margins: dict[str, Any] | None,
+    trades_today: int | None,
+) -> dict[str, Any]:
+    """Overview tiles computed from the Zerodha account, the way Kite reports them.
+
+    * day_pnl   = open positions' m2m (today's mark-to-market) + holdings'
+                  (LTP - previous close) x qty
+    * total_pnl = positions' P&L + holdings' unrealised P&L
+    * exposure  = gross value of open positions; utilisation = margin used /
+                  (used + available) on the equity segment
+    """
+    net = (positions or {}).get("net") or []
+    open_pos = [p for p in net if _as_number(p.get("quantity"))]
+    positions_day = sum(_as_number(p.get("m2m")) for p in net)
+    positions_pnl = sum(_as_number(p.get("pnl")) for p in net)
+    realised = sum(_as_number(p.get("realised")) for p in net)
+    exposure = sum(
+        abs(_as_number(p.get("quantity")) * _as_number(p.get("last_price")) * (_as_number(p.get("multiplier")) or 1))
+        for p in open_pos
+    )
+
+    holdings_day = holdings_pnl = holdings_value = 0.0
+    for h in holdings or []:
+        qty = _as_number(h.get("total_quantity")) or _resolve_holding_quantity(h)
+        ltp, avg, close = (_as_number(h.get(k)) for k in ("last_price", "average_price", "close_price"))
+        if close > 0:
+            holdings_day += (ltp - close) * qty
+        holdings_pnl += _as_number(h.get("pnl")) or (ltp - avg) * qty
+        holdings_value += ltp * qty
+
+    equity = (margins or {}).get("equity") or {}
+    used = _as_number((equity.get("utilised") or {}).get("debits"))
+    available = _as_number(equity.get("net"))
+    utilisation = used / (used + available) * 100 if used + available > 0 else 0.0
+
+    return {
+        "day_pnl": round(positions_day + holdings_day, 2),
+        "positions_day_pnl": round(positions_day, 2),
+        "holdings_day_pnl": round(holdings_day, 2),
+        "total_pnl": round(positions_pnl + holdings_pnl, 2),
+        "positions_pnl": round(positions_pnl, 2),
+        "holdings_pnl": round(holdings_pnl, 2),
+        "realised_today": round(realised, 2),
+        "holdings_value": round(holdings_value, 2),
+        "trades_today": trades_today,
+        "open_positions": len(open_pos),
+        "exposure": round(exposure, 2),
+        "margin_used": round(used, 2),
+        "utilisation_pct": round(utilisation, 2),
+    }
+
 
 class PortfolioReporter:
     """Portfolio analysis and reporting service."""
@@ -443,15 +557,7 @@ class PortfolioReporter:
             total_pnl = 0.0
 
             for h in holdings:
-                # Resolve the real share count. Zerodha can send quantity=0/null
-                # while the settled shares live in realised_quantity / opening_quantity.
-                # Prefer a non-zero realised/opening over a zero quantity; only treat
-                # the holding as zero-qty when every candidate is empty.
-                candidates = [
-                    h.quantity, h.realised_quantity, h.opening_quantity,
-                    h.t1_quantity, h.used_quantity,
-                ]
-                qty = next((c for c in candidates if c), 0)  # first non-zero/non-null
+                qty = _resolve_holding_quantity(h)
 
                 investment = h.average_price * qty
                 value = h.last_price * qty

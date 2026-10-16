@@ -4,17 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kite Trading Agent</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
+    <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
     <header class="header">
         <div class="header-left">
             <span class="logo">Kite Trading Agent</span>
             <span id="status-badge" class="status-badge status-offline">OFFLINE</span>
-            {% if zerodha_id %}<span style="margin-left:12px;padding:4px 10px;background:#1a2332;border:1px solid #2a3a4a;border-radius:6px;font-size:12px;color:#00d4aa;font-weight:600;">{{ zerodha_id }}</span>{% endif %}
+            {% if zerodha_id %}<span class="status-badge" style="color:var(--t-a)">{{ zerodha_id }}</span>{% endif %}
         </div>
         <div class="header-right">
+            <span class="t-head-meta"><span data-t-session></span><span class="t-clock" data-t-clock></span></span>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
             <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Login to Zerodha</button>
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
@@ -23,6 +25,7 @@
             <button class="btn btn-outline btn-sm" onclick="logoutUser()" style="margin-left:8px;border-color:#ff5252;color:#ff5252">Logout</button>
         </div>
     </header>
+    <div class="t-tape" id="t-tape" hidden><div class="t-tape-track" id="t-tape-track"></div></div>
 
     <div id="login-url-display" style="display:none;background:#1a2332;border:1px solid #00d4aa;padding:12px 20px;text-align:center;margin:0">
         <a id="login-url-link" href="#" target="_blank" rel="noopener" style="color:#00d4aa;font-weight:600;font-size:15px;text-decoration:underline">Click here to open Zerodha login</a>
@@ -43,6 +46,7 @@
             <button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
             <button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>
             <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
+            <button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start()">Market Flow</button>
             <button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>
             <button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>
             <button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>
@@ -51,10 +55,15 @@
             <button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>
             <button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>
             <button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>
+            <span class="t-kbd" onclick="Terminal.open()" title="Command palette"><kbd>Ctrl</kbd>+<kbd>K</kbd> jump</span>
         </div>
 
         <!-- Overview Tab -->
         <div id="tab-overview" class="tab-content active">
+            <div class="t-hud">
+                <div class="t-hud-l"><span class="t-hud-title">OVERVIEW</span><span class="t-hud-sub">ACCOUNT · PORTFOLIO · P&amp;L · LIVE BOOK</span></div>
+                <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
+            </div>
             <div id="portfolio-section" style="display:none;margin-bottom:20px">
                 <div class="grid grid-4" style="margin-bottom:16px">
                     <div class="card">
@@ -83,9 +92,9 @@
                         <div class="card-title">Positions</div>
                         <div class="table-wrap" style="max-height:280px;overflow-y:auto">
                             <table>
-                                <thead><tr><th>Symbol</th><th>Qty</th><th>Avg</th><th>LTP</th><th>P&L</th></tr></thead>
+                                <thead><tr><th>Symbol</th><th>Qty</th><th>Avg</th><th>LTP</th><th>P&L</th><th></th></tr></thead>
                                 <tbody id="overview-positions-body">
-                                    <tr><td colspan="5" style="color:var(--text-muted);text-align:center">No positions</td></tr>
+                                    <tr><td colspan="6" style="color:var(--text-muted);text-align:center">No positions</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -105,25 +114,26 @@
             </div>
             <div class="grid grid-4" style="margin-bottom:20px">
                 <div class="card">
-                    <div class="card-title">Daily P&L</div>
+                    <div class="card-title">Day's P&L</div>
                     <div id="daily-pnl" class="metric-value neutral">0.00</div>
-                    <div class="metric-label">Realized + Unrealized</div>
+                    <div id="daily-pnl-label" class="metric-label">Positions M2M + holdings day change</div>
+                    <div id="daily-pnl-bot" class="metric-label" style="opacity:.7"></div>
                 </div>
                 <div class="card">
                     <div class="card-title">Total P&L</div>
                     <div id="total-pnl" class="metric-value neutral">0.00</div>
-                    <div class="metric-label">Since session start</div>
+                    <div id="total-pnl-label" class="metric-label">Open positions + holdings</div>
                 </div>
                 <div class="card">
-                    <div class="card-title">Total Trades</div>
+                    <div class="card-title">Trades Today</div>
                     <div id="total-trades" class="metric-value">0</div>
-                    <div class="metric-label">Orders executed</div>
+                    <div id="total-trades-label" class="metric-label">Executed today (Zerodha)</div>
                 </div>
                 <div class="card">
                     <div class="card-title">Exposure</div>
                     <div id="exposure" class="metric-value">0</div>
                     <div class="progress-bar"><div id="exposure-bar" class="progress-fill" style="width:0%"></div></div>
-                    <div class="metric-label">Capital utilization</div>
+                    <div id="exposure-label" class="metric-label">Gross open-position value · margin used</div>
                 </div>
             </div>
 
@@ -289,6 +299,10 @@
         </div>
         <!-- OI Tracker Tab -->
         <div id="tab-oi-tracker" class="tab-content">
+            <div class="t-hud">
+                <div class="t-hud-l"><span class="t-hud-title">OI TRACKER</span><span class="t-hud-sub">OPTIONS CHAIN · FUTURES BUILD-UP · OI STRATEGY · STREAM</span></div>
+                <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
+            </div>
             <!-- OI Sub-nav -->
             <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
                 <button class="btn btn-sm oi-tab-btn active" data-oi-tab="options" onclick="switchOITab('options')">Options OI (Near ATM)</button>
@@ -772,7 +786,69 @@
             </div>
         </div>
         <!-- Analysis Tab -->
+        <div id="tab-market-flow" class="tab-content mf">
+            <div class="mf-hud">
+                <div class="mf-hud-l">
+                    <span class="mf-title">FNO FLOW</span>
+                    <span class="mf-dim" id="mf-count">— STOCKS</span>
+                    <div class="mf-tabs" id="mf-lens">
+                        <button class="on" data-v="price">CASH PRICE</button>
+                        <button data-v="oi">FUTURE OI</button>
+                    </div>
+                    <div class="mf-tabs" id="mf-universe">
+                        <button class="on" data-v="fno">F&amp;O</button>
+                        <button data-v="nifty">NIFTY 50</button>
+                    </div>
+                </div>
+                <div class="mf-hud-r">
+                    <span class="mf-dim" id="mf-nifty"></span>
+                    <span class="mf-replay" id="mf-replay" hidden></span>
+                    <label class="mf-chk"><input type="checkbox" id="mf-demo"> DEMO</label>
+                    <button class="mf-btn" id="mf-pause">PAUSE</button>
+                    <span class="mf-live" id="mf-live"><i></i><span id="mf-live-text">CONNECTING</span></span>
+                </div>
+            </div>
+            <div class="mf-banner" id="mf-banner" hidden></div>
+            <div class="mf-main">
+                <div class="mf-stage" id="mf-stage" style="position:relative;height:640px;background:#05080c">
+                    <canvas id="mf-canvas"></canvas>
+                    <div class="mf-tip" id="mf-tip" hidden></div>
+                </div>
+                <aside class="mf-side">
+                    <div class="mf-side-hd" id="mf-side-hd">—/— stocks · OI on — · as of —</div>
+                    <div class="mf-tabs mf-filter" id="mf-filter">
+                        <button class="on" data-v="all">ALL</button>
+                        <button data-v="BULL">BULL</button>
+                        <button data-v="BEAR">BEAR</button>
+                    </div>
+                    <div class="mf-cards" id="mf-cards"></div>
+                </aside>
+            </div>
+            <div class="mf-grids">
+                <section>
+                    <div class="mf-sec-hd mf-g">BULL · TOP 12</div>
+                    <div class="mf-grid" id="mf-grid-bull"></div>
+                </section>
+                <section>
+                    <div class="mf-sec-hd mf-r">BEAR · TOP 12</div>
+                    <div class="mf-grid" id="mf-grid-bear"></div>
+                </section>
+            </div>
+            <div class="mf-legend">
+                <span><b>SCORE</b> 0–100 conviction: move 30 · OI build-up 25 · volume pace 20 · VWAP side 15 · order book 10</span>
+                <span><b>ZONE</b> VWAP value zone (±0.05%)</span>
+                <span><b>S1 / R1 / R2</b> nearest floor-pivot support / resistances from the previous session</span>
+                <span><b>vol</b> cash volume vs 20-session average, pro-rated to time of day</span>
+                <span><b>OI</b> near-month futures OI vs previous close</span>
+                <span>Drag the time rail (left) to replay the last 60 min · click any strand, tag or card to pin it</span>
+            </div>
+        </div>
+
         <div id="tab-analysis" class="tab-content">
+            <div class="t-hud">
+                <div class="t-hud-l"><span class="t-hud-title">ANALYSIS</span><span class="t-hud-sub">TREND TEMPLATE · STAGE · RS · VCP · ACCUMULATION · SECTORS</span></div>
+                <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
+            </div>
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
                 <select id="scan-universe" onchange="loadAnalysis()" style="padding:4px 8px;border-radius:4px;background:var(--card-bg);color:var(--text);border:1px solid var(--border);font-size:12px">
                     <option value="nifty50">NIFTY 50</option>
@@ -1064,6 +1140,8 @@
                             <option value="rs_rating">Sort: RS Rating</option>
                             <option value="change_1d">Sort: 1D %</option>
                             <option value="change_20d">Sort: 20D %</option>
+                            <option value="al">Sort: AL</option>
+                            <option value="time_high">Sort: Time High</option>
                         </select>
                     </div>
                     <div class="table-wrap" style="max-height:600px;overflow:auto">
@@ -1073,6 +1151,10 @@
                                     <th>Symbol</th>
                                     <th>Sector</th>
                                     <th>LTP</th>
+                                    <th>AL</th>
+                                    <th>Time High</th>
+                                    <th>All-Time High</th>
+                                    <th>Dist ATH</th>
                                     <th>1D %</th>
                                     <th>5D %</th>
                                     <th>20D %</th>
@@ -1192,6 +1274,10 @@
 
         <!-- Backtest Tab -->
         <div id="tab-backtest" class="tab-content">
+            <div class="t-hud">
+                <div class="t-hud-l"><span class="t-hud-title">BACKTEST</span><span class="t-hud-sub">STRATEGY SIMULATION · EQUITY CURVE · TRADE LOG · WALK-FORWARD</span></div>
+                <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
+            </div>
             <div class="grid grid-2" style="margin-bottom:16px">
                 <div class="card">
                     <div class="card-title">Run Backtest</div>
@@ -2546,5 +2632,13 @@
         })();
     </script>
     <script src="/static/js/dashboard.js?v={{ js_version }}"></script>
+    <script src="/static/js/market_flow.js?v={{ flow_js_version }}"></script>
+    <script src="/static/js/terminal.js?v={{ terminal_js_version }}"></script>
+    <div class="t-pal-overlay" id="t-pal">
+        <div class="t-pal">
+            <input id="t-pal-input" type="text" placeholder="Jump to…  (↑↓ to move, Enter to open, Esc to close)" autocomplete="off">
+            <ul id="t-pal-list"></ul>
+        </div>
+    </div>
 </body>
 </html>

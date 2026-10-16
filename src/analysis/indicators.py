@@ -312,6 +312,14 @@ def week52_high_low(close: Any) -> dict[str, float]:
     return {"high_52w": float(recent.max()), "low_52w": float(recent.min())}
 
 
+def all_time_high_low(df: pd.DataFrame) -> dict[str, float]:
+    if df.empty:
+        return {"all_time_high": 0.0, "all_time_low": 0.0}
+    high = df["high"] if "high" in df.columns else df["close"]
+    low = df["low"] if "low" in df.columns else df["close"]
+    return {"all_time_high": float(high.max()), "all_time_low": float(low.min())}
+
+
 def price_change_pct(close: Any, periods: int = 1) -> float:
     if len(close) < periods + 1:
         return 0.0
@@ -612,6 +620,17 @@ def compute_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None =
     results["high_52w"] = hl["high_52w"]
     results["low_52w"] = hl["low_52w"]
 
+    # All-time high/low and the reference peak to use for distance calculations.
+    # Use the true historical high/low from the full series and only fall back to
+    # the current day high if the dataset is effectively too short to form an
+    # all-time range.
+    ath = all_time_high_low(df)
+    results["all_time_high"] = ath["all_time_high"]
+    results["all_time_low"] = ath["all_time_low"]
+    day_high = float(df["high"].iloc[-1]) if "high" in df.columns and len(df) > 0 else 0.0
+    high_ref = ath["all_time_high"] if ath["all_time_high"] > 0 else day_high
+    results["reference_high"] = high_ref
+
     # Price changes
     results["change_1d"] = price_change_pct(close, 1)
     results["change_5d"] = price_change_pct(close, 5) if len(close) >= 6 else 0.0
@@ -624,6 +643,8 @@ def compute_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None =
     results["ltp"] = ltp
     results["dist_from_52w_high"] = ((ltp / hl["high_52w"]) - 1) * 100 if hl["high_52w"] > 0 else 0
     results["dist_from_52w_low"] = ((ltp / hl["low_52w"]) - 1) * 100 if hl["low_52w"] > 0 else 0
+    results["dist_from_all_time_high"] = ((ltp / high_ref) - 1) * 100 if high_ref > 0 else 0
+    results["dist_from_all_time_low"] = ((ltp / ath["all_time_low"]) - 1) * 100 if ath["all_time_low"] > 0 else 0
 
     # RS Rating (vs benchmark)
     if benchmark_df is not None and len(benchmark_df) > 20:

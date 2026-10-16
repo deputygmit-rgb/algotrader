@@ -4,7 +4,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 
 
@@ -342,6 +342,10 @@ class Holding(BaseModel):
     opening_quantity: int = 0
     collateral_quantity: int = 0
     collateral_type: Optional[str] = None
+    short_quantity: int = 0
+    # Margin Trading Facility leg: {"quantity", "used_quantity", "average_price",
+    # "value", "initial_margin"}. MTF-only holdings report top-level quantity=0.
+    mtf: Optional[dict[str, Any]] = None
     discrepancy: bool = False
     average_price: float = 0.0
     last_price: float = 0.0
@@ -402,12 +406,21 @@ class MarketDepth(BaseModel):
 
 
 class Quote(BaseModel):
+    model_config = {"extra": "allow", "populate_by_name": True}
+
     instrument_token: int = 0
     timestamp: Optional[str] = None
     last_price: float = 0.0
     last_quantity: int = 0
     last_trade_time: Optional[str] = None
     average_price: float = 0.0
+    al: Optional[float] = None
+    day_high: float = 0.0
+    day_low: float = 0.0
+    day_high_time: Optional[str] = None
+    day_low_time: Optional[str] = None
+    time_high: Optional[str] = None
+    time_low: Optional[str] = None
     volume: int = 0
     buy_quantity: int = 0
     sell_quantity: int = 0
@@ -419,6 +432,31 @@ class Quote(BaseModel):
     lower_circuit_limit: float = 0.0
     upper_circuit_limit: float = 0.0
     depth: MarketDepth = Field(default_factory=MarketDepth)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_broker_aliases(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+
+        normalized = dict(values)
+        if "avg_price" in normalized and "average_price" not in normalized:
+            normalized["average_price"] = normalized["avg_price"]
+        if "al" in normalized and "average_price" not in normalized:
+            normalized["average_price"] = normalized["al"]
+        if "al" not in normalized and "average_price" in normalized:
+            normalized["al"] = normalized["average_price"]
+
+        if "day_high_time" in normalized and "time_high" not in normalized:
+            normalized["time_high"] = normalized["day_high_time"]
+        if "day_low_time" in normalized and "time_low" not in normalized:
+            normalized["time_low"] = normalized["day_low_time"]
+        if "high_time" in normalized and "time_high" not in normalized:
+            normalized["time_high"] = normalized["high_time"]
+        if "low_time" in normalized and "time_low" not in normalized:
+            normalized["time_low"] = normalized["low_time"]
+
+        return normalized
 
 
 class LTPQuote(BaseModel):

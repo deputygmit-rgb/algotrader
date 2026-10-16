@@ -288,11 +288,29 @@ class StockScanner:
                         await on_progress(i, total_symbols, symbol)
                     continue
 
+            if results:
+                quote_batches = [list(results.keys())[i:i + 50] for i in range(0, len(results), 50)]
+                for batch in quote_batches:
+                    try:
+                        quotes = await client.get_quote([f"NSE:{symbol}" for symbol in batch])
+                        for quote_key, quote in quotes.items():
+                            symbol = quote_key.split(":")[-1].upper()
+                            if symbol not in results:
+                                continue
+                            results[symbol]["al"] = quote.al if quote.al is not None else quote.average_price
+                            results[symbol]["time_high"] = (
+                                quote.time_high or quote.day_high_time
+                            )
+                    except Exception as e:
+                        logger.warning("analysis_quote_enrichment_failed", batch=batch, error=str(e))
+
             self._analysis_cache = results
             self._last_scan_time = datetime.now()
 
             report = self._build_report(results)
             report["universe"] = universe
+            report["requested_stocks"] = total_symbols
+            report["analyzed_stocks"] = len(results)
             self._universe_reports[universe] = report
             return report
 
@@ -427,13 +445,21 @@ class StockScanner:
         # Support/Resistance levels
         support_resistance = self._find_support_resistance(df)
 
-        # Overall verdict
-        verdict = self._compute_verdict(stock, weekly_trend, monthly_trend)
+        # Overall verdict with broader market + sector context
+        market_context = self._build_market_context()
+        sector_context = self._build_sector_context(symbol)
+        verdict = self._compute_verdict(stock, weekly_trend, monthly_trend, market_context, sector_context)
+
+        day_high_value = stock.get("day_high")
+        if day_high_value is None and "high" in df.columns and len(df) > 0:
+            day_high_value = float(df["high"].iloc[-1])
 
         profile = {
             "symbol": symbol,
             "sector": SECTOR_MAP.get(symbol, "Other"),
             "ltp": ltp,
+            "market_context": market_context,
+            "sector_context": sector_context,
             # Trend
             "trend_score": stock.get("trend_score"),
             "stage": stock.get("stage"),
@@ -464,10 +490,16 @@ class StockScanner:
             "pivot_pp": stock.get("pivot_pp"),
             "pivot_r1": stock.get("pivot_r1"),
             "pivot_s1": stock.get("pivot_s1"),
+            "day_high": day_high_value,
+            "time_high": stock.get("time_high"),
             "high_52w": stock.get("high_52w"),
+            "all_time_high": stock.get("all_time_high"),
+            "all_time_low": stock.get("all_time_low"),
             "low_52w": stock.get("low_52w"),
             "dist_from_52w_high": stock.get("dist_from_52w_high"),
             "dist_from_52w_low": stock.get("dist_from_52w_low"),
+            "dist_from_all_time_high": stock.get("dist_from_all_time_high"),
+            "dist_from_all_time_low": stock.get("dist_from_all_time_low"),
             # Momentum
             "rsi_14": stock.get("rsi_14"),
             "stoch_k": stock.get("stoch_k"),
@@ -1026,11 +1058,78 @@ class StockScanner:
             "resistance": [round(r, 2) for r in resistances],
         }
 
-    def _compute_verdict(self, stock: dict, weekly_trend: dict | None, monthly_trend: dict | None) -> dict[str, Any]:
+    def _build_market_context(self) -> dict[str, Any]:
+        """Summarize the broad market regime using NIFTY data if available."""
+        if self._benchmark_data is None or len(self._benchmark_data) < 30:
+            return {"index": "NIFTY 50", "trend": "unknown", "strength": 0, "change_1d": None, "change_5d": None, "status": "no benchmark data"}
+        bench = self._benchmark_data.copy()
+        closes = bench["close"].astype(float)
+        recent_1d = (closes.iloc[-1] / closes.iloc[-2] - 1) * 100 if len(closes) >= 2 else 0.0
+        recent_5d = (closes.iloc[-1] / closes.iloc[-6] - 1) * 100 if len(closes) >= 6 else 0.0
+        sma_20 = float(closes.tail(20).mean())
+        current = float(closes.iloc[-1])
+        trend = "bullish" if current > sma_20 and recent_5d > 0 else "bearish" if current < sma_20 and recent_5d < 0 else "neutral"
+        strength = min(100, max(0, int(abs(recent_5d) * 12 + 50))) if recent_5d else 50
+        status = "bullish" if trend == "bullish" else "bearish" if trend == "bearish" else "neutral"
+        return {"index": "NIFTY 50", "trend": trend, "strength": strength, "change_1d": round(recent_1d, 2), "change_5d": round(recent_5d, 2), "status": status}
+
+    def _build_sector_context(self, symbol: str) -> dict[str, Any]:
+        """Summarize sector leadership relative to the current symbol's sector."""
+        sector = SECTOR_MAP.get(symbol.upper(), "Other")
+        if not self._analysis_cache:
+            return {"sector": sector, "trend": "unknown", "avg_trend_score": None, "avg_change_5d": None, "status": "no sector data"}
+        sector_stocks = [s for s, data in self._analysis_cache.items() if SECTOR_MAP.get(s.upper(), "Other") == sector]
+        if not sector_stocks:
+            return {"sector": sector, "trend": "unknown", "avg_trend_score": None, "avg_change_5d": None, "status": "no sector data"}
+        scores = [float(self._analysis_cache[s].get("trend_score") or 0) for s in sector_stocks]
+        changes = [float(self._analysis_cache[s].get("change_5d") or 0) for s in sector_stocks]
+        avg_trend = round(sum(scores) / len(scores), 1)
+        avg_change_5d = round(sum(changes) / len(changes), 2)
+        if avg_trend >= 65 and avg_change_5d > 0:
+            trend = "bullish"
+            status = "bullish"
+        elif avg_trend <= 35 and avg_change_5d < 0:
+            trend = "bearish"
+            status = "bearish"
+        else:
+            trend = "neutral"
+            status = "neutral"
+        leader = max((self._analysis_cache[s] for s in sector_stocks), key=lambda x: x.get("trend_score", 0) or 0, default={})
+        return {"sector": sector, "trend": trend, "avg_trend_score": avg_trend, "avg_change_5d": avg_change_5d, "status": status, "leader": leader.get("symbol")}
+
+    def _compute_verdict(
+        self,
+        stock: dict,
+        weekly_trend: dict | None,
+        monthly_trend: dict | None,
+        market_context: dict | None = None,
+        sector_context: dict | None = None,
+    ) -> dict[str, Any]:
         """Compute overall buy/sell/hold verdict from all analysis dimensions."""
         bull_points = 0
         bear_points = 0
         reasons = []
+
+        # Broad market regime
+        if market_context:
+            if market_context.get("trend") == "bullish":
+                bull_points += 2
+                reasons.append("Broad market is bullish")
+            elif market_context.get("trend") == "bearish":
+                bear_points += 2
+                reasons.append("Broad market is bearish")
+
+        # Sector participation
+        if sector_context:
+            sector_status = sector_context.get("status")
+            if sector_status == "bullish":
+                bull_points += 2
+                reasons.append(f"Sector leadership is positive ({sector_context.get('sector')})")
+            elif sector_status == "bearish":
+                bear_points += 2
+                reasons.append(f"Sector leadership is weak ({sector_context.get('sector')})")
+            else:
+                reasons.append(f"Sector trend is mixed ({sector_context.get('sector')})")
 
         # Stage
         stage = stock.get("stage")
@@ -1093,7 +1192,9 @@ class StockScanner:
 
         total = bull_points + bear_points
         if total == 0:
-            return {"action": "HOLD", "confidence": 50, "reasons": ["Insufficient signals"]}
+            verdict = {"action": "HOLD", "confidence": 50, "reasons": ["Insufficient signals"]}
+            verdict["recommendation_text"] = "Market, sector, and stock trend are still mixed; wait for a cleaner confirmation trigger before adding or reducing risk."
+            return verdict
 
         bull_pct = (bull_points / max(1, total)) * 100
 
@@ -1113,7 +1214,34 @@ class StockScanner:
             action = "HOLD"
             confidence = 50
 
-        return {"action": action, "confidence": confidence, "bull_points": bull_points, "bear_points": bear_points, "reasons": reasons}
+        sector_name = sector_context.get("sector", "Other") if sector_context else "Other"
+        market_status = (market_context.get("status") or "unknown") if market_context else "unknown"
+        sector_status = (sector_context.get("status") or "unknown") if sector_context else "unknown"
+        if "BUY" in action:
+            advice = "add on strength"
+        elif "SELL" in action:
+            advice = "avoid new exposure"
+        else:
+            advice = "wait for confirmation"
+        bias = "bullish" if "BUY" in action else "bearish" if "SELL" in action else None
+        if bias and market_status == bias and sector_status == bias:
+            context_note = "market and sector are aligned with the stock"
+        else:
+            context_note = "market and sector context is not fully aligned, so size positions cautiously"
+        rec = (
+            f"Market is {market_status} and the {sector_name} sector is {sector_status}; "
+            f"combined with the stock's daily/weekly/monthly structure the verdict is {action} "
+            f"({context_note}). Primary recommendation: {advice}."
+        )
+
+        return {
+            "action": action,
+            "confidence": confidence,
+            "bull_points": bull_points,
+            "bear_points": bear_points,
+            "reasons": reasons,
+            "recommendation_text": rec,
+        }
 
     # ────────────────────────────────────────────────────────────
     # Helpers
@@ -1220,6 +1348,8 @@ class StockScanner:
                 "symbol": s.get("symbol"),
                 "sector": s.get("sector"),
                 "ltp": s.get("ltp"),
+                "al": s.get("al"),
+                "time_high": s.get("time_high"),
                 "change_1d": s.get("change_1d"),
                 "change_5d": s.get("change_5d"),
                 "change_20d": s.get("change_20d"),
@@ -1232,8 +1362,11 @@ class StockScanner:
                 "vol_ratio": s.get("vol_ratio"),
                 "sma_50": s.get("sma_50"),
                 "sma_200": s.get("sma_200"),
+                "day_high": s.get("day_high"),
                 "high_52w": s.get("high_52w"),
                 "low_52w": s.get("low_52w"),
+                "all_time_high": s.get("all_time_high"),
+                "dist_from_all_time_high": s.get("dist_from_all_time_high"),
                 "dist_from_52w_high": s.get("dist_from_52w_high"),
                 "dist_from_52w_low": s.get("dist_from_52w_low"),
                 "trend_score": s.get("trend_score"),

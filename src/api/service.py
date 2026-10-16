@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from src.analysis.scanner import StockScanner
 from src.analysis.indicators import compute_all_indicators
+from src.analysis.nifty_contribution import compute_nifty_contribution, nifty_quote_instruments
+from src.analysis.fno_flow import FlowHistory, build_universe, compute_fno_flow, quote_keys
+from src.analysis.nifty500 import get_sector
 from src.api.client import KiteClient
-from src.api.market_data import MarketDataProvider, PortfolioReporter
+from src.api.market_data import MarketDataProvider, PortfolioReporter, _resolve_holding_quantity
 from src.api.ticker import KiteTicker
 from src.auth.authenticator import KiteAuthenticator
 from src.data.backtest import BacktestEngine, WalkForwardOptimizer
@@ -130,6 +135,15 @@ class TradingService:
         self._oi_snapshot_task: Optional[asyncio.Task] = None
         self._replay_task: Optional[asyncio.Task] = None
         self._replay_state: dict[str, Any] = {"status": "idle", "running": False}
+        self._nifty_contrib_cache: tuple[float, dict[str, Any]] | None = None
+        self._nifty_contrib_lock = asyncio.Lock()
+        self._fno_universe: list[Any] = []
+        self._fno_universe_date: str = ""
+        self._fno_baselines: dict[str, dict[str, Any]] = {}
+        self._fno_baseline_task: Optional[asyncio.Task] = None
+        self._fno_cache: tuple[float, dict[str, Any]] | None = None
+        self._fno_lock = asyncio.Lock()
+        self._fno_history = FlowHistory()
 
     @staticmethod
     def _task_exception_handler(task: asyncio.Task) -> None:
@@ -210,9 +224,13 @@ class TradingService:
         positions = await self._client.get_positions()
         return positions.model_dump()
 
+    async def get_trades_today_count(self) -> int:
+        """Executed trades in today's Zerodha tradebook (Kite returns today's only)."""
+        return len(await self._client.get_trades())
+
     async def get_holdings(self) -> list[dict[str, Any]]:
         holdings = await self._client.get_holdings()
-        return [h.model_dump() for h in holdings]
+        return [{**h.model_dump(), "total_quantity": _resolve_holding_quantity(h)} for h in holdings]
 
     def get_risk_summary(self) -> dict[str, Any]:
         return self._risk.get_risk_summary()
@@ -1245,11 +1263,12 @@ class TradingService:
 
         timeframe_results: dict[str, Any] = {}
         for interval, days in self.STOCK_TEST_TIMEFRAMES:
+            fetch_days = self._with_dma200_warmup(strategy, interval, days, None)
             try:
                 await self.import_historical_data(
-                    instrument_token=token, tradingsymbol=symbol, interval=interval, days=days,
+                    instrument_token=token, tradingsymbol=symbol, interval=interval, days=fetch_days,
                 )
-                rows = await self._resolve_ohlcv_rows(token, interval, days=days)
+                rows = await self._resolve_ohlcv_rows(token, interval, days=fetch_days)
                 if not rows or len(rows) < 30:
                     timeframe_results[interval] = {"passed": False, "error": "Insufficient historical data"}
                     continue
@@ -2073,6 +2092,110 @@ class TradingService:
 
     async def resolve_instrument_token(self, symbol: str, exchange: str = "NSE") -> int | None:
         return await self._market_data.resolve_token(symbol, exchange)
+
+    # ── F&O market flow ─────────────────────────────────────────
+
+    def _fno_baseline_path(self, day: str) -> str:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return os.path.join(base, "data", f"fno_baseline_{self._zerodha_id or 'default'}_{day}.json")
+
+    async def _ensure_fno_universe(self) -> None:
+        today = datetime.now().date()
+        if self._fno_universe and self._fno_universe_date == today.isoformat():
+            return
+        nfo = await self._client.get_instruments("NFO")
+        nse = await self._client.get_instruments("NSE")
+        self._fno_universe = build_universe(nfo, nse, today, get_sector)
+        self._fno_universe_date = today.isoformat()
+        path = self._fno_baseline_path(self._fno_universe_date)
+        try:
+            with open(path, encoding="utf-8") as f:
+                self._fno_baselines = json.load(f)
+        except (OSError, ValueError):
+            self._fno_baselines = {}
+        logger.info("fno_universe_loaded", stocks=len(self._fno_universe), baselines=len(self._fno_baselines))
+
+    async def _load_fno_baselines(self) -> None:
+        """Fetch previous-session cash candles and futures OI for every F&O
+        stock (2 historical calls each, throttled by the client limiter)."""
+        today = datetime.now().date()
+        frm = (today - timedelta(days=40)).isoformat()
+        to = today.isoformat()
+        path = self._fno_baseline_path(self._fno_universe_date)
+        pending = [c for c in self._fno_universe if c.symbol not in self._fno_baselines]
+
+        async def load(c: Any) -> None:
+            try:
+                cash = await self._client.get_historical_data(c.cash_token, Interval.DAY, frm, to)
+                fut = await self._client.get_historical_data(c.fut_token, Interval.DAY, frm, to, oi=True)
+            except Exception as e:
+                logger.warning("fno_baseline_failed", symbol=c.symbol, error=str(e))
+                return
+            self._fno_baselines[c.symbol] = {
+                "cash": [[str(k.timestamp)[:10], k.high, k.low, k.close, k.volume] for k in cash],
+                "fut_oi": [[str(k.timestamp)[:10], k.oi or 0] for k in fut],
+            }
+
+        for i in range(0, len(pending), 6):
+            await asyncio.gather(*(load(c) for c in pending[i:i + 6]))
+            if (i // 6) % 10 == 9 or i + 6 >= len(pending):
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(self._fno_baselines, f)
+                except OSError as e:
+                    logger.warning("fno_baseline_save_failed", error=str(e))
+        logger.info("fno_baselines_loaded", count=len(self._fno_baselines))
+
+    async def get_fno_flow(self, max_age_s: float = 2.0) -> dict[str, Any]:
+        """F&O universe flow snapshot (cash + nearest future per stock)."""
+        async with self._fno_lock:
+            cached = self._fno_cache
+            if cached and time.monotonic() - cached[0] < max_age_s:
+                return cached[1]
+            try:
+                await self._ensure_fno_universe()
+            except Exception as e:
+                return {"error": f"instrument load failed: {e}"}
+            if not self._fno_universe:
+                return {"error": "no F&O stock futures found in NFO instruments"}
+            if len(self._fno_baselines) < len(self._fno_universe) and (
+                self._fno_baseline_task is None or self._fno_baseline_task.done()
+            ):
+                self._fno_baseline_task = asyncio.create_task(self._load_fno_baselines(), name="fno_baselines")
+                self._fno_baseline_task.add_done_callback(self._task_exception_handler)
+
+            keys = quote_keys(self._fno_universe)
+            quotes: dict[str, Any] = {}
+            for i in range(0, len(keys), 500):
+                resp = await self._market_data.get_quote(keys[i:i + 500])
+                if "error" in resp:
+                    return {"error": resp["error"]}
+                quotes.update(resp.get("quotes", {}))
+
+            now = datetime.now()
+            result = compute_fno_flow(self._fno_universe, quotes, self._fno_baselines, now)
+            result["baseline_loading"] = bool(self._fno_baseline_task and not self._fno_baseline_task.done())
+            self._fno_history.record(result, now)
+            self._fno_cache = (time.monotonic(), result)
+            return result
+
+    def get_fno_flow_history(self, minutes: int = 60) -> list[dict[str, Any]]:
+        return self._fno_history.since(minutes, datetime.now())
+
+    async def get_nifty_contribution(self, max_age_s: float = 1.5) -> dict[str, Any]:
+        """Per-stock Nifty 50 point contribution, cached briefly so concurrent
+        pollers share one batched quote call."""
+        async with self._nifty_contrib_lock:
+            cached = self._nifty_contrib_cache
+            if cached and time.monotonic() - cached[0] < max_age_s:
+                return cached[1]
+            resp = await self._market_data.get_quote(nifty_quote_instruments())
+            if "error" in resp:
+                return {"error": resp["error"]}
+            result = compute_nifty_contribution(resp.get("quotes", {}))
+            result["timestamp"] = datetime.now().isoformat(timespec="seconds")
+            self._nifty_contrib_cache = (time.monotonic(), result)
+            return result
 
     # ────────────────────────────────────────────────────────────
     # Portfolio Reports
