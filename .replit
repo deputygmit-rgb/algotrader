@@ -28,13 +28,13 @@ outputType = "webview"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python main.py"
-waitForPort = 5000
+waitForPort = 5001
 
 [[ports]]
-localPort = 5000
+localPort = 5001
 externalPort = 80
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["gunicorn", "--bind", "0.0.0.0:5000", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "120", "src.api.webapp:app"]
+run = ["gunicorn", "--bind", "0.0.0.0:5001", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "120", "src.api.webapp:app"]
 build = ["bash", "-c", "pip install -e ."]

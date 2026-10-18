@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -231,12 +232,21 @@ _COMPANY_NAMES: dict[str, str] = {
 }
 
 
+# News moves faster than filings; a short cache still spares the sources
+# from being re-scraped on every page view.
+_NEWS_TTL_SECONDS = 10 * 60
+_news_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+
+
 async def fetch_latest_news(symbol: str, limit: int = 15) -> dict[str, Any]:
     """
     Aggregate news from multiple sources for a given NSE stock symbol.
     Returns a structured dict with articles sorted by recency.
     """
     symbol = symbol.upper().strip()
+    cached = _news_cache.get((symbol, limit))
+    if cached and time.monotonic() - cached[0] < _NEWS_TTL_SECONDS:
+        return cached[1]
     company_name = _COMPANY_NAMES.get(symbol, symbol)
 
     # Fetch from all sources concurrently
@@ -264,7 +274,7 @@ async def fetch_latest_news(symbol: str, limit: int = 15) -> dict[str, Any]:
             seen.add(key)
             unique.append(art)
 
-    return {
+    result = {
         "symbol": symbol,
         "company_name": company_name,
         "fetched_at": datetime.now().isoformat(),
@@ -272,3 +282,6 @@ async def fetch_latest_news(symbol: str, limit: int = 15) -> dict[str, Any]:
         "articles": unique[:limit],
         "sources_queried": ["Google News RSS", "MoneyControl", "Economic Times", "NSE Announcements"],
     }
+    if unique:
+        _news_cache[(symbol, limit)] = (time.monotonic(), result)
+    return result

@@ -83,6 +83,43 @@ _ALL_NSE_TOKENS: dict[str, int] = {}
 _NON_EQ_SERIES = {"BE", "BZ", "RR", "IV", "SM", "ST", "BL", "GS", "E1"}
 
 
+# ~275 trading sessions: enough for 1-year (252-session) returns and a
+# 200-day average with its own history behind it.
+HISTORY_CALENDAR_DAYS = 400
+BENCHMARK_QUOTE_KEY = "NSE:NIFTY 50"
+
+
+def with_live_daily_bar(df: pd.DataFrame, quote: Any, today: str) -> pd.DataFrame:
+    """Replace (or append) today's daily bar using a live quote.
+
+    Quotes from a previous session (weekend, before the open) leave ``df``
+    unchanged.
+    """
+    if quote is None or df is None or df.empty:
+        return df
+
+    def get(obj: Any, key: str) -> Any:
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+    traded = str(get(quote, "last_trade_time") or get(quote, "timestamp") or "")[:10]
+    price = get(quote, "last_price")
+    if traded != today or not price:
+        return df
+    ohlc = get(quote, "ohlc") or {}
+    row = {
+        "timestamp": f"{today}T00:00:00+05:30",
+        "open": get(ohlc, "open") or price,
+        "high": max(get(quote, "day_high") or get(ohlc, "high") or price, price),
+        "low": min(get(quote, "day_low") or get(ohlc, "low") or price, price),
+        "close": price,
+        "volume": get(quote, "volume") or 0,
+    }
+    if str(df["timestamp"].iloc[-1])[:10] == today:
+        df = df.iloc[:-1]
+    return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+
+
 class StockScanner:
     """
     State-of-the-art stock scanner with:
@@ -100,6 +137,9 @@ class StockScanner:
 
     def __init__(self) -> None:
         self._cache: dict[str, pd.DataFrame] = {}
+        # date (YYYY-MM-DD) each symbol's daily history was last fetched; later
+        # scans that day only refresh today's bar from a quote
+        self._history_day: dict[str, str] = {}
         self._analysis_cache: dict[str, dict[str, Any]] = {}
         self._last_scan_time: Optional[datetime] = None
         self._scanning = False
@@ -192,19 +232,31 @@ class StockScanner:
             token_map = await self._resolve_tokens(client, scan_symbols)
 
             to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=HISTORY_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+
+            # Daily history is fetched once per day; repeat scans refresh only
+            # today's bar from one batched quote call (keeps the historical
+            # API budget free for intraday work).
+            refresh = [s for s in scan_symbols if self._history_day.get(s) == to_date and s in self._cache]
+            live_quotes = await self._fetch_quotes(client, [f"NSE:{s}" for s in refresh] + [BENCHMARK_QUOTE_KEY])
 
             # Fetch NIFTY 50 benchmark data (optional — scan continues if unavailable)
             nifty_token = 256265
             try:
-                candles = await client.get_historical_data(
-                    instrument_token=nifty_token,
-                    interval=self._get_interval("day"),
-                    from_date=from_date,
-                    to_date=to_date,
-                )
-                if candles:
-                    self._benchmark_data = self._candles_to_df(candles)
+                if self._history_day.get(BENCHMARK_QUOTE_KEY) == to_date and self._benchmark_data is not None:
+                    self._benchmark_data = with_live_daily_bar(
+                        self._benchmark_data, live_quotes.get(BENCHMARK_QUOTE_KEY), to_date,
+                    )
+                else:
+                    candles = await client.get_historical_data(
+                        instrument_token=nifty_token,
+                        interval=self._get_interval("day"),
+                        from_date=from_date,
+                        to_date=to_date,
+                    )
+                    if candles:
+                        self._benchmark_data = self._candles_to_df(candles)
+                        self._history_day[BENCHMARK_QUOTE_KEY] = to_date
             except Exception as e:
                 err_str = str(e)
                 if "PermissionException" in err_str or "Insufficient permission" in err_str:
@@ -227,20 +279,9 @@ class StockScanner:
                         await on_progress(i, total_symbols, symbol)
                     continue
                 try:
-                    candles = await asyncio.wait_for(
-                        client.get_historical_data(
-                            instrument_token=token,
-                            interval=self._get_interval("day"),
-                            from_date=from_date,
-                            to_date=to_date,
-                        ),
-                        timeout=45,
-                    )
-                    if not candles or len(candles) < 10:
+                    df = await self._daily_history(client, symbol, token, from_date, to_date, live_quotes)
+                    if df is None or len(df) < 10:
                         continue
-
-                    df = self._candles_to_df(candles)
-                    self._cache[symbol] = df
 
                     # Enhanced: pass benchmark data for RS rating
                     indicators = compute_all_indicators(df, self._benchmark_data)
@@ -257,6 +298,7 @@ class StockScanner:
                         "triggers": triggers,
                         "accumulation": accumulation,
                         "trend_score": self._compute_trend_score(indicators, super_perf),
+                        "analyzed_at": datetime.now().isoformat(timespec="seconds"),
                     }
 
                     # Sanitize numpy types and NaN values for JSON serialization
@@ -317,6 +359,13 @@ class StockScanner:
                     except Exception as e:
                         logger.warning("analysis_quote_enrichment_failed", batch=batch, error=str(e))
 
+            if not results:
+                return {
+                    "error": "Stock scan returned no usable data; the previous completed scan remains cached.",
+                    "scanned": False,
+                    "cached_scan_time": self.last_scan_time,
+                }
+
             # merge, not replace: deep profiles stay available for every stock
             # scanned in any universe
             self._analysis_cache.update(results)
@@ -374,7 +423,7 @@ class StockScanner:
 
         # Fetch historical data
         to_date = datetime.now().strftime("%Y-%m-%d")
-        from_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        from_date = (datetime.now() - timedelta(days=HISTORY_CALENDAR_DAYS)).strftime("%Y-%m-%d")
 
         try:
             candles = await client.get_historical_data(
@@ -389,8 +438,9 @@ class StockScanner:
             df = self._candles_to_df(candles)
             self._cache[symbol] = df
 
-            # Fetch benchmark if not available
-            if self._benchmark_data is None:
+            # Fetch the benchmark if missing or older than today's data
+            bench = self._benchmark_data
+            if bench is None or bench.empty or str(bench["timestamp"].iloc[-1])[:10] < to_date:
                 try:
                     bench_candles = await client.get_historical_data(
                         instrument_token=256265,
@@ -418,6 +468,7 @@ class StockScanner:
                 "triggers": triggers,
                 "accumulation": accumulation,
                 "trend_score": self._compute_trend_score(indicators, super_perf),
+                "analyzed_at": datetime.now().isoformat(timespec="seconds"),
             }
             result = _sanitize_numpy(result)
             self._analysis_cache[symbol] = result
@@ -481,6 +532,11 @@ class StockScanner:
             "stage": stock.get("stage"),
             "stage_name": stock.get("stage_name"),
             "stage_confidence": stock.get("stage_confidence"),
+            "history_bars": int(len(df)),
+            # when this stock's indicators were computed (not when the page asked)
+            "as_of": stock.get("analyzed_at"),
+            # market/sector context comes from the last universe scan
+            "context_as_of": self.last_scan_time,
             # Super Performance
             "super_performance": stock.get("super_performance"),
             # Relative Strength
@@ -501,6 +557,26 @@ class StockScanner:
             },
             "weekly_trend": weekly_trend,
             "monthly_trend": monthly_trend,
+            "technical_indicators": {
+                key: stock.get(key)
+                for key in (
+                    "sma_20", "sma_50", "sma_150", "sma_200",
+                    "ema_9", "ema_12", "ema_21", "ema_26",
+                    "rsi_14", "stoch_k", "stoch_d", "williams_r", "cci_20", "roc_12",
+                    "macd_line", "macd_signal", "macd_histogram",
+                    "adx_14", "plus_di", "minus_di",
+                    "atr_14", "bb_upper", "bb_middle", "bb_lower", "bb_bandwidth",
+                    "hist_volatility",
+                    "vol_ratio", "obv_trend", "mfi_14",
+                    "ichimoku_signal", "ichimoku_tenkan", "ichimoku_kijun",
+                    "ichimoku_cloud_top", "ichimoku_cloud_bot", "lr_slope_20",
+                    "change_1d", "change_5d", "change_20d", "change_60d",
+                    "change_120d", "change_250d",
+                    "high_52w", "low_52w", "dist_from_52w_high", "dist_from_52w_low",
+                    "all_time_high", "all_time_low", "dist_from_all_time_high",
+                    "dist_from_all_time_low",
+                )
+            },
             # Key Levels
             "support_resistance": support_resistance,
             "pivot_pp": stock.get("pivot_pp"),
@@ -736,10 +812,10 @@ class StockScanner:
         minus_di = ind.get("minus_di")
         if plus_di and minus_di:
             if plus_di > minus_di and plus_di > 25:
-                signals.append(f"+DI dominant ({plus_di:.0f} vs {minus_di:.0f}) — buyers in control")
+                signals.append(f"+DI leads ({plus_di:.0f} vs {minus_di:.0f}) — bullish directional input")
                 score += 1
             elif minus_di > plus_di and minus_di > 25:
-                signals.append(f"-DI dominant ({minus_di:.0f} vs {plus_di:.0f}) — sellers in control")
+                signals.append(f"-DI leads ({minus_di:.0f} vs {plus_di:.0f}) — bearish directional input")
                 score -= 1
 
         if score >= 3:
@@ -1220,9 +1296,17 @@ class StockScanner:
 
         total = bull_points + bear_points
         if total == 0:
-            verdict = {"action": "HOLD", "confidence": 50, "reasons": ["Insufficient signals"]}
-            verdict["recommendation_text"] = "Market, sector, and stock trend are still mixed; wait for a cleaner confirmation trigger before adding or reducing risk."
-            return verdict
+            return {
+                "action": "HOLD",
+                "confidence": 50,
+                "bull_points": 0,
+                "bear_points": 0,
+                "reasons": ["Insufficient signals"],
+                "advice": "wait for confirmation",
+                "context_aligned": False,
+                "context_note": "market, sector and stock signals are inconclusive",
+                "recommendation_text": "Market, sector, and stock trend are still mixed; wait for a cleaner confirmation trigger before adding or reducing risk.",
+            }
 
         bull_pct = (bull_points / max(1, total)) * 100
 
@@ -1252,7 +1336,8 @@ class StockScanner:
         else:
             advice = "wait for confirmation"
         bias = "bullish" if "BUY" in action else "bearish" if "SELL" in action else None
-        if bias and market_status == bias and sector_status == bias:
+        context_aligned = bool(bias and market_status == bias and sector_status == bias)
+        if context_aligned:
             context_note = "market and sector are aligned with the stock"
         else:
             context_note = "market and sector context is not fully aligned, so size positions cautiously"
@@ -1268,6 +1353,9 @@ class StockScanner:
             "bull_points": bull_points,
             "bear_points": bear_points,
             "reasons": reasons,
+            "advice": advice,
+            "context_aligned": context_aligned,
+            "context_note": context_note,
             "recommendation_text": rec,
         }
 
@@ -1284,6 +1372,41 @@ class StockScanner:
             "minute_60": Interval.MINUTE_60,
         }
         return intervals.get(interval, Interval.DAY)
+
+    async def _daily_history(
+        self, client: Any, symbol: str, token: int, from_date: str, to_date: str,
+        live_quotes: dict[str, Any],
+    ) -> Optional[pd.DataFrame]:
+        """Daily candles for ``symbol``: fetched once per day, then kept current from quotes."""
+        if self._history_day.get(symbol) == to_date and symbol in self._cache:
+            df = with_live_daily_bar(self._cache[symbol], live_quotes.get(f"NSE:{symbol}"), to_date)
+        else:
+            candles = await asyncio.wait_for(
+                client.get_historical_data(
+                    instrument_token=token,
+                    interval=self._get_interval("day"),
+                    from_date=from_date,
+                    to_date=to_date,
+                ),
+                timeout=45,
+            )
+            if not candles:
+                return None
+            df = self._candles_to_df(candles)
+            self._history_day[symbol] = to_date
+        self._cache[symbol] = df
+        return df
+
+    @staticmethod
+    async def _fetch_quotes(client: Any, keys: list[str]) -> dict[str, Any]:
+        quotes: dict[str, Any] = {}
+        for i in range(0, len(keys), 500):
+            try:
+                quotes.update(await client.get_quote(keys[i:i + 500]))
+            except Exception as e:
+                # without a quote the cached history is used as-is
+                logger.warning("scan_quote_refresh_failed", error=str(e))
+        return quotes
 
     def _candles_to_df(self, candles: list) -> pd.DataFrame:
         rows = [

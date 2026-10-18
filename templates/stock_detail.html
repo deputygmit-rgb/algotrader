@@ -8,15 +8,21 @@
     <link rel="stylesheet" href="/static/css/dashboard.css">
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
     <link rel="stylesheet" href="/static/css/stock_detail.css?v={{ css_version }}">
+    <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
     <script src="/static/js/stock_detail.js?v={{ js_version }}" defer></script>
 </head>
-<body class="stock-detail-page" data-symbol="{{ symbol }}">
+<body class="stock-detail-page" data-symbol="{{ symbol }}" data-csrf="{{ csrf_token }}">
     <header class="header">
         <div class="header-left">
             <a class="logo" href="/app">VerquoAI™</a>
             <span class="status-badge status-connected">STOCK RESEARCH</span>
         </div>
         <div class="header-right">
+            <form id="stock-symbol-form" class="stock-symbol-form" role="search">
+                <label class="sr-only" for="stock-symbol-input">Open another NSE symbol</label>
+                <input id="stock-symbol-input" class="stock-symbol-input" type="text" autocomplete="off" spellcheck="false"
+                       placeholder="Symbol  ( / )" maxlength="32" pattern="[A-Za-z0-9&amp;.\-]{1,32}">
+            </form>
             <a class="btn btn-outline btn-sm" href="/app">Back to workspace</a>
         </div>
     </header>
@@ -27,6 +33,7 @@
                 <div class="stock-detail-kicker">EQUITY DEEP DIVE · NSE</div>
                 <h1 id="stock-title">{{ symbol }}</h1>
                 <p id="stock-subtitle">Loading market context, fundamentals, filings and company updates…</p>
+                <div id="stock-live-quote" class="stock-live-quote" aria-live="polite">Loading live quote…</div>
             </div>
             <div class="stock-source-actions">
                 <a id="screener-link" class="btn btn-outline btn-sm" target="_blank" rel="noopener noreferrer">Open Screener</a>
@@ -44,31 +51,47 @@
                     <div class="stock-terminal-label">PRICE ACTION · TECHNICAL STRUCTURE</div>
                     <div class="stock-terminal-title">Market chart</div>
                 </div>
-                <div class="stock-chart-ranges" role="group" aria-label="Chart time range">
-                    <button class="stock-range-btn" data-days="30">1M</button>
-                    <button class="stock-range-btn" data-days="90">3M</button>
-                    <button class="stock-range-btn active" data-days="180">6M</button>
-                    <button class="stock-range-btn" data-days="365">1Y</button>
+                <div class="stock-chart-controls">
+                    <div class="stock-chart-ranges" role="group" aria-label="Chart time range">
+                        <button class="stock-range-btn" data-days="30" title="1 month (key 1)">1M</button>
+                        <button class="stock-range-btn" data-days="90" title="3 months (key 2)">3M</button>
+                        <button class="stock-range-btn active" data-days="180" title="6 months (key 3)">6M</button>
+                        <button class="stock-range-btn" data-days="365" title="1 year (key 4)">1Y</button>
+                        <button class="stock-range-btn" data-days="730" title="2 years (key 5)">2Y</button>
+                        <button class="stock-range-btn" data-days="1825" title="5 years (key 6)">5Y</button>
+                    </div>
+                    <div class="stock-chart-ranges" role="group" aria-label="Candle interval">
+                        <button class="stock-interval-btn stock-range-btn active" data-interval="day" title="Daily candles (key D)">D</button>
+                        <button class="stock-interval-btn stock-range-btn" data-interval="week" title="Weekly candles (key W)">W</button>
+                    </div>
                 </div>
             </div>
-            <div class="stock-chart-legend">
+            <div class="stock-chart-legend" role="group" aria-label="Chart overlays">
                 <span><i class="legend-price"></i> PRICE</span>
-                <span><i class="legend-sma"></i> SMA 20</span>
-                <span><i class="legend-sma50"></i> SMA 50</span>
-                <span><i class="legend-sma200"></i> SMA 200</span>
-                <span><i class="legend-ema"></i> EMA 9</span>
+                <button class="stock-series-btn" data-series="sma_20" aria-pressed="true"><i class="legend-sma"></i> SMA 20</button>
+                <button class="stock-series-btn" data-series="sma_50" aria-pressed="true"><i class="legend-sma50"></i> SMA 50</button>
+                <button class="stock-series-btn" data-series="sma_200" aria-pressed="true"><i class="legend-sma200"></i> SMA 200</button>
+                <button class="stock-series-btn" data-series="ema_9" aria-pressed="true"><i class="legend-ema"></i> EMA 9</button>
+                <button class="stock-series-btn" data-series="bb" aria-pressed="false"><i class="legend-bb"></i> BOLLINGER</button>
+                <button class="stock-series-btn" data-series="levels" aria-pressed="true"><i class="legend-levels"></i> S/R LEVELS</button>
+                <button class="stock-series-btn" data-series="compare" aria-pressed="false" title="Compare with NIFTY 50 (key N)"><i class="legend-compare"></i> vs NIFTY</button>
                 <span><i class="legend-volume"></i> VOLUME</span>
                 <span><i class="legend-rsi"></i> RSI 14</span>
                 <span class="stock-chart-source">OHLC history · Zerodha market data</span>
             </div>
             <div class="stock-chart-shell">
-                <canvas id="stock-price-chart" aria-label="Historical candlestick chart with moving averages, volume and RSI"></canvas>
+                <canvas id="stock-price-chart" role="img" aria-label="Historical candlestick chart with moving averages, volume and RSI. A data table follows the chart."></canvas>
                 <div id="stock-chart-empty" class="stock-chart-empty">Loading historical candles…</div>
             </div>
             <div class="stock-chart-foot">
                 <span id="stock-chart-range-label">6 month view</span>
-                <span>Hover / tap chart for candle values</span>
+                <span id="stock-chart-as-of"></span>
+                <span>Scroll to zoom · drag to pan · double-click to reset · keys 1–6, D/W, N, /</span>
             </div>
+            <details id="stock-chart-data" class="stock-chart-data">
+                <summary>Chart data table</summary>
+                <div id="stock-chart-table" class="stock-table-wrap"></div>
+            </details>
         </section>
 
         <section class="card stock-detail-section stock-technical-card">
@@ -76,11 +99,27 @@
             <div id="technical-summary" class="stock-section-loading">Loading technical analysis…</div>
         </section>
 
+        <section class="card stock-detail-section" id="strategy-test-card">
+            <div class="card-title">Strategy test</div>
+            <p class="stock-section-note">Backtests a strategy on this stock's own price history. Trades are sized to risk 1% of ₹1 lakh and executed as live trading would be (next-bar fills, costs, 15:15 square-off intraday; daily bars are long-only delivery). A timeframe passes with win rate ≥ 45%, Sharpe ≥ 1, drawdown ≤ 20%, return ≥ 0, at least 5 trades — and a profitable out-of-sample last 30% with at least 3 trades. Strategies built for one bar size (such as the 5-minute day-trade setups) are tested on that timeframe only. Testing only — no orders are placed from this page.</p>
+            <form id="strategy-test-form" class="stock-test-form">
+                <label for="strategy-test-select">Strategy</label>
+                <select id="strategy-test-select" disabled><option>Loading strategies…</option></select>
+                <span id="strategy-test-frames" class="stock-test-frames"></span>
+                <button id="strategy-test-run" class="btn btn-primary btn-sm" type="submit" disabled>Run test</button>
+            </form>
+            <div id="strategy-test-status" class="stock-test-status" role="status" aria-live="polite"></div>
+            <div id="strategy-test-results"></div>
+        </section>
+
         <section class="card stock-detail-section">
             <div class="card-title">Fundamentals &amp; ratios</div>
             <p class="stock-section-note">Ratios and financial highlights are shown as reported by Screener.in. Values and periods depend on source availability.</p>
+            <div id="fundamentals-basis" class="stock-basis"></div>
             <div id="fundamentals-summary" class="stock-section-loading">Loading available ratios…</div>
-            <div class="stock-subheading">Detailed reported metrics</div>
+            <div class="stock-subheading">Growth &amp; profitability</div>
+            <div id="fundamental-growth" class="stock-section-loading">Computing growth from reported statements…</div>
+            <div class="stock-subheading">Additional reported metrics</div>
             <div id="fundamental-ratios" class="stock-section-loading">Loading financial highlights…</div>
         </section>
 

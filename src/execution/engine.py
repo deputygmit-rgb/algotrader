@@ -16,6 +16,7 @@ from src.data.models import (
     Signal,
     TransactionType,
 )
+from src.data.exit_plan import exec_spec, execution_spec, levels_from_spec
 from src.execution.order_coordinator import (
     OrderCoordinator,
     FreezeQuantityManager,
@@ -72,6 +73,17 @@ class TrackedPosition:
         # Profit target (protective LIMIT order, OCO with the SL order)
         self.target = target  # absolute price
         self.target_order_id: str | None = None
+
+        # Execution plan (signal.metadata["exec"], see src/data/exit_plan.py):
+        # optional partial exit with a breakeven stop, and time exits.
+        self.open_quantity = quantity        # shares still open after any partial exit
+        self.realized_pnl = 0.0              # P&L already booked by partial exits
+        self.scale_at: float | None = None   # absolute price for the partial exit
+        self.scale_fraction = 0.5
+        self.breakeven_after_scale = True
+        self.scaled = False
+        self.max_hold_seconds: float | None = None
+        self.exit_by: dtime | None = None
 
         # State
         self.sl_order_id: str | None = None
@@ -281,6 +293,48 @@ class ExecutionEngine:
         Kept for backward compat — does nothing."""
         pass
 
+    @staticmethod
+    def _apply_exec_plan(tracked: TrackedPosition, signal: Signal, fill_price: float) -> None:
+        """Copy the signal's execution plan (metadata["exec"]) onto the tracked position.
+
+        With a risk model in the spec, stop / scale-out / target are rebuilt
+        from the actual fill by ``plan_levels`` - the same function the Day
+        Trade panel, backtests and paper runs use.
+        """
+        timeframe = (signal.metadata or {}).get("timeframe")
+        spec = execution_spec(signal, timeframe) if timeframe else exec_spec(signal)
+        side = 1 if tracked.is_long else -1
+        # no explicit target: 2R, as in backtest and paper
+        if tracked.target is None and tracked.current_stop_loss is not None:
+            tracked.target = round(fill_price + side * 2 * abs(fill_price - tracked.current_stop_loss), 2)
+        if not spec:
+            return
+        levels = levels_from_spec(side, fill_price, spec)
+        if levels:
+            tracked.initial_stop_loss = tracked.current_stop_loss = levels["stop"]
+            tracked.target = levels["target2"]
+        tracked.trailing_active = bool(spec.get("trail", True)) and tracked.current_stop_loss is not None
+        if spec.get("scale_out_at"):
+            tracked.scale_at = levels["target1"] if levels else round(fill_price + side * float(spec["scale_out_at"]), 2)
+            tracked.scale_fraction = float(spec.get("scale_out_fraction", 0.5))
+            tracked.breakeven_after_scale = bool(spec.get("breakeven_after_scale", True))
+        if spec.get("max_hold_bars"):
+            # the bar-based engines fill at a bar's open and exit at the close of
+            # the bar max_hold_bars later: (max_hold_bars + 1) bars after the fill
+            bar_minutes = float(spec.get("bar_minutes", 5))
+            tracked.max_hold_seconds = (float(spec["max_hold_bars"]) + 1) * bar_minutes * 60
+        if spec.get("exit_by"):
+            hh, mm = str(spec["exit_by"]).split(":")[:2]
+            tracked.exit_by = dtime(int(hh), int(mm))
+
+    def open_position_for(self, tradingsymbol: str, strategy_name: str) -> Optional[TrackedPosition]:
+        """The strategy's open tracked position in ``tradingsymbol``, if any."""
+        for tracked in self._tracked_positions.values():
+            if (not tracked.is_closed and tracked.tradingsymbol == tradingsymbol
+                    and tracked.strategy_name == strategy_name):
+                return tracked
+        return None
+
     async def _place_protective_stop_loss(self, tracked: TrackedPosition) -> Optional[str]:
         """Place a separate SL order to protect an open position.
         
@@ -304,7 +358,7 @@ class ExecutionEngine:
             exchange=Exchange(tracked.exchange),
             transaction_type=sl_txn,
             order_type=OrderType.SL,
-            quantity=tracked.quantity,
+            quantity=tracked.open_quantity,
             product=ProductType(tracked.product),
             price=limit_price,
             trigger_price=trigger_price,
@@ -374,7 +428,7 @@ class ExecutionEngine:
             exchange=Exchange(tracked.exchange),
             transaction_type=target_txn,
             order_type=OrderType.LIMIT,
-            quantity=tracked.quantity,
+            quantity=tracked.open_quantity,
             product=ProductType(tracked.product),
             price=tracked.target,
         )
@@ -441,6 +495,15 @@ class ExecutionEngine:
                     if not current_price:
                         continue
 
+                    # Execution plan: partial exit at the scale level, then time exits
+                    if tracked.scale_at and not tracked.scaled:
+                        side = 1 if tracked.is_long else -1
+                        if side * (current_price - tracked.scale_at) >= 0:
+                            await self._scale_out(tracked, current_price)
+                    if self._time_exit_due(tracked):
+                        await self.close_position(order_id, reason="TIME_EXIT")
+                        continue
+
                     # Update trailing stop
                     if tracked.update_trailing_stop(current_price):
                         await self._modify_stop_loss_order(tracked)
@@ -453,6 +516,72 @@ class ExecutionEngine:
 
             except Exception as e:
                 logger.error("position_monitor_error", error=str(e))
+
+    @staticmethod
+    def _time_exit_due(tracked: TrackedPosition, now: datetime | None = None) -> bool:
+        now = now or datetime.now()
+        if tracked.max_hold_seconds is not None and (now - tracked.entry_time).total_seconds() >= tracked.max_hold_seconds:
+            return True
+        return tracked.exit_by is not None and now.time() >= tracked.exit_by
+
+    async def _scale_out(self, tracked: TrackedPosition, price: float) -> None:
+        """Book part of the position at market, then protect the rest.
+
+        The protective SL / target orders are resized to the remaining
+        quantity; with ``breakeven_after_scale`` the stop moves to the entry
+        price and stops trailing.
+        """
+        tracked.scaled = True
+        qty = int(tracked.open_quantity * tracked.scale_fraction)
+        if 0 < qty < tracked.open_quantity:
+            exit_order = OrderRequest(
+                tradingsymbol=tracked.tradingsymbol,
+                exchange=Exchange(tracked.exchange),
+                transaction_type=TransactionType.SELL if tracked.is_long else TransactionType.BUY,
+                order_type=OrderType.MARKET,
+                quantity=qty,
+                product=ProductType(tracked.product),
+            )
+            try:
+                await self._coordinator.place_order(exit_order)
+            except Exception as e:
+                logger.error("scale_out_failed", symbol=tracked.tradingsymbol, error=str(e))
+                return
+            side = 1 if tracked.is_long else -1
+            tracked.realized_pnl += side * (price - tracked.entry_price) * qty
+            tracked.open_quantity -= qty
+        if tracked.breakeven_after_scale:
+            tracked.current_stop_loss = tracked.entry_price
+            tracked.trailing_active = False
+        await self._resize_protective_orders(tracked)
+        logger.info(
+            "position_scaled_out",
+            symbol=tracked.tradingsymbol,
+            booked=qty,
+            remaining=tracked.open_quantity,
+            stop=tracked.current_stop_loss,
+        )
+
+    async def _resize_protective_orders(self, tracked: TrackedPosition) -> None:
+        """Match the SL / target orders to the open quantity (and the SL to the current stop)."""
+        side_buffer = (1 - self._slippage_tolerance / 100) if tracked.is_long else (1 + self._slippage_tolerance / 100)
+        requests = []
+        if tracked.sl_order_id and tracked.current_stop_loss:
+            requests.append(OrderModifyRequest(
+                order_id=tracked.sl_order_id, variety=OrderVariety.REGULAR,
+                quantity=tracked.open_quantity, trigger_price=tracked.current_stop_loss,
+                price=round(tracked.current_stop_loss * side_buffer, 2),
+            ))
+        if tracked.target_order_id:
+            requests.append(OrderModifyRequest(
+                order_id=tracked.target_order_id, variety=OrderVariety.REGULAR,
+                quantity=tracked.open_quantity,
+            ))
+        for req in requests:
+            try:
+                await self._client.modify_order(req)
+            except Exception as e:
+                logger.error("protective_resize_failed", order_id=req.order_id, error=str(e))
 
     async def _detect_sl_fills(self) -> None:
         """Check if any broker-side SL orders have been filled.
@@ -558,10 +687,10 @@ class ExecutionEngine:
         tracked.is_closed = True
         tracked.exit_price = exit_price
         tracked.exit_reason = reason
-        if tracked.is_long:
-            tracked.pnl = round((exit_price - tracked.entry_price) * tracked.quantity, 2)
-        else:
-            tracked.pnl = round((tracked.entry_price - exit_price) * tracked.quantity, 2)
+        side = 1 if tracked.is_long else -1
+        tracked.pnl = round(
+            tracked.realized_pnl + side * (exit_price - tracked.entry_price) * tracked.open_quantity, 2
+        )
 
     async def _squareoff_mis_positions(self) -> None:
         """Square off all MIS positions before 3:20 PM broker auto-square-off."""
@@ -600,7 +729,7 @@ class ExecutionEngine:
                     exchange=Exchange(tracked.exchange),
                     transaction_type=exit_txn,
                     order_type=OrderType.MARKET,
-                    quantity=tracked.quantity,
+                    quantity=tracked.open_quantity,
                     product=ProductType(tracked.product),
                 )
                 
@@ -661,7 +790,7 @@ class ExecutionEngine:
             exchange=Exchange(tracked.exchange),
             transaction_type=exit_txn,
             order_type=OrderType.MARKET,
-            quantity=tracked.quantity,
+            quantity=tracked.open_quantity,
             product=ProductType(tracked.product),
         )
         
@@ -864,6 +993,7 @@ class ExecutionEngine:
                                     product=signal.product.value if hasattr(signal.product, "value") else str(signal.product),
                                     signal=signal,
                                 )
+                                self._apply_exec_plan(tracked, signal, fill_price)
                                 self._tracked_positions[order_id] = tracked
                                 
                                 # 2. Place protective SL + target orders (OCO pair)

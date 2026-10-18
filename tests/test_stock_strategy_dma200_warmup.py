@@ -33,6 +33,8 @@ async def test_test_stock_strategy_uses_dma200_warmup_for_trend_strategies() -> 
         "max_drawdown_pct": 12.0,
         "total_return_pct": 15.0,
         "total_trades": 12,
+        # profitable trades in the out-of-sample (last 30%) segment
+        "trades": [{"entry_time": "2099-01-01 09:15:00", "exit_bar": 1, "pnl": 100.0}] * 3,
     }):
         result = await service.test_stock_strategy("RELIANCE", "golden_death_cross")
 

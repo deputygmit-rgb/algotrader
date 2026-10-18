@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from src.data.exit_plan import DEFAULT_SLIPPAGE_PCT, ExitPlan, allows_short, fills_next_open, is_intraday
 from src.data.models import Order, TransactionType, OrderType, ProductType, Exchange
 from src.utils.serialization import sanitize_for_json
 from src.utils.logger import get_logger
@@ -87,6 +88,31 @@ class _CostModel:
             "clearing":   round(clearing, 2),
             "total":      round(total, 2),
         }
+
+
+class _IndianChargesModel:
+    """Adapter exposing the backtest's ``IndianCostModel`` (charges only, no
+    slippage term) through this module's ``compute`` interface, so strategies
+    with execution plans pay identical charges in backtest and paper runs."""
+
+    def __init__(self) -> None:
+        from src.data.backtest import IndianCostModel
+
+        self._model = IndianCostModel(slippage_pct=0.0)
+
+    def compute(self, price: float, quantity: int, is_buy: bool, is_intraday: bool = True) -> dict[str, float]:
+        return self._model.calculate(price, quantity, is_buy, is_intraday)
+
+
+class _FixedSlippage:
+    """Constant slippage (percent) on market fills - matches the backtest's model."""
+
+    def __init__(self, pct: float) -> None:
+        self._rate = pct / 100
+
+    def get_fill_price(self, symbol: str, quoted_price: float, quantity: int, is_buy: bool) -> float:
+        # unrounded, like the backtest, so plan levels built from the fill match exactly
+        return quoted_price * (1 + self._rate if is_buy else 1 - self._rate)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -362,35 +388,93 @@ class PaperTradingEngine:
             df["timestamp"] = df.index
         df = df.reset_index(drop=True)
 
+        # Same execution rules as the backtest and live trading (src/data/exit_plan.py):
+        # next-open execution, plan-driven exits, timeframe-driven product.
+        plan_strategy = bool(getattr(strategy, "uses_exit_plans", False))
+        self.is_intraday = is_intraday(timeframe)
+        shorts = allows_short(timeframe)
+        slip = getattr(strategy, "slippage_pct", None)
+        self._slippage = _FixedSlippage(float(DEFAULT_SLIPPAGE_PCT if slip is None else slip))
+        self._cost_model = _IndianChargesModel()      # identical charges to the backtest
+
+        plan: Optional[ExitPlan] = None      # exits for the open position
+        pending_entry: Optional[Any] = None  # acted on at the next bar's open
+        pending_exit = False
+        entry_qty = 0                        # size at entry; partial exits are fractions of it
+
+        def position_qty() -> int:
+            pos = self._positions.get(tradingsymbol)
+            return pos.quantity if pos else 0
+
+        def close_all(price: float, ts: datetime) -> None:
+            nonlocal plan
+            qty = position_qty()
+            if qty:
+                side = TransactionType.SELL if qty > 0 else TransactionType.BUY
+                self.place_order(tradingsymbol, side, abs(qty), price, timestamp=ts)
+            plan = None
+
+        def enter(signal: Any, price: float, i: int, ts: datetime) -> None:
+            nonlocal plan, entry_qty
+            side = 1 if signal.transaction_type == TransactionType.BUY else -1
+            qty = max(1, int(getattr(signal, "quantity", 1) or 1))
+            trade = self.place_order(tradingsymbol, signal.transaction_type, qty, price, timestamp=ts)
+            entry_qty = qty
+            plan = ExitPlan.from_signal(signal, side, trade.fill_price, i, timeframe) if trade else None
+
         for i in range(1, len(df)):
             bar = df.iloc[i]
             slice_df = df.iloc[: i + 1]
-            strategy.update_bar_data(instrument_token, slice_df)
-            signal = strategy.generate_signal(slice_df, instrument_token)
-
             price = float(bar["close"])
             bar_ts = bar["timestamp"] if "timestamp" in df.columns else None
             bar_ts = pd.Timestamp(bar_ts).to_pydatetime() if bar_ts is not None else datetime.now()
+            hhmm = str(bar["timestamp"])[11:16] if "timestamp" in df.columns else ""
+
+            # orders decided at the previous close execute at this bar's open
+            if pending_exit:
+                close_all(float(bar["open"]), bar_ts)
+            pending_exit = False
+            if pending_entry is not None and position_qty() == 0:
+                enter(pending_entry, float(bar["open"]), i, bar_ts)
+            pending_entry = None
+
+            # exits from the open position's plan, evaluated on this bar
+            if plan is not None and position_qty() != 0:
+                for ex in plan.on_bar(bar, i, hhmm):
+                    open_qty = abs(position_qty())
+                    part = open_qty if ex.final else min(open_qty, max(1, round(entry_qty * ex.fraction)))
+                    if part > 0:
+                        close_side = TransactionType.SELL if plan.side > 0 else TransactionType.BUY
+                        # the final target rests as a limit order; other exits go at market
+                        order_type = OrderType.LIMIT if ex.reason == "TARGET" else OrderType.MARKET
+                        self.place_order(tradingsymbol, close_side, part, ex.price, order_type=order_type, timestamp=bar_ts)
+                if position_qty() == 0:
+                    plan = None
+
+            strategy.update_bar_data(instrument_token, slice_df)
+            signal = strategy.generate_signal(slice_df, instrument_token)
 
             if signal:
-                pos = self._positions.get(tradingsymbol)
-                current_qty = pos.quantity if pos else 0
-                qty = max(1, int(getattr(signal, "quantity", 1) or 1))
-                # A signal tagged action=exit means "close only" - never reverse
-                # into a new counter-trend position.
+                side = 1 if signal.transaction_type == TransactionType.BUY else -1
                 is_exit_signal = bool(getattr(signal, "metadata", None) and signal.metadata.get("action") == "exit")
-                if signal.transaction_type == TransactionType.BUY and current_qty <= 0:
-                    order_qty = abs(current_qty) if is_exit_signal else qty + abs(current_qty)
-                    if order_qty > 0:
-                        self.place_order(
-                            tradingsymbol, TransactionType.BUY, order_qty, price, timestamp=bar_ts
-                        )
-                elif signal.transaction_type == TransactionType.SELL and current_qty >= 0:
-                    order_qty = abs(current_qty) if is_exit_signal else qty + abs(current_qty)
-                    if order_qty > 0:
-                        self.place_order(
-                            tradingsymbol, TransactionType.SELL, order_qty, price, timestamp=bar_ts
-                        )
+                can_open = not is_exit_signal and (side > 0 or shorts)
+                next_open = fills_next_open(signal, timeframe)
+                current_qty = position_qty()
+                if current_qty == 0:
+                    if can_open and pending_entry is None:
+                        if next_open:
+                            pending_entry = signal
+                        else:
+                            enter(signal, price, i, bar_ts)
+                elif not plan_strategy and (side > 0) != (current_qty > 0):
+                    # opposite signal: close, and reverse into it where allowed
+                    if next_open:
+                        pending_exit = True
+                        pending_entry = signal if can_open else None
+                    else:
+                        close_all(price, bar_ts)
+                        if can_open:
+                            enter(signal, price, i, bar_ts)
 
             self.update_prices({tradingsymbol: price})
 
@@ -466,7 +550,8 @@ class PaperTradingEngine:
             return None
 
         is_buy  = transaction_type == TransactionType.BUY
-        fill    = self._slippage.get_fill_price(tradingsymbol, price, quantity, is_buy)
+        # a limit order fills at its price; market orders pay slippage
+        fill    = price if order_type == OrderType.LIMIT else self._slippage.get_fill_price(tradingsymbol, price, quantity, is_buy)
         costs   = self._cost_model.compute(fill, quantity, is_buy, self.is_intraday)
         order_id = self._next_order_id()
 

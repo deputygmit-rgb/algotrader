@@ -93,10 +93,16 @@ button, input, select, textarea { font-family: inherit; }
 /* ── ticker tape ────────────────────────────────────────────────── */
 .t-tape {
     position: sticky; top: 49px; z-index: 99; overflow: hidden; white-space: nowrap;
-    background: rgba(8,13,18,.95); border-bottom: 1px solid var(--t-line); height: 26px;
-    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+    /* opaque: page content scrolls underneath this sticky strip */
+    background: #080d12; border-bottom: 1px solid var(--t-line); height: 26px;
 }
 .t-tape-track { display: inline-flex; gap: 0; animation: t-tape 80s linear infinite; }
+/* fade the scrolling items into the strip at both edges */
+.t-tape::before, .t-tape::after {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 4%; z-index: 1; pointer-events: none;
+}
+.t-tape::before { left: 0; background: linear-gradient(90deg, #080d12, rgba(8,13,18,0)); }
+.t-tape::after { right: 0; background: linear-gradient(270deg, #080d12, rgba(8,13,18,0)); }
 .t-tape:hover .t-tape-track { animation-play-state: paused; }
 @keyframes t-tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 .t-tape-item { display: inline-flex; align-items: center; gap: 7px; padding: 0 18px; font-size: 11px; line-height: 26px; border-right: 1px solid var(--t-line); }
@@ -161,9 +167,13 @@ button, input, select, textarea { font-family: inherit; }
 .card-title {
     position: relative; padding-left: 13px;
     font-size: 10.5px; font-weight: 700; letter-spacing: 1.8px; color: var(--t-dim); margin-bottom: 10px;
+    cursor: pointer; user-select: none;
 }
+.card > [hidden] { display: none !important; }
 /* absolutely placed so titles that are themselves flex rows keep their layout */
 .card-title::before { content: '▸'; position: absolute; left: 0; top: 0; color: var(--t-c); font-size: 10px; }
+.card-title[aria-expanded="true"]::before { transform: rotate(90deg); }
+.card-title:focus-visible { outline: 1px solid var(--t-c); outline-offset: 3px; }
 .metric-value { font-size: 24px; font-weight: 800; letter-spacing: -.5px; color: #fff; text-shadow: 0 0 22px rgba(56,214,255,.12); }
 .metric-value.positive, .positive { color: var(--t-g) !important; }
 .metric-value.negative, .negative { color: var(--t-r) !important; }

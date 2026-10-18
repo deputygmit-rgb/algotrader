@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -47,6 +48,16 @@ _BSE_SCRIP_CODES: dict[str, str] = {
     "GODREJCP": "532424", "PIDILITIND": "500331", "HAVELLS": "517354",
     "DLF": "532868", "VEDL": "500295", "TATAPOWER": "500400",
 }
+
+
+def _clean_financial_value(value: str) -> str:
+    """Normalize Screener cell text and discard unit-only placeholders."""
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned or re.fullmatch(r"[\-–—₹%.,\s]+", cleaned):
+        return ""
+    if cleaned.lower() in {"n/a", "na", "not available"}:
+        return ""
+    return cleaned
 
 
 async def _fetch_bse_annual_reports(symbol: str, limit: int = 5) -> list[dict[str, str]]:
@@ -153,7 +164,8 @@ async def _search_annual_report_links(
                         text = a.get_text(strip=True)[:200]
                         reports.append({
                             "title": text or f"{symbol} Annual Report",
-                            "year": str(datetime.now().year),
+                            # a search hit carries no reliable fiscal year
+                            "year": "",
                             "type": "Annual Report (Search)",
                             "url": real_url,
                             "source": "Google Search",
@@ -171,27 +183,94 @@ async def _search_annual_report_links(
 # ──────────────────────────────────────────────────────────────
 
 async def _fetch_screener_financials(symbol: str) -> dict[str, Any]:
-    """Scrape key financial highlights from Screener.in (public page)."""
-    url = f"https://www.screener.in/company/{symbol}/consolidated/"
-    financials: dict[str, Any] = {}
+    """Scrape key financial highlights from Screener.in (public page).
 
+    Prefers consolidated figures and falls back to standalone; the basis
+    actually used is returned so the UI never mislabels the numbers.
+    """
     async with httpx.AsyncClient(headers=_HEADERS, timeout=15, follow_redirects=True) as client:
         try:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                # Try standalone
-                resp = await client.get(f"https://www.screener.in/company/{symbol}/")
-                if resp.status_code != 200:
-                    return {"error": f"Screener.in returned HTTP {resp.status_code}"}
+            resp = await client.get(f"https://www.screener.in/company/{symbol}/consolidated/")
+            financials = _extract_screener_financials(resp.text) if resp.status_code == 200 else {}
+            if not _has_statements(financials):
+                # no consolidated accounts (or page unavailable): try standalone
+                standalone = await client.get(f"https://www.screener.in/company/{symbol}/")
+                if standalone.status_code == 200:
+                    resp, financials = standalone, _extract_screener_financials(standalone.text)
+                elif resp.status_code != 200:
+                    return {"error": f"Screener.in returned HTTP {standalone.status_code}"}
 
-            financials = _extract_screener_financials(resp.text)
-            if not financials.keys() - {"company_name"}:
+            if not financials.keys() - {"company_name", "warehouse_id"}:
                 return {"error": "Screener.in returned no financial data; the page may require sign-in or the symbol may be unavailable"}
+            financials["basis"] = "consolidated" if "/consolidated" in str(resp.url) else "standalone"
+            financials["source_url"] = str(resp.url)
+
+            # Screener loads its peer table with JavaScript; fetch it directly.
+            warehouse_id = financials.pop("warehouse_id", None)
+            if not financials.get("peers") and warehouse_id:
+                peers = await _fetch_screener_peers(client, warehouse_id)
+                if peers:
+                    financials["peers"] = peers
+
+            derived = _derive_fundamentals(financials)
+            if derived:
+                financials["derived"] = derived
             return financials
         except Exception as e:
             return {"error": f"Unable to fetch Screener.in financials: {e}"}
 
-    return {"error": "Unable to fetch Screener.in financials"}
+
+async def _fetch_screener_peers(client: httpx.AsyncClient, warehouse_id: str) -> dict[str, Any] | None:
+    try:
+        resp = await client.get(f"https://www.screener.in/api/company/{warehouse_id}/peers/")
+        if resp.status_code != 200:
+            return None
+        table = BeautifulSoup(resp.text, "html.parser").select_one("table")
+        return _parse_statement_table(table, "Peers") if table else None
+    except Exception:
+        return None
+
+
+def _has_statements(financials: dict[str, Any]) -> bool:
+    return any(financials.get(key) for key in ("quarterly_results", "profit_loss", "balance_sheet"))
+
+
+_UNIT_PATTERN = re.compile(r"figures in\s+(Rs\.?\s*[A-Za-z]+)", re.IGNORECASE)
+
+
+def _section_unit(section: Any) -> str:
+    """'Consolidated Figures in Rs. Crores' -> '₹ crore'."""
+    match = _UNIT_PATTERN.search(section.get_text(" ", strip=True)) if section else None
+    if not match:
+        return ""
+    scale = re.sub(r"^Rs\.?\s*", "", match.group(1)).lower().rstrip("s")
+    return f"₹ {scale}"
+
+
+def _parse_statement_table(table: Any, label: str) -> dict[str, Any] | None:
+    headers = [cell.get_text(" ", strip=True) for cell in table.select("thead tr th")]
+    if not headers:
+        first_row = table.select_one("tr")
+        headers = [cell.get_text(" ", strip=True) for cell in first_row.find_all("th")] if first_row else []
+    # Peer tables lead with a serial-number column; the name column is the label.
+    skip = 1 if headers and re.match(r"^s\.?\s*no", headers[0], re.IGNORECASE) else 0
+    rows: list[dict[str, Any]] = []
+    for row in table.select("tbody tr") or table.select("tr")[1:]:
+        cells = row.find_all(["th", "td"], recursive=False)[skip:]
+        if len(cells) < 2:
+            continue
+        # strip Screener's expand-button glyph ("Sales +")
+        metric = re.sub(r"\s*\+$", "", cells[0].get_text(" ", strip=True))
+        values = [_clean_financial_value(cell.get_text(" ", strip=True)) for cell in cells[1:]]
+        if metric and any(values):
+            rows.append({"metric": metric, "values": values})
+    if not rows:
+        return None
+    return {
+        "label": label,
+        "periods": headers[skip + 1:] if len(headers) > skip + 1 else [],
+        "rows": rows,
+    }
 
 
 def _extract_screener_financials(page_html: str) -> dict[str, Any]:
@@ -201,9 +280,15 @@ def _extract_screener_financials(page_html: str) -> dict[str, Any]:
 
     for li in soup.select("#top-ratios li"):
         name_el = li.select_one(".name")
-        value_el = li.select_one(".value, .number")
-        if name_el and value_el:
-            financials[name_el.get_text(" ", strip=True)] = value_el.get_text(" ", strip=True)
+        if not name_el:
+            continue
+        candidates = [
+            _clean_financial_value(element.get_text(" ", strip=True))
+            for element in li.select(".value, .number")
+        ]
+        value = next((candidate for candidate in candidates if re.search(r"\d", candidate)), "")
+        if value:
+            financials[name_el.get_text(" ", strip=True)] = value
 
     pros = [li.get_text(" ", strip=True) for li in soup.select(".pros li")]
     cons = [li.get_text(" ", strip=True) for li in soup.select(".cons li")]
@@ -227,27 +312,143 @@ def _extract_screener_financials(page_html: str) -> dict[str, Any]:
     for key, (section_id, label) in sections.items():
         section = soup.select_one(f"#{section_id}")
         table = section.select_one("table") if section else None
-        if not table:
-            continue
+        statement = _parse_statement_table(table, label) if table else None
+        if statement:
+            unit = _section_unit(section)
+            if unit:
+                statement["unit"] = unit
+            financials[key] = statement
 
-        headers = [cell.get_text(" ", strip=True) for cell in table.select("thead tr th")]
-        rows: list[dict[str, Any]] = []
-        for row in table.select("tbody tr"):
-            cells = row.find_all(["th", "td"], recursive=False)
-            if len(cells) < 2:
-                continue
-            metric = cells[0].get_text(" ", strip=True)
-            values = [cell.get_text(" ", strip=True) for cell in cells[1:]]
-            if metric and any(values):
-                rows.append({"metric": metric, "values": values})
-        if rows:
-            financials[key] = {
-                "label": label,
-                "periods": headers[1:] if len(headers) > 1 else [],
-                "rows": rows,
-            }
+    company_info = soup.select_one("#company-info[data-warehouse-id]")
+    if company_info:
+        financials["warehouse_id"] = company_info["data-warehouse-id"]
 
     return financials
+
+
+# ──────────────────────────────────────────────────────────────
+# Derived fundamentals (growth, CAGR, margins)
+# ──────────────────────────────────────────────────────────────
+
+_ROW_ALIASES = {
+    "revenue": ("sales", "revenue"),
+    "operating_profit": ("operating profit", "financing profit"),
+    "net_profit": ("net profit",),
+    "eps": ("eps",),
+}
+_ROW_LABELS = {
+    "revenue": "Revenue", "operating_profit": "Operating profit",
+    "net_profit": "Net profit", "eps": "EPS",
+}
+
+
+def _to_number(text: Any) -> float | None:
+    cleaned = re.sub(r"[,%₹\s]", "", str(text or ""))
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _row_values(statement: dict[str, Any], key: str) -> list[float | None] | None:
+    for row in statement.get("rows", []):
+        name = row.get("metric", "").strip().lower()
+        if any(name.startswith(alias) for alias in _ROW_ALIASES[key]):
+            return [_to_number(value) for value in row.get("values", [])]
+    return None
+
+
+def _pct_change(current: float | None, previous: float | None) -> float | None:
+    # growth across a loss/profit flip is not meaningful
+    if current is None or previous is None or previous == 0 or (current < 0) != (previous < 0):
+        return None
+    return round((current - previous) / abs(previous) * 100, 1)
+
+
+def _cagr(first: float | None, last: float | None, years: int) -> float | None:
+    if first is None or last is None or first <= 0 or last <= 0 or years <= 0:
+        return None
+    return round(((last / first) ** (1 / years) - 1) * 100, 1)
+
+
+def _dated_indexes(periods: list[str]) -> list[int]:
+    """Indexes of real reporting periods (drops TTM and blank headers), oldest first."""
+    return [
+        i for i, period in enumerate(periods)
+        if re.search(r"(19|20)\d{2}", period or "") and "ttm" not in period.lower()
+    ]
+
+
+def _derive_fundamentals(financials: dict[str, Any]) -> dict[str, Any]:
+    """Growth and margin metrics computed from Screener's statements (oldest-to-newest columns)."""
+    derived: dict[str, Any] = {}
+
+    quarterly = financials.get("quarterly_results") or {}
+    q_idx = _dated_indexes(quarterly.get("periods", []))
+    if len(q_idx) >= 2:
+        latest, prev = q_idx[-1], q_idx[-2]
+        year_ago = q_idx[-5] if len(q_idx) >= 5 else None
+        metrics = []
+        for key in ("revenue", "operating_profit", "net_profit", "eps"):
+            values = _row_values(quarterly, key)
+            if not values or latest >= len(values):
+                continue
+            metrics.append({
+                "metric": _ROW_LABELS[key],
+                "latest": values[latest],
+                "qoq_pct": _pct_change(values[latest], values[prev] if prev < len(values) else None),
+                "yoy_pct": _pct_change(values[latest], values[year_ago]) if year_ago is not None else None,
+            })
+        if metrics:
+            derived["quarterly"] = {
+                "period": quarterly["periods"][latest],
+                "unit": quarterly.get("unit", ""),
+                "metrics": metrics,
+            }
+
+    annual = financials.get("profit_loss") or {}
+    a_idx = _dated_indexes(annual.get("periods", []))
+    if len(a_idx) >= 2:
+        latest = a_idx[-1]
+        metrics = []
+        for key in ("revenue", "operating_profit", "net_profit", "eps"):
+            values = _row_values(annual, key)
+            if not values or latest >= len(values):
+                continue
+            at = lambda n: values[a_idx[-1 - n]] if len(a_idx) > n and a_idx[-1 - n] < len(values) else None
+            metrics.append({
+                "metric": _ROW_LABELS[key],
+                "latest": values[latest],
+                "yoy_pct": _pct_change(at(0), at(1)),
+                "cagr_3y_pct": _cagr(at(3), at(0), 3),
+                "cagr_5y_pct": _cagr(at(5), at(0), 5),
+            })
+        revenue = _row_values(annual, "revenue") or []
+        operating = _row_values(annual, "operating_profit") or []
+        net = _row_values(annual, "net_profit") or []
+        recent = a_idx[-5:]
+        margin = lambda numer, i: (
+            round(numer[i] / revenue[i] * 100, 1)
+            if i < len(numer) and i < len(revenue) and numer[i] is not None and revenue[i] else None
+        )
+        if metrics:
+            derived["annual"] = {
+                "period": annual["periods"][latest],
+                "unit": annual.get("unit", ""),
+                "metrics": metrics,
+            }
+        if revenue:
+            derived["margins"] = {
+                "periods": [annual["periods"][i] for i in recent],
+                "operating_margin_pct": [margin(operating, i) for i in recent],
+                "net_margin_pct": [margin(net, i) for i in recent],
+            }
+    return derived
+
+
+# Research pages are slow-moving; cache successful fetches per symbol.
+_REPORTS_TTL_SECONDS = 6 * 60 * 60
+_reports_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -310,19 +511,26 @@ async def fetch_annual_reports(symbol: str, limit: int = 10) -> dict[str, Any]:
     public sources for a given NSE stock symbol.
     """
     symbol = symbol.upper().strip()
-    company_name = _COMPANY_NAMES.get(symbol, symbol)
+    cached = _reports_cache.get((symbol, limit))
+    if cached and time.monotonic() - cached[0] < _REPORTS_TTL_SECONDS:
+        return cached[1]
 
-    # Run all fetchers concurrently
-    bse_task = _fetch_bse_annual_reports(symbol, limit=limit)
-    nse_task = _fetch_nse_annual_reports(symbol, limit=limit)
-    google_task = _search_annual_report_links(symbol, company_name, limit=5)
-    trendlyne_task = _fetch_trendlyne_reports(symbol, limit=5)
-    screener_task = _fetch_screener_financials(symbol)
-
-    bse, nse, google, trendlyne, screener = await asyncio.gather(
-        bse_task, nse_task, google_task, trendlyne_task, screener_task,
+    bse, nse, trendlyne, screener = await asyncio.gather(
+        _fetch_bse_annual_reports(symbol, limit=limit),
+        _fetch_nse_annual_reports(symbol, limit=limit),
+        _fetch_trendlyne_reports(symbol, limit=5),
+        _fetch_screener_financials(symbol),
         return_exceptions=True,
     )
+    # Search by the company's real name when Screener supplied one.
+    company_name = (
+        screener.get("company_name") if isinstance(screener, dict) and screener.get("company_name")
+        else _COMPANY_NAMES.get(symbol, symbol)
+    )
+    try:
+        google = await _search_annual_report_links(symbol, company_name, limit=5)
+    except Exception as e:
+        google = e
 
     all_reports: list[dict[str, str]] = []
     for result in [bse, nse, google, trendlyne]:
@@ -350,7 +558,7 @@ async def fetch_annual_reports(symbol: str, limit: int = 10) -> dict[str, Any]:
         "Screener.in financial highlights were unavailable"
     )
 
-    return {
+    result = {
         "symbol": symbol,
         "company_name": company_name,
         "fetched_at": datetime.now().isoformat(),
@@ -360,3 +568,6 @@ async def fetch_annual_reports(symbol: str, limit: int = 10) -> dict[str, Any]:
         "financial_highlights_error": financial_highlights_error if not financial_highlights else "",
         "sources_queried": ["BSE India", "NSE India", "Google Search", "TrendLyne", "Screener.in"],
     }
+    if financial_highlights:
+        _reports_cache[(symbol, limit)] = (time.monotonic(), result)
+    return result

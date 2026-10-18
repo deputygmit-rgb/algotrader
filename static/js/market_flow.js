@@ -1,11 +1,12 @@
-// F&O market flow HUD.
+// Market flow HUD (NIFTY 50 / F&O / NIFTY 500).
 //
 // Every stock is one strand. It enters on the left at the height of its value
 // LOOKBACK_MIN minutes ago (above centre = bullish, below = bearish), passes
 // through the gate at the time shown on the rail, and fans out on the right
 // to where it is now: the strongest movers end at labelled tags, the rest
-// fade out at the edge. Lens CASH PRICE uses % change; FUTURE OI uses futures
-// OI change coloured by build-up type. Dragging the rail replays history.
+// fade out at the edge. Lens MONEY FLOW uses the -100..+100 flow score
+// (src/analysis/money_flow.py); CASH PRICE uses % change; FUTURE OI uses
+// futures OI change coloured by build-up type. Dragging the rail replays history.
 const MarketFlow = (() => {
     const COL = {
         bull: [91, 227, 160], bear: [255, 90, 110], flat: [107, 127, 140],
@@ -23,7 +24,9 @@ const MarketFlow = (() => {
     let canvas, ctx, stage, tip;
     let W = 0, H = 0, dpr = 1;
     let started = false, paused = false, demo = false;
-    let lens = 'price', universe = 'fno', filter = 'all';
+    let lens = 'flow', universe = 'nifty50', filter = 'all';
+    const BIAS_THRESHOLD = 15;   // mirrors money_flow.BIAS_THRESHOLD
+    const UNIVERSE_LABEL = { nifty50: 'NIFTY 50', fno: 'F&O', nifty500: 'NIFTY 500' };
     let snap = null, history = [], scrubMin = 0;
     let display = [], scale = 1, counts = { bull: 0, bear: 0, flat: 0 };
     let hoverSym = null, pinSym = null, dragging = false;
@@ -35,6 +38,7 @@ const MarketFlow = (() => {
     const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const sgn = (n, d = 2) => n === null || n === undefined ? '—' : (n > 0 ? '+' : n < 0 ? '-' : '') + Math.abs(n).toFixed(d);
     const lvl = n => n === null || n === undefined ? '—' : Number(n).toFixed(1);
+    const cr = n => n === null || n === undefined ? '—' : `${n < 0 ? '-' : ''}₹${Math.abs(n) >= 100 ? Math.abs(n).toFixed(0) : Math.abs(n).toFixed(1)}cr`;
     const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
     const lerp = (a, b, k) => a + (b - a) * k;
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -44,6 +48,7 @@ const MarketFlow = (() => {
 
     // ── classification (mirrors src/analysis/fno_flow.py) ──────────────
     function sideFromChg(chg) { return chg >= 0.05 ? 'BULL' : chg <= -0.05 ? 'BEAR' : 'FLAT'; }
+    function biasOf(flow) { return flow >= BIAS_THRESHOLD ? 'LONG' : flow <= -BIAS_THRESHOLD ? 'SHORT' : 'NEUTRAL'; }
     function buildupOf(chg, oi) {
         if (oi === null || oi === undefined) return 'OI —';
         if (Math.abs(oi) < 0.1 || Math.abs(chg) < 0.05) return 'OI NEUTRAL';
@@ -52,10 +57,12 @@ const MarketFlow = (() => {
     }
     function lensSide(r) {
         if (lens === 'oi') return BULLISH_BU.has(r.buildup) ? 'BULL' : BEARISH_BU.has(r.buildup) ? 'BEAR' : 'FLAT';
+        if (lens === 'flow') return r.bias === 'LONG' ? 'BULL' : r.bias === 'SHORT' ? 'BEAR' : 'FLAT';
         return r.side;
     }
     function lensValue(r) {
-        if (universe === 'nifty') return r.nifty_points || 0;
+        if (lens === 'flow') return r.flow_score || 0;
+        if (universe === 'nifty50' && lens === 'price') return r.nifty_points || 0;
         if (lens === 'oi') {
             const mag = Math.abs(r.oi_change_pct || 0);
             return lensSide(r) === 'BULL' ? mag : lensSide(r) === 'BEAR' ? -mag : 0;
@@ -81,17 +88,22 @@ const MarketFlow = (() => {
     function withPoint(r, p) {
         const v = p && p.rows[r.symbol];
         if (!v) return r;
-        const [chg, oi, score] = v;
+        const [chg, oi, score, flow] = v;
         // index points scale linearly with % change for a fixed weight
         const pts = r.nifty_points !== null && r.nifty_points !== undefined && r.change_pct
             ? r.nifty_points * chg / r.change_pct : r.nifty_points;
-        return { ...r, nifty_points: pts, change_pct: chg, oi_change_pct: oi, score, side: sideFromChg(chg), buildup: buildupOf(chg, oi), rank: null, _replay: true };
+        const flowScore = flow === undefined || flow === null ? r.flow_score : flow;
+        return {
+            ...r, nifty_points: pts, change_pct: chg, oi_change_pct: oi, score, flow_score: flowScore,
+            bias: biasOf(flowScore), side: sideFromChg(chg),
+            buildup: r.buildup === 'CASH' ? 'CASH' : buildupOf(chg, oi), rank: null, _replay: true,
+        };
     }
 
     function rebuild() {
         if (!snap) { display = []; return; }
-        let rows = snap.rows;
-        if (universe === 'nifty') rows = rows.filter(r => r.nifty_points !== null && r.nifty_points !== undefined);
+        let rows = snap.rows.filter(r => (r.universes || []).includes(universe));
+        if (lens === 'oi') rows = rows.filter(r => r.buildup !== 'CASH');
         const nowTs = Date.now() / 1000;
         const atTs = nowTs - scrubMin * 60;
         const atPoint = scrubMin > 0 ? nearestPoint(atTs) : null;
@@ -102,7 +114,8 @@ const MarketFlow = (() => {
             return { row: cur, pastValue: lensValue(past) };
         });
         const mags = display.map(d => Math.abs(lensValue(d.row))).sort((a, b) => a - b);
-        scale = Math.max(universe === 'nifty' ? 0.5 : 0.3, mags[Math.floor(mags.length * 0.9)] || 1);
+        const floor = lens === 'flow' ? 30 : universe === 'nifty50' && lens === 'price' ? 0.5 : 0.3;
+        scale = Math.max(floor, mags[Math.floor(mags.length * 0.9)] || 1);
         counts = { bull: 0, bear: 0, flat: 0 };
         for (const d of display) counts[sideClass(lensSide(d.row))]++;
         layout();
@@ -166,9 +179,9 @@ const MarketFlow = (() => {
                 snap = json;
                 rebuild();
                 renderPanels();
-                setLive(demo ? 'demo' : 'on', `${demo ? 'DEMO' : 'LIVE'} · ${json.quoted}/${json.total}`);
+                setLive(demo ? 'demo' : 'on', demo ? 'DEMO' : 'LIVE');
                 banner(json.baseline_loading
-                    ? `Loading previous-session baselines (OI, pivots, avg volume): ${json.oi_count}/${json.total} done — OI, levels and vol fill in as they arrive.`
+                    ? `Loading previous-session baselines (ATR, pivots, avg volume, OI) for ${json.total} stocks — money-flow factors, levels and plans fill in as they arrive.`
                     : '');
             } catch (e) {
                 setLive('err', 'OFFLINE');
@@ -347,13 +360,16 @@ const MarketFlow = (() => {
         ctx.beginPath(); ctx.moveTo(gx - 12, gy - 24); ctx.lineTo(gx - 12, gy + 24); ctx.moveTo(gx + 12, gy - 24); ctx.lineTo(gx + 12, gy + 24); ctx.stroke();
 
         ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+        // counts follow the lens: flow bias, price side, or futures build-up
+        const [up, down, flat] = lens === 'flow' ? ['INFLOW', 'OUTFLOW', 'NEUTRAL']
+            : lens === 'oi' ? ['BULLISH OI', 'BEARISH OI', 'NEUTRAL OI'] : ['ADVANCING', 'DECLINING', 'FLAT'];
         ctx.font = `800 12px ${FONT}`; ctx.fillStyle = rgba(COL.bull, 1);
-        ctx.fillText(`▲ BULLISH ${counts.bull}`, gx - 4, gy - 46);
+        ctx.fillText(`▲ ${up} ${counts.bull}`, gx - 4, gy - 46);
         ctx.fillStyle = rgba(COL.bear, 1);
-        ctx.fillText(`▼ BEARISH ${counts.bear}`, gx - 30, gy + 48);
+        ctx.fillText(`▼ ${down} ${counts.bear}`, gx - 30, gy + 48);
         ctx.font = `9px ${FONT}`; ctx.fillStyle = 'rgba(107,127,140,.9)';
-        ctx.fillText(`FLAT ${counts.flat}`, gx - 14, gy + 64);
-        if (universe === 'nifty' && snap?.nifty) {
+        ctx.fillText(`${flat} ${counts.flat}`, gx - 14, gy + 64);
+        if (universe === 'nifty50' && snap?.nifty) {
             const n = snap.nifty;
             ctx.font = `700 11px ${FONT}`; ctx.fillStyle = rgba(n.change >= 0 ? COL.bull : COL.bear, 1);
             ctx.fillText(`NIFTY ${n.last_price.toFixed(1)} ${sgn(n.change, 1)}`, gx - 4, gy - 66);
@@ -376,11 +392,14 @@ const MarketFlow = (() => {
             ctx.font = `800 10.5px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = `rgba(255,255,255,${a})`;
             ctx.fillText(sym.length > 10 ? sym.slice(0, 10) : sym, x + 8, y + 9);
             ctx.textAlign = 'right'; ctx.fillStyle = rgba(s.col, a);
-            const head = universe === 'nifty' ? `${sgn(r.nifty_points, 1)}pt`
+            const head = lens === 'flow' ? `${sgn(r.flow_score, 0)}`
+                : universe === 'nifty50' && lens === 'price' ? `${sgn(r.nifty_points, 1)}pt`
                 : lens === 'oi' ? `${sgn(r.oi_change_pct)}%` : `${sgn(r.change_pct)}%`;
             ctx.fillText(head, x + TAG_W - 14, y + 9);
             ctx.font = `9px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = `rgba(107,127,140,${a})`;
-            const sub = lens === 'oi' ? `#${s.tag} ${r.buildup}` : `#${s.tag} · OI ${sgn(r.oi_change_pct)}%`;
+            const sub = lens === 'oi' ? `#${s.tag} ${r.buildup}`
+                : lens === 'flow' ? `#${s.tag} · ${sgn(r.change_pct)}% · ${r.vol_ratio ? r.vol_ratio.toFixed(1) + '×' : 'rvol —'}`
+                : `#${s.tag} · OI ${sgn(r.oi_change_pct)}%`;
             ctx.fillText(sub.length > 22 ? sub.slice(0, 22) : sub, x + 8, y + 20);
         }
     }
@@ -460,46 +479,121 @@ const MarketFlow = (() => {
     }
 
     // ── panels ──────────────────────────────────────────────────────────
+    const FACTOR_LABEL = {
+        flow: '₹FLOW', move: 'MOVE', vwap: 'VWAP', rs: 'RS', clv: 'RANGE',
+        oi: 'OI', momentum: 'MOM', breakout: 'PDH/L', book: 'BOOK',
+    };
+
+    function factorBars(r) {
+        const f = r.factors || {};
+        return `<div class="mf-factors">${Object.keys(FACTOR_LABEL).filter(k => f[k] !== undefined).map(k => {
+            const v = clamp(f[k], -1, 1);
+            const col = v >= 0 ? 'var(--mf-g)' : 'var(--mf-r)';
+            const left = v >= 0 ? 50 : 50 + v * 50;
+            return `<span title="${FACTOR_LABEL[k]} ${sgn(v)}"><em>${FACTOR_LABEL[k]}</em><i><b style="left:${left}%;width:${Math.abs(v) * 50}%;background:${col}"></b></i></span>`;
+        }).join('')}</div>`;
+    }
+
+    const levelPair = (label, value) => `<span>${esc(label || '—')}</span><em>${lvl(value)}</em>`;
+
+    function planHtml(p) {
+        if (!p) return '';
+        return `<div class="lv mf-plan"><span>PLAN</span><em>${p.side === 'LONG' ? 'BUY' : 'SELL'} ${lvl(p.entry)}</em>
+            <span>SL</span><em>${lvl(p.stop)}</em><span>T1</span><em>${lvl(p.target1)}</em><span>T2</span><em>${lvl(p.target2)}</em></div>`;
+    }
+
     function cardHtml(r) {
         const side = lensSide(r), cls = sideClass(side);
         const chgCls = r.change_pct > 0 ? 'mf-gt' : r.change_pct < 0 ? 'mf-rt' : '';
-        const oi = r.oi_change_pct === null || r.oi_change_pct === undefined ? 'OI —' : `OI ${sgn(r.oi_change_pct)}%`;
-        const vol = r.vol_ratio === null || r.vol_ratio === undefined ? 'vol —' : `vol ${r.vol_ratio.toFixed(1)}×`;
-        const zone = r.zone ? `${lvl(r.zone[0])}-${lvl(r.zone[1])}` : '—';
-        const np = r.nifty_points !== null && r.nifty_points !== undefined
-            ? `<div class="np">NIFTY ${sgn(r.nifty_points)} pts · LTP ${lvl(r.ltp)}</div>` : `<div class="np">LTP ${lvl(r.ltp)} · ${esc(r.sector || '')}</div>`;
+        const flowCls = r.flow_score > 0 ? 'mf-gt' : r.flow_score < 0 ? 'mf-rt' : '';
+        const oi = r.buildup === 'CASH' ? 'cash only' : r.oi_change_pct === null || r.oi_change_pct === undefined ? 'OI —' : `OI ${sgn(r.oi_change_pct)}%`;
+        const vol = r.vol_ratio === null || r.vol_ratio === undefined ? 'rvol —' : `rvol ${r.vol_ratio.toFixed(1)}×`;
+        const np = r.nifty_points !== null && r.nifty_points !== undefined ? ` · NIFTY ${sgn(r.nifty_points)} pts` : '';
+        const tag = r.bias === 'LONG' ? 'LONG' : r.bias === 'SHORT' ? 'SHORT' : 'NEUTRAL';
         return `<div class="mf-card ${cls}${r.symbol === pinSym ? ' pin' : ''}" data-sym="${esc(r.symbol)}">
-            <div class="l1"><span class="mf-tag">${side}</span><b>${esc(r.symbol)}</b><span class="chg ${chgCls}">${sgn(r.change_pct)}%</span><span class="sc">${r.score}</span></div>
-            <div class="l2"><span class="bu ${buClass(r.buildup)}">${r.buildup}</span> · ${oi} · ${vol}</div>
-            <div class="lv"><span>ZONE</span><em>${zone}</em><span>S1</span><em>${lvl(r.s1)}</em></div>
-            <div class="lv"><span>R1</span><em>${lvl(r.r1)}</em><span>R2</span><em>${lvl(r.r2)}</em></div>
-            ${np}</div>`;
+            <div class="l1"><span class="mf-tag">${tag}</span><b>${esc(r.symbol)}</b><span class="chg ${chgCls}">${sgn(r.change_pct)}%</span><span class="sc" title="conviction 0-100">${r.score}</span></div>
+            <div class="l2">FLOW <b class="${flowCls}">${sgn(r.flow_score, 0)}</b> · ${cr(r.money_flow_cr)} · ${vol} · ${r.vwap_dev_pct === null || r.vwap_dev_pct === undefined ? 'VWAP —'
+                : `<span title="${r.vwap_source === 'session_typical' ? 'Session typical price (H+L+C)/3 — the feed sent no VWAP' : 'Price vs VWAP'}">VWAP${r.vwap_source === 'session_typical' ? '≈' : ''} ${sgn(r.vwap_dev_pct)}%</span>`}</div>
+            <div class="l2"><span class="bu ${buClass(r.buildup)}">${r.buildup === 'CASH' ? 'NO F&amp;O' : r.buildup}</span> · ${oi}${r.atr_pct ? ` · ATR ${r.atr_pct.toFixed(1)}%` : ''}</div>
+            ${factorBars(r)}
+            <div class="lv">${levelPair(r.s1_label ? `S ${r.s1_label}` : 'S', r.s1)}${levelPair(r.r1_label ? `R ${r.r1_label}` : 'R', r.r1)}</div>
+            ${planHtml(r.plan)}
+            <div class="np">LTP ${lvl(r.ltp)} · ${esc(r.sector || '')}${np}</div></div>`;
     }
 
-    function gridHtml(r) {
-        const cls = sideClass(lensSide(r));
-        const col = cls === 'bull' ? 'var(--mf-g)' : cls === 'bear' ? 'var(--mf-r)' : 'var(--mf-dim)';
-        const head = universe === 'nifty' ? `${sgn(r.nifty_points, 1)} pt` : lens === 'oi' ? `OI ${sgn(r.oi_change_pct)}%` : `${sgn(r.change_pct)}%`;
-        const volW = r.vol_ratio ? clamp(r.vol_ratio / 3, 0, 1) * 100 : 0;
-        return `<div class="mf-gc ${cls}${r.symbol === pinSym ? ' pin' : ''}" data-sym="${esc(r.symbol)}">
-            <div class="r1"><b>${esc(r.symbol)}</b><span style="color:${col}">${head}</span></div>
-            <div class="r2"><span class="${buClass(r.buildup)}">${r.buildup}</span><span>SC ${r.score} · ${r.vol_ratio ? r.vol_ratio.toFixed(1) + '×' : '—'}</span></div>
-            <div class="bar"><i style="width:${r.score}%;background:${col}"></i></div>
-            <div class="bar"><i style="width:${volW}%;background:rgb(${COL.blue})"></i></div></div>`;
+    function pickRow(r, rank, watch) {
+        const p = r.plan || {};
+        const flowCls = r.flow_score > 0 ? 'mf-gt' : 'mf-rt';
+        return `<tr class="${watch ? 'watch' : ''}${r.symbol === pinSym ? ' pin' : ''}" data-sym="${esc(r.symbol)}">
+            <td>${watch ? '<i title="misses the volume or liquidity bar">watch</i>' : rank}</td>
+            <th>${esc(r.symbol)}<small>${esc(r.sector || '')}</small></th>
+            <td class="num"><b>${r.score}</b></td>
+            <td class="num ${flowCls}">${sgn(r.flow_score, 0)}</td>
+            <td class="num ${r.change_pct >= 0 ? 'mf-gt' : 'mf-rt'}">${sgn(r.change_pct)}%</td>
+            <td class="num">${r.vol_ratio ? r.vol_ratio.toFixed(1) + '×' : '—'}</td>
+            <td class="num">${cr(r.money_flow_cr)}</td>
+            <td class="num">${lvl(p.entry)}</td>
+            <td class="num">${lvl(p.stop)}</td>
+            <td class="num">${lvl(p.target1)}</td>
+            <td class="num">${lvl(p.target2)}</td>
+            <td class="num">${p.risk_pct === undefined ? '—' : p.risk_pct.toFixed(2) + '%'}</td>
+        </tr>`;
+    }
+
+    function picksHtml(side, rowsBySym) {
+        const picks = snap.picks?.[universe] || {};
+        const live = (picks[side] || []).map(sym => rowsBySym.get(sym)).filter(Boolean);
+        const watch = (picks[`${side}_watch`] || []).map(sym => rowsBySym.get(sym)).filter(Boolean)
+            .slice(0, Math.max(3, 10 - live.length));
+        if (!live.length && !watch.length) {
+            return `<div class="mf-dim" style="padding:10px">No ${side === 'long' ? 'long' : 'short'} setups pass the filters in ${UNIVERSE_LABEL[universe]} right now.</div>`;
+        }
+        return `<div class="mf-picks-scroll"><table class="mf-pick-table">
+            <thead><tr><th>#</th><th>SYMBOL</th><th>SCORE</th><th>FLOW</th><th>CHG</th><th>RVOL</th><th>₹ FLOW</th><th>ENTRY</th><th>STOP</th><th>T1</th><th>T2</th><th>RISK</th></tr></thead>
+            <tbody>${live.map((r, i) => pickRow(r, i + 1, false)).join('')}${watch.map(r => pickRow(r, null, true)).join('')}</tbody>
+        </table></div>`;
+    }
+
+    function sectorsHtml(rowsBySym) {
+        const sectors = snap.sectors?.[universe] || [];
+        if (!sectors.length) return '<div class="mf-dim" style="padding:10px">No sector has two or more quoted stocks yet.</div>';
+        const maxFlow = Math.max(...sectors.map(s => Math.abs(s.net_flow_cr)), 1);
+        return sectors.map(s => {
+            const col = s.avg_flow_score >= 0 ? 'var(--mf-g)' : 'var(--mf-r)';
+            const w = Math.abs(s.net_flow_cr) / maxFlow * 50;
+            const left = s.net_flow_cr >= 0 ? 50 : 50 - w;
+            return `<div class="mf-sector">
+                <div class="nm" title="${esc(s.sector)}">${esc(s.sector)} <small>${s.stocks}</small></div>
+                <div class="fs" style="color:${col}">${sgn(s.avg_flow_score, 0)}</div>
+                <div class="br" title="${s.advancers} up · ${s.decliners} down"><i style="width:${s.advancers / s.stocks * 100}%"></i></div>
+                <div class="nf"><i><b style="left:${left}%;width:${w}%;background:${s.net_flow_cr >= 0 ? 'var(--mf-g)' : 'var(--mf-r)'}"></b></i><span>${cr(s.net_flow_cr)}</span></div>
+                <div class="ll"><span class="mf-gt" data-sym="${esc(s.leader)}">${esc(s.leader)}</span> / <span class="mf-rt" data-sym="${esc(s.laggard)}">${esc(s.laggard)}</span></div>
+            </div>`;
+        }).join('');
     }
 
     function renderPanels() {
         if (!snap) return;
         const rows = display.map(d => d.row);
-        $('mf-count').textContent = `${rows.length} STOCKS`;
-        $('mf-side-hd').textContent = `${snap.quoted}/${snap.total} stocks · OI on ${snap.oi_count} · as of ${snap.as_of.slice(0, 5)} IST`;
+        const label = UNIVERSE_LABEL[universe];
+        $('mf-count').textContent = `${rows.length} STOCKS · ${label}`;
+        const ub = snap.breadth?.[universe];
+        $('mf-side-hd').textContent = ub
+            ? `${label}: ${ub.stocks}/${ub.total} quoted · OI on ${ub.oi_count} · as of ${snap.as_of.slice(0, 5)} IST`
+            : `${snap.quoted}/${snap.total} quoted · as of ${snap.as_of.slice(0, 5)} IST`;
         const n = snap.nifty;
         $('mf-nifty').innerHTML = n
             ? `NIFTY <b style="color:#fff">${n.last_price.toFixed(1)}</b> <span class="${n.change >= 0 ? 'mf-gt' : 'mf-rt'}">${sgn(n.change, 1)} (${sgn(n.change_pct)}%)</span> · <span class="mf-gt">${sgn(n.bullish_points, 1)}</span>/<span class="mf-rt">${sgn(n.bearish_points, 1)}</span> pts`
             : '';
+        const b = snap.breadth?.[universe];
+        $('mf-breadth').innerHTML = b ? `
+            <span>${label}</span>
+            <span>ADV <b class="mf-gt">${b.advancers}</b> · DEC <b class="mf-rt">${b.decliners}</b> · FLAT ${b.unchanged ?? '—'}</span>
+            <span class="mf-adbar"><i style="width:${b.stocks ? b.advancers / b.stocks * 100 : 0}%"></i></span>
+            <span>INFLOW BIAS <b class="mf-gt">${b.long_bias}</b> · OUTFLOW BIAS <b class="mf-rt">${b.short_bias}</b></span>
+            <span>NET ₹ FLOW <b class="${b.net_flow_cr >= 0 ? 'mf-gt' : 'mf-rt'}">${cr(b.net_flow_cr)}</b></span>` : '';
 
         const bySide = side => rows.filter(r => lensSide(r) === side);
-        const strength = r => Math.abs(lensValue(r));
         const cards = filter === 'all'
             ? [...bySide('BULL').sort((a, b) => b.score - a.score), ...bySide('BEAR').sort((a, b) => b.score - a.score)]
             : bySide(filter).sort((a, b) => b.score - a.score);
@@ -507,8 +601,14 @@ const MarketFlow = (() => {
         const shown = cards.slice(0, 40);
         if (pinned && !shown.includes(pinned)) shown.unshift(pinned);
         $('mf-cards').innerHTML = shown.map(cardHtml).join('') || '<div class="mf-dim" style="padding:10px">No stocks on this side.</div>';
-        $('mf-grid-bull').innerHTML = bySide('BULL').sort((a, b) => strength(b) - strength(a)).slice(0, 12).map(gridHtml).join('') || '<div class="mf-dim">None</div>';
-        $('mf-grid-bear').innerHTML = bySide('BEAR').sort((a, b) => strength(b) - strength(a)).slice(0, 12).map(gridHtml).join('') || '<div class="mf-dim">None</div>';
+
+        // picks and sectors always use the live snapshot, not a replayed minute
+        const live = new Map(snap.rows.map(r => [r.symbol, r]));
+        $('mf-picks-long').innerHTML = picksHtml('long', live);
+        $('mf-picks-short').innerHTML = picksHtml('short', live);
+        $('mf-picks-long-note').textContent = `${(snap.picks?.[universe]?.long || []).length} qualify`;
+        $('mf-picks-short-note').textContent = `${(snap.picks?.[universe]?.short || []).length} qualify`;
+        $('mf-sectors').innerHTML = sectorsHtml(live);
     }
 
     // ── misc ────────────────────────────────────────────────────────────
@@ -553,7 +653,7 @@ const MarketFlow = (() => {
             if (onRail(e.clientX - rect.left, e.clientY - rect.top)) return;
             if (hoverSym) select(hoverSym); else if (pinSym) { pinSym = null; renderPanels(); }
         });
-        for (const id of ['mf-cards', 'mf-grid-bull', 'mf-grid-bear']) {
+        for (const id of ['mf-cards', 'mf-picks-long', 'mf-picks-short', 'mf-sectors']) {
             const el = $(id);
             el.addEventListener('mouseover', e => { const c = e.target.closest('[data-sym]'); hoverSym = c ? c.dataset.sym : null; });
             el.addEventListener('mouseleave', () => { hoverSym = null; });
@@ -594,7 +694,14 @@ const MarketFlow = (() => {
         pinSym = sym;
         const waitForData = () => {
             if (!snap) { setTimeout(waitForData, 300); return; }
-            if (!snap.rows.some(r => r.symbol === sym)) { banner(`${sym} is not in the F&O universe, so it has no strand here.`); return; }
+            const row = snap.rows.find(r => r.symbol === sym);
+            if (!row) { banner(`${sym} is not in the F&O or NIFTY 500 universe, so it has no strand here.`); return; }
+            if (!(row.universes || []).includes(universe)) {
+                // switch to the narrowest universe that contains the stock
+                universe = ['nifty50', 'fno', 'nifty500'].find(u => row.universes.includes(u)) || universe;
+                $('mf-universe').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === universe));
+                rebuild();
+            }
             renderPanels();
             document.querySelector(`#mf-cards .mf-card[data-sym="${CSS.escape(sym)}"]`)?.scrollIntoView({ block: 'nearest' });
         };

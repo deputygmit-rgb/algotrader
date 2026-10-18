@@ -127,7 +127,7 @@ const Terminal = (() => {
     return { open: palOpen };
 })();
 
-// Privacy mask for the Overview: account details and P&L are blurred until
+// Privacy mask for account details, P&L, and report data are blurred until
 // clicked. A click reveals that tile (or that table's masked columns) for
 // REVEAL_MS; the header button / Alt+P turns masking off altogether. This is
 // a visual mask for screen-sharing — the values are still in the page.
@@ -146,6 +146,17 @@ const Privacy = (() => {
         // Qty (2) and P&L (5) columns
         { sel: '#overview-positions-body', cells: ['td:nth-child(2)', 'td:nth-child(5)'] },
         { sel: '#overview-holdings-body', cells: ['td:nth-child(2)', 'td:nth-child(5)'] },
+        { sel: '#pnl-summary-cards', cells: ['.stat-value'] },
+        { sel: '#holdings-summary-cards', cells: ['.stat-value'] },
+        { sel: '#positions-summary-cards', cells: ['.stat-value'] },
+        { sel: '#trades-summary-cards', cells: ['.stat-value'] },
+        { sel: '#orders-summary-cards', cells: ['.stat-value'] },
+        { sel: '#margins-cards', cells: ['.stat-value'] },
+        { sel: '#pnl-details', cells: ['.privacy-sensitive'] },
+        { sel: '#report-holdings-body', cells: ['td:nth-child(1)', 'td:nth-child(2)', 'td:nth-child(3)', 'td:nth-child(4)', 'td:nth-child(5)', 'td:nth-child(6)', 'td:nth-child(7)', 'td:nth-child(8)'] },
+        { sel: '#report-positions-body', cells: ['td:nth-child(1)', 'td:nth-child(2)', 'td:nth-child(3)', 'td:nth-child(4)', 'td:nth-child(5)', 'td:nth-child(6)', 'td:nth-child(7)'] },
+        { sel: '#report-trades-body', cells: ['td:nth-child(1)', 'td:nth-child(2)', 'td:nth-child(3)', 'td:nth-child(4)', 'td:nth-child(5)', 'td:nth-child(6)', 'td:nth-child(7)'] },
+        { sel: '#report-orders-body', cells: ['td:nth-child(1)', 'td:nth-child(2)', 'td:nth-child(3)', 'td:nth-child(4)', 'td:nth-child(5)', 'td:nth-child(6)', 'td:nth-child(7)'] },
     ];
     const timers = new WeakMap();
 

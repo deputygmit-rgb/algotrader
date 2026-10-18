@@ -7,18 +7,19 @@
     <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
 </head>
 <body>
     <header class="header">
         <div class="header-left">
-            <a class="logo" href="/" aria-label="VerquoAI home">VerquoAI™</a>
+            <a class="logo" href="/app" aria-label="VerquoAI workspace">VerquoAI™</a>
             <span id="status-badge" class="status-badge status-offline">OFFLINE</span>
             {% if zerodha_id %}<span id="t-zid" class="status-badge" style="color:var(--t-a)">{{ zerodha_id }}</span>{% endif %}
         </div>
         <div class="header-right">
             <span class="t-head-meta"><span data-t-session></span><span class="t-clock" data-t-clock></span></span>
             <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
-            <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and P&amp;L on the Overview (Alt+P)">MASK: ON</button>
+            <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and financial reports (Alt+P)">MASK: ON</button>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
             <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Login to Zerodha</button>
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
@@ -48,7 +49,7 @@
             <button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
             <button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>
             <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
-            <button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start()">Market Flow</button>
+            <button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start();DayTrade.start()">Market Flow</button>
             <button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>
             <button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>
             <button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>
@@ -798,15 +799,17 @@
         <div id="tab-market-flow" class="tab-content mf">
             <div class="mf-hud">
                 <div class="mf-hud-l">
-                    <span class="mf-title">FNO FLOW</span>
+                    <span class="mf-title">MARKET FLOW</span>
                     <span class="mf-dim" id="mf-count">— STOCKS</span>
-                    <div class="mf-tabs" id="mf-lens">
-                        <button class="on" data-v="price">CASH PRICE</button>
+                    <div class="mf-tabs" id="mf-lens" role="group" aria-label="Lens">
+                        <button class="on" data-v="flow" title="Directional money-flow score (-100..+100)">MONEY FLOW</button>
+                        <button data-v="price">CASH PRICE</button>
                         <button data-v="oi">FUTURE OI</button>
                     </div>
-                    <div class="mf-tabs" id="mf-universe">
-                        <button class="on" data-v="fno">F&amp;O</button>
-                        <button data-v="nifty">NIFTY 50</button>
+                    <div class="mf-tabs" id="mf-universe" role="group" aria-label="Universe">
+                        <button class="on" data-v="nifty50">NIFTY 50</button>
+                        <button data-v="fno">F&amp;O</button>
+                        <button data-v="nifty500">NIFTY 500</button>
                     </div>
                 </div>
                 <div class="mf-hud-r">
@@ -818,10 +821,7 @@
                 </div>
             </div>
             <div class="mf-banner" id="mf-banner" hidden></div>
-            <p class="mf-dim" style="margin:8px 12px;font-size:11px">
-                Buildup compares cash price with its previous close and nearest-futures OI with the previous completed session.
-                Moves under 0.05% in price or 0.1% in OI are neutral; above those bands, price/OI direction determines buildup, covering, or unwinding.
-            </p>
+            <div class="mf-breadth" id="mf-breadth" aria-live="polite"></div>
             <div class="mf-main">
                 <div class="mf-stage" id="mf-stage" style="position:relative;height:640px;background:#05080c">
                     <canvas id="mf-canvas"></canvas>
@@ -831,29 +831,78 @@
                     <div class="mf-side-hd" id="mf-side-hd">—/— stocks · OI on — · as of —</div>
                     <div class="mf-tabs mf-filter" id="mf-filter">
                         <button class="on" data-v="all">ALL</button>
-                        <button data-v="BULL">BULL</button>
-                        <button data-v="BEAR">BEAR</button>
+                        <button data-v="BULL">LONG</button>
+                        <button data-v="BEAR">SHORT</button>
                     </div>
                     <div class="mf-cards" id="mf-cards"></div>
                 </aside>
             </div>
             <div class="mf-grids">
                 <section>
-                    <div class="mf-sec-hd mf-g">BULL · TOP 12</div>
-                    <div class="mf-grid" id="mf-grid-bull"></div>
+                    <div class="mf-sec-hd mf-g">BEST LONGS <span class="mf-dim" id="mf-picks-long-note"></span></div>
+                    <div class="mf-picks" id="mf-picks-long"></div>
                 </section>
                 <section>
-                    <div class="mf-sec-hd mf-r">BEAR · TOP 12</div>
-                    <div class="mf-grid" id="mf-grid-bear"></div>
+                    <div class="mf-sec-hd mf-r">BEST SHORTS <span class="mf-dim" id="mf-picks-short-note"></span></div>
+                    <div class="mf-picks" id="mf-picks-short"></div>
                 </section>
             </div>
+            <section class="dt" aria-labelledby="dt-title">
+                <div class="dt-hd">
+                    <span class="mf-title" id="dt-title">DAY TRADE · 5-MIN SETUPS</span>
+                    <span class="mf-dim" id="dt-meta">—</span>
+                    <div class="dt-stats" id="dt-stats"></div>
+                    <div class="dt-hd-r">
+                        <form id="dt-add-form" class="dt-add" role="search">
+                            <label class="sr-only" for="dt-add">Track a symbol</label>
+                            <input id="dt-add" placeholder="Track symbol" maxlength="32" autocomplete="off" spellcheck="false">
+                            <button class="mf-btn" type="submit">TRACK</button>
+                        </form>
+                        <form id="dt-replay-form" class="dt-add" title="Replay the setups over past sessions (net of costs)">
+                            <label class="sr-only" for="dt-replay-symbols">Symbols to replay</label>
+                            <input id="dt-replay-symbols" placeholder="Replay: INFY,TCS (blank = top tracked)" maxlength="200" autocomplete="off" spellcheck="false" style="width:230px">
+                            <label class="sr-only" for="dt-replay-days">Sessions</label>
+                            <select id="dt-replay-days" class="dt-select">
+                                <option value="10">10d</option><option value="30" selected>30d</option><option value="60">60d</option><option value="90">90d</option>
+                            </select>
+                            <button class="mf-btn" type="submit">REPLAY</button>
+                        </form>
+                        <label class="mf-chk" title="Play a tone on new signals and outcome changes"><input type="checkbox" id="dt-alerts" checked> ALERTS</label>
+                        <div class="mf-tabs" id="dt-filter" role="group" aria-label="Feed filter">
+                            <button class="on" data-v="all">ALL</button>
+                            <button data-v="open">OPEN</button>
+                            <button data-v="LONG">LONG</button>
+                            <button data-v="SHORT">SHORT</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="dt-body">
+                    <div class="dt-feed-wrap">
+                        <div class="dt-sub">SIGNAL FEED <span class="mf-dim">newest first · R = result, or live for open trades</span></div>
+                        <div class="dt-feed" id="dt-feed"></div>
+                    </div>
+                    <div class="dt-board-wrap">
+                        <div class="dt-sub">SETUP BOARD <span class="mf-dim">VWAP <i class="dt-k vwap"></i> EMA 9 <i class="dt-k e9"></i> EMA 20 <i class="dt-k e20"></i> · opening range / prev-day levels dashed</span></div>
+                        <div class="dt-board" id="dt-board"></div>
+                    </div>
+                </div>
+                <div class="dt-replay" id="dt-replay" hidden aria-live="polite"></div>
+            </section>
+            <section class="mf-sectors-wrap">
+                <div class="mf-sec-hd">SECTOR MONEY FLOW <span class="mf-dim">avg flow score · breadth · net ₹ flow · leader / laggard</span></div>
+                <div class="mf-sectors" id="mf-sectors"></div>
+            </section>
             <div class="mf-legend">
-                <span><b>SCORE</b> 0–100 conviction: move 30 · OI build-up 25 · volume pace 20 · VWAP side 15 · order book 10</span>
-                <span><b>ZONE</b> VWAP value zone (±0.05%)</span>
-                <span><b>S1 / R1 / R2</b> nearest floor-pivot support / resistances from the previous session</span>
-                <span><b>vol</b> cash volume vs 20-session average, pro-rated to time of day</span>
-                <span><b>OI</b> near-month futures OI vs previous close</span>
-                <span>Drag the time rail (left) to replay the last 60 min · click any strand, tag or card to open its technical analysis</span>
+                <span><b>FLOW</b> −100…+100 money-flow score: signed money flow 20 · move in ATRs 15 · VWAP distance in ATRs 15 · relative strength vs NIFTY 10 · close location in day range 10 · futures OI build-up 10 · 15-min momentum 10 · previous-day high/low break 5 · order book 5 (missing factors are dropped and the rest re-weighted)</span>
+                <span><b>SCORE</b> 0–100 conviction = |flow| × participation (relative volume)</span>
+                <span><b>BEST LONGS / SHORTS</b> flow bias, price on the right side of VWAP, ≥ ₹2 cr traded and normal-or-better volume; <i>watch</i> rows miss the volume or liquidity bar</span>
+                <span><b>PLAN</b> stop just beyond VWAP (0.3–0.8 daily ATR), targets 1.5R and 3R — a mechanical reference, not advice</span>
+                <span><b>RVOL</b> volume vs 20-session average, adjusted for the normal intraday volume curve</span>
+                <span><b>₹ FLOW</b> turnover × close location (Chaikin money-flow multiplier), ₹ crore</span>
+                <span><b>OI</b> near-month futures OI vs previous close; build-up from price × OI direction (moves under 0.05% price / 0.1% OI are neutral)</span>
+                <span><b>S / R</b> nearest previous-session floor pivots below / above price, with their names</span>
+                <span><b>DAY TRADE</b> 5-minute setups on the money-flow picks (plus symbols you track), checked on closed bars only so signals never repaint: opening-range breakout (15 min, ≥1.3× volume) · previous-day high/low break · VWAP reclaim / rejection (≥1.2× volume) · trend pullback to EMA 20 / VWAP · squeeze breakout. Selective by design: quality ≥ 60, at most 2 trades per stock per day, one direction per stock (the money-flow bias it was tracked for), 15-minute cooldown after each exit, and at most 5 open trades across the list (<i>skip</i> = not taken because 5 were open). A signal fires at a bar's close (the time shown) and is PENDING until it fills at the next bar's open plus 0.03% slippage. Stop at the setup's natural level (0.15–0.6 daily ATR), half booked at 1.5R with the rest at breakeven, final target 3R, time exit after 1 hour or at 15:15; if one bar touches stop and target, the stop counts. R is net of exit slippage and ~0.06% round-trip charges. An orange flag means the live price has crossed the stop or a target before the bar closed. <i>bf</i> = replayed from before the stock was tracked — shown, but excluded from the stats</span>
+                <span>Drag the time rail (left) to replay the last 60 min · click any strand, card or row to open its technical analysis</span>
             </div>
         </div>
 
@@ -1347,6 +1396,7 @@
                         <label>Strategy</label>
                         <select id="bt-strategy" onchange="toggleBTMode()">
                             <optgroup label="Equity Strategies">
+                                <option value="day_trade_setups">Day-Trade Setups (5-min: ORB / PDH-PDL / VWAP / pullback / squeeze)</option>
                                 <option value="ema_crossover">EMA Crossover</option>
                                 <option value="rsi">RSI Strategy</option>
                                 <option value="vwap_breakout">VWAP Breakout</option>
@@ -1608,6 +1658,7 @@
                         <label>Strategy</label>
                         <select id="paper-strategy" onchange="togglePaperMode()">
                             <optgroup label="Built-in Strategies">
+                                <option value="day_trade_setups">Day-Trade Setups (5-min: ORB / PDH-PDL / VWAP / pullback / squeeze)</option>
                                 <option value="ema_crossover">EMA Crossover</option>
                                 <option value="vwap_breakout">VWAP Breakout</option>
                                 <option value="mean_reversion">Mean Reversion</option>
@@ -2489,6 +2540,7 @@
                 <label>Strategy Type</label>
                 <select id="strat-select">
                     <optgroup label="Equity Strategies">
+                        <option value="day_trade_setups">Day-Trade Setups (5-min: ORB / PDH-PDL / VWAP / pullback / squeeze)</option>
                         <option value="ema_crossover">EMA Crossover</option>
                         <option value="vwap_breakout">VWAP Breakout</option>
                         <option value="mean_reversion">Mean Reversion</option>
@@ -2599,8 +2651,9 @@
                     <select id="stock-test-exec-tf"></select>
                 </div>
                 <div class="grid grid-2" style="margin-bottom:0">
-                    <div class="form-group"><label>Quantity (0 = auto ~₹25k)</label><input id="stock-test-qty" type="number" value="0" min="0"></div>
-                    <div class="form-group"><label>ATR SL / Target Mult</label>
+                    <div class="form-group"><label>Quantity (0 = size by risk)</label><input id="stock-test-qty" type="number" value="0" min="0"></div>
+                    <div class="form-group"><label>Risk per trade (₹, when quantity is 0)</label><input id="stock-test-risk" type="number" value="1000" min="100" step="100"></div>
+                    <div class="form-group"><label title="Used only when the strategy sets no stop of its own">Fallback ATR SL / Target Mult</label>
                         <div style="display:flex;gap:6px">
                             <input id="stock-test-sl-mult" type="number" value="1.5" step="0.1" style="width:70px">
                             <input id="stock-test-target-mult" type="number" value="3.0" step="0.1" style="width:70px">
@@ -2705,6 +2758,7 @@
     </script>
     <script src="/static/js/dashboard.js?v={{ js_version }}"></script>
     <script src="/static/js/market_flow.js?v={{ flow_js_version }}"></script>
+    <script src="/static/js/day_trade.js?v={{ day_trade_js_version }}"></script>
     <script src="/static/js/terminal.js?v={{ terminal_js_version }}"></script>
     <script src="/static/js/agents.js?v={{ agents_js_version }}"></script>
     <div class="t-pal-overlay" id="t-pal">

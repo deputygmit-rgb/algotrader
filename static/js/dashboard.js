@@ -1428,7 +1428,16 @@ async function runOptionsOIScan() {
         const data = await API.post('/api/oi/options/scan', { underlying: sel });
         if (data.error) throw new Error(data.error);
         cachedOptReport[sel] = data;
-        statusEl.textContent = 'Scanned at ' + new Date().toLocaleTimeString();
+        if (data.refresh_warning) {
+            const cachedAt = data.timestamp ? ` from ${new Date(data.timestamp).toLocaleString()}` : '';
+            statusEl.textContent = `${data.refresh_warning} Showing cached report${cachedAt}.`;
+            statusEl.style.color = 'var(--accent-orange)';
+            renderOptionsOI(data);
+            return;
+        }
+        statusEl.textContent = data.timestamp
+            ? 'Scanned at ' + new Date(data.timestamp).toLocaleTimeString()
+            : 'Scan complete';
         statusEl.style.color = 'var(--accent-green)';
         renderOptionsOI(data);
     } catch (e) {
@@ -1439,7 +1448,6 @@ async function runOptionsOIScan() {
 
 async function loadCachedOptionsOI() {
     const sel = document.getElementById('oi-underlying-select').value;
-    if (cachedOptReport[sel]) { renderOptionsOI(cachedOptReport[sel]); return; }
     const statusEl = document.getElementById('opt-oi-status');
     try {
         const data = await API.get(`/api/oi/options/report?underlying=${sel}`);
@@ -1447,7 +1455,7 @@ async function loadCachedOptionsOI() {
             cachedOptReport[sel] = data;
             renderOptionsOI(data);
             if (statusEl) {
-                statusEl.textContent = data.timestamp ? `Loaded ${new Date(data.timestamp).toLocaleTimeString()}` : 'Loaded cached report';
+                statusEl.textContent = data.timestamp ? `Loaded cached report from ${new Date(data.timestamp).toLocaleTimeString()}` : 'Loaded cached report';
                 statusEl.style.color = 'var(--accent-green)';
             }
             return;
@@ -1602,6 +1610,13 @@ async function runFuturesOIScan() {
         const data = await API.post('/api/oi/futures/scan', {});
         if (data.error) throw new Error(data.error);
         cachedFutReport = data;
+        if (data.refresh_warning) {
+            const cachedAt = data.timestamp ? ` from ${new Date(data.timestamp).toLocaleString()}` : '';
+            statusEl.textContent = `${data.refresh_warning} Showing cached report${cachedAt}.`;
+            statusEl.style.color = 'var(--accent-orange)';
+            renderFuturesOI(data);
+            return;
+        }
         statusEl.textContent = data.timestamp
             ? 'Scanned at ' + new Date(data.timestamp).toLocaleTimeString()
             : 'Scan complete';
@@ -1614,10 +1629,6 @@ async function runFuturesOIScan() {
 }
 
 async function loadFuturesOI() {
-    if (cachedFutReport) {
-        renderFuturesOI(cachedFutReport);
-        return;
-    }
     const statusEl = document.getElementById('fut-oi-status');
     statusEl.textContent = 'Loading futures OI report...';
     statusEl.style.color = 'var(--accent-blue)';
@@ -1627,7 +1638,7 @@ async function loadFuturesOI() {
             cachedFutReport = data;
             renderFuturesOI(data);
             statusEl.textContent = data.timestamp
-                ? 'Loaded report from ' + new Date(data.timestamp).toLocaleTimeString()
+                ? 'Loaded cached report from ' + new Date(data.timestamp).toLocaleTimeString()
                 : 'Loaded cached report';
             statusEl.style.color = 'var(--accent-green)';
             return;
@@ -1975,7 +1986,8 @@ async function loadAnalysis() {
             if (status && !_scanInProgress) {
                 const label = universe === 'nifty500' ? 'NIFTY 500' : 'NIFTY 50';
                 const n = data.analyzed_stocks ?? (data.all_stocks || []).length;
-                status.textContent = `Showing last ${label} scan · ${n} stocks`;
+                const scanTime = data.scan_time ? ` · ${new Date(data.scan_time).toLocaleString()}` : '';
+                status.textContent = `Showing cached ${label} scan · ${n} stocks${scanTime}`;
                 status.style.color = 'var(--text-muted)';
             }
         } else if (status) {
@@ -2013,7 +2025,8 @@ async function runAnalysisScan() {
             renderAnalysis(data);
             const analyzed = data.analyzed_stocks ?? data.total_stocks ?? 0;
             const requested = data.requested_stocks ?? data.total_stocks ?? analyzed;
-            status.textContent = `Deep analysis complete: ${analyzed} / ${requested} stocks analyzed`;
+            const scanTime = data.scan_time ? ` · ${new Date(data.scan_time).toLocaleString()}` : '';
+            status.textContent = `Deep analysis complete: ${analyzed} / ${requested} stocks analyzed${scanTime}`;
             status.style.color = '#00d4aa';
             if (document.getElementById('analysis-view-sectors')?.classList.contains('active')) loadSectorAnalysis();
             showToast(`${label} scan complete`, 'success');
@@ -2561,6 +2574,34 @@ const _STOCK_TF_LABELS = { '5minute': '5 Min (100d)', '15minute': '15 Min (200d)
 let _stockTestSymbol = null;
 let _stockTestResult = null;
 
+let _strategyCatalog = null;
+
+// Fill the strategy picker from the server catalog (built-in, analysis and
+// custom strategies), keeping the hard-coded options if the call fails.
+async function loadStockTestCatalog() {
+    const select = document.getElementById('stock-test-strategy');
+    if (!_strategyCatalog) {
+        try {
+            _strategyCatalog = await API.get('/api/strategies/catalog');
+        } catch (e) {
+            return;
+        }
+        const groups = [...new Set(_strategyCatalog.map(s => s.group))];
+        select.innerHTML = groups.map(g => `<optgroup label="${escHtml(g)}">${_strategyCatalog
+            .filter(s => s.group === g)
+            .map(s => `<option value="${escHtml(s.name)}">${escHtml(s.label)}</option>`).join('')}</optgroup>`).join('');
+        select.addEventListener('change', updateStockTestButton);
+    }
+    updateStockTestButton();
+}
+
+function updateStockTestButton() {
+    const name = document.getElementById('stock-test-strategy').value;
+    const item = (_strategyCatalog || []).find(s => s.name === name);
+    const n = item ? item.timeframes.length : 4;
+    document.getElementById('btn-run-stock-test').textContent = `Run Test (${n} timeframe${n === 1 ? '' : 's'})`;
+}
+
 function openStockTestModal(symbol) {
     _stockTestSymbol = symbol;
     _stockTestResult = null;
@@ -2569,6 +2610,7 @@ function openStockTestModal(symbol) {
     document.getElementById('stock-test-status').textContent = '';
     document.getElementById('stock-test-execute-section').style.display = 'none';
     showModal('modal-stock-test');
+    loadStockTestCatalog();
 }
 
 async function runStockStrategyTest() {
@@ -2579,7 +2621,7 @@ async function runStockStrategyTest() {
     const btn = document.getElementById('btn-run-stock-test');
     btn.disabled = true;
     statusEl.style.color = 'var(--text-muted)';
-    statusEl.textContent = 'Downloading history & backtesting 4 timeframes — this can take a few minutes on first run...';
+    statusEl.textContent = 'Downloading history & backtesting — this can take a few minutes on first run...';
     resultsEl.innerHTML = '';
     try {
         const data = await API.postTimeout('/api/analysis/stock/test-strategy', {
@@ -2609,6 +2651,7 @@ function renderStockTestResults(data) {
         const metrics = r.error
             ? `<span style="color:#ff5252">${r.error}</span>`
             : `WR ${fmtNum(r.win_rate)}% · Sharpe ${fmtNum(r.sharpe_ratio)} · DD ${fmtNum(r.max_drawdown_pct)}% · Ret ${fmtNum(r.total_return_pct)}% · Trades ${r.total_trades ?? 0}` +
+              (r.out_of_sample ? `<br><span style="font-size:10px">Out-of-sample (last 30%): ${r.out_of_sample.trades} trades · P&L ₹${fmtNum(r.out_of_sample.pnl)} · WR ${fmtNum(r.out_of_sample.win_rate)}%</span>` : '') +
               (r.failure_reasons?.length ? `<br><span style="font-size:10px;color:var(--text-muted)">${r.failure_reasons.join('; ')}</span>` : '');
         return `<tr><td>${_STOCK_TF_LABELS[tf] || tf}</td>
             <td style="color:${color};font-weight:700">${pass ? 'PASS' : 'FAIL'}</td>
@@ -2636,11 +2679,12 @@ async function confirmExecuteStockSignal() {
     const quantity = parseInt(document.getElementById('stock-test-qty').value) || 0;
     const atr_sl_mult = parseFloat(document.getElementById('stock-test-sl-mult').value) || 1.5;
     const atr_target_mult = parseFloat(document.getElementById('stock-test-target-mult').value) || 3.0;
+    const risk_amount = parseFloat(document.getElementById('stock-test-risk')?.value) || 1000;
     hideModal('modal-stock-test');
     try {
         const data = await API.post('/api/analysis/stock/execute', {
             symbol: _stockTestSymbol, strategy, timeframe, exchange: 'NSE',
-            quantity, atr_sl_mult, atr_target_mult,
+            quantity, atr_sl_mult, atr_target_mult, risk_amount,
         });
         if (data.error) {
             showToast('Execute failed: ' + data.error, 'error');
@@ -5254,10 +5298,10 @@ async function loadPnLReport() {
             metricCard('Realized', '₹' + formatNum(rpnl), rpnl >= 0 ? '#00d4aa' : '#ff5252') +
             metricCard('Unrealized', '₹' + formatNum(upnl), upnl >= 0 ? '#00d4aa' : '#ff5252');
         let html = '<div class="card-title">P&L Breakdown</div>';
-        html += '<div style="padding:10px;color:var(--text-muted)"><p>Positions P&L: ₹' + formatNum(dayPnl) + ' | Holdings P&L: ₹' + formatNum(investPnl) + '</p>';
+        html += '<div style="padding:10px;color:var(--text-muted)"><p><span class="privacy-sensitive">Positions P&L: ₹' + formatNum(dayPnl) + ' | Holdings P&L: ₹' + formatNum(investPnl) + '</span></p>';
         const tradesSummary = data.trades_summary || {};
         if (tradesSummary.total_trades) {
-            html += '<p>Trades today: ' + tradesSummary.total_trades + ' (Buy: ₹' + formatNum(tradesSummary.buy_value||0) + ', Sell: ₹' + formatNum(tradesSummary.sell_value||0) + ')</p>';
+            html += '<p><span class="privacy-sensitive">Trades today: ' + tradesSummary.total_trades + ' (Buy: ₹' + formatNum(tradesSummary.buy_value||0) + ', Sell: ₹' + formatNum(tradesSummary.sell_value||0) + ')</span></p>';
         }
         html += '<p style="font-size:0.85em">Report time: ' + (data.report_time || 'N/A') + '</p></div>';
         det.innerHTML = html;

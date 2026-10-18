@@ -4,8 +4,10 @@ import ipaddress
 import os
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Optional
 
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from src.agent.mcp_driver import MCPDriverSupervisorAgent
 from src.analysis.nifty_contribution import DemoQuoteSimulator, compute_nifty_contribution
 from src.analysis.fno_flow import DemoFnoSimulator, FlowHistory, compute_fno_flow
+from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import otp_auth
@@ -46,6 +49,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="VerquoAI", version="2.0", lifespan=_lifespan)
+# The market-flow snapshot covers ~500 stocks and is polled every few seconds.
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -86,6 +91,9 @@ def _dev_otp_fallback_enabled(request: Request) -> bool:
     if os.environ.get("APP_ENV", "").strip().lower() != "development":
         return False
     if os.environ.get("OTP_DEV_FALLBACK_ENABLED", "").strip().lower() != "true":
+        return False
+    # Behind a reverse proxy every peer looks like loopback; never trust that.
+    if request.headers.get("x-forwarded-for") or request.headers.get("forwarded"):
         return False
     client_ip = request.client.host if request.client else ""
     try:
@@ -268,8 +276,10 @@ async def dashboard(request: Request) -> HTMLResponse:
         "csrf_token": otp_auth.get_csrf_token(session_token),
         "js_version": js_version,
         "flow_js_version": _static_version("js/market_flow.js"),
+        "day_trade_js_version": _static_version("js/day_trade.js"),
         "css_version": _static_version("css/dashboard.css"),
         "terminal_css_version": _static_version("css/terminal.css"),
+        "collapsible_js_version": _static_version("js/collapsible.js"),
         "terminal_js_version": _static_version("js/terminal.js"),
         "agents_js_version": _static_version("js/agents.js"),
     })
@@ -282,11 +292,14 @@ async def stock_detail_page(request: Request, symbol: str) -> HTMLResponse:
     normalized_symbol = symbol.upper().strip()
     if not re.fullmatch(r"[A-Z0-9&.-]{1,32}", normalized_symbol):
         raise HTTPException(400, "Invalid stock symbol")
+    session_token = request.cookies.get(SESSION_COOKIE, "")
     return templates.TemplateResponse("stock_detail.html", {
         "request": request,
         "symbol": normalized_symbol,
+        "csrf_token": otp_auth.get_csrf_token(session_token),
         "css_version": _static_version("css/stock_detail.css"),
         "terminal_css_version": _static_version("css/terminal.css"),
+        "collapsible_js_version": _static_version("js/collapsible.js"),
         "js_version": _static_version("js/stock_detail.js"),
     })
 
@@ -466,6 +479,13 @@ async def signals(request: Request, limit: int = 50) -> list[dict[str, Any]]:
 @app.get("/api/strategies")
 async def strategies(request: Request) -> list[dict[str, Any]]:
     return get_user_service(request).get_strategies_info()
+
+
+@app.get("/api/strategies/catalog")
+async def strategy_catalog(request: Request) -> list[dict[str, Any]]:
+    """Every single-stock strategy available for testing / live use (built-in,
+    analysis and custom), with label, group and the timeframes it is tested on."""
+    return get_user_service(request).get_strategy_catalog()
 
 
 @app.post("/api/strategies/add")
@@ -738,17 +758,30 @@ async def analysis_results(request: Request, universe: str = "nifty50") -> dict[
     return get_user_service(request).get_analysis_results(universe)
 
 
+DEEP_PROFILE_MAX_AGE = timedelta(minutes=15)
+
+
+def _deep_profile_is_fresh(profile: dict[str, Any]) -> bool:
+    try:
+        as_of = datetime.fromisoformat(profile.get("as_of") or "")
+    except ValueError:
+        return False
+    return datetime.now() - as_of <= DEEP_PROFILE_MAX_AGE
+
+
 @app.get("/api/analysis/deep/{symbol}")
 async def analysis_deep_profile(request: Request, symbol: str) -> dict[str, Any]:
     """Get deep analysis profile for a single stock (on-demand if not cached)."""
     svc = get_user_service(request)
     sym = symbol.upper().strip()
-    # Try cached first
-    result = svc.get_deep_profile(sym)
-    if not result.get("error"):
-        return result
-    # Fall back to on-demand analysis
-    return await svc.analyze_stock_on_demand(sym)
+    cached = svc.get_deep_profile(sym)
+    if not cached.get("error") and _deep_profile_is_fresh(cached):
+        return cached
+    fresh = await svc.analyze_stock_on_demand(sym)
+    if fresh.get("error") and not cached.get("error"):
+        # keep showing the last good profile, clearly flagged as stale
+        return {**cached, "stale": True, "refresh_error": fresh["error"]}
+    return fresh
 
 
 @app.post("/api/analysis/stock/test-strategy")
@@ -795,6 +828,7 @@ async def analysis_stock_execute(request: Request) -> dict[str, Any]:
             atr_sl_mult=float(body.get("atr_sl_mult", 1.5)),
             atr_target_mult=float(body.get("atr_target_mult", 3.0)),
             strategy_params=body.get("strategy_params"),
+            risk_amount=float(body.get("risk_amount", 1000.0)),
         )
     except Exception as e:
         logger.error("stock_execute_error", symbol=symbol, error=str(e))
@@ -1275,20 +1309,102 @@ async def get_nifty_contribution(request: Request) -> dict[str, Any]:
 
 @app.get("/api/market/fno-flow")
 async def get_fno_flow(request: Request) -> dict[str, Any]:
-    """F&O universe flow: per-stock price, futures OI build-up, levels, score.
-    ``?demo=1`` returns simulated data."""
+    """Market flow for the F&O + NIFTY 500 universe: per-stock price, money flow,
+    futures OI build-up, levels, bias/score, trade plans, best longs/shorts and
+    sector flow per universe. ``?demo=1`` returns simulated data."""
     if request.query_params.get("demo") == "1":
         from datetime import datetime as _dt
         sim = _get_fno_demo()
         sim.step()
         now = _dt.now()
-        result = compute_fno_flow(sim.universe, sim.quotes(), sim.baselines, now)
+        result = compute_fno_flow(
+            sim.universe, sim.quotes(), sim.baselines, now, _fno_demo_history.changes_ago(15, now),
+        )
         _fno_demo_history.record(result, now)
         return {**result, "demo": True, "baseline_loading": False}
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Zerodha not authenticated"}
     return await svc.get_fno_flow()
+
+
+_demo_day_trade: Optional[DayTradeTracker] = None
+
+
+async def _demo_day_trade_snapshot(symbol: str | None = None, action: str = "add") -> dict[str, Any]:
+    """Day-trade tracking over the demo simulator's synthetic 5-minute sessions."""
+    from datetime import datetime as _dt
+
+    global _demo_day_trade
+    sim = _get_fno_demo()
+    now = _dt.now()
+    if _demo_day_trade is None:
+        async def fetch(sym: str) -> list[dict[str, Any]]:
+            return sim.intraday_bars(sym, _dt.now())
+        _demo_day_trade = DayTradeTracker(fetch)
+    flow = compute_fno_flow(sim.universe, sim.quotes(), sim.baselines, now, _fno_demo_history.changes_ago(15, now))
+    if symbol:
+        if action == "remove":
+            _demo_day_trade.remove(symbol)
+        elif not any(r["symbol"] == symbol for r in flow["rows"]):
+            return {"error": f"{symbol} is not in the F&O or NIFTY 500 universe"}
+        else:
+            _demo_day_trade.add(symbol, now, next(r for r in flow["rows"] if r["symbol"] == symbol))
+    _demo_day_trade.update_selection(flow, now)
+    await _demo_day_trade.refresh(now)
+    # mark open trades to the simulated session's last close
+    closes = {}
+    for sym in _demo_day_trade.symbols:
+        revealed = completed_session_bars(sim.intraday_bars(sym, now), now)
+        if revealed:
+            closes[sym] = revealed[-1]["c"]
+    flow["rows"] = [{**r, "ltp": closes.get(r["symbol"], r["ltp"])} for r in flow["rows"]]
+    return {**_demo_day_trade.snapshot(flow, now), "demo": True}
+
+
+@app.get("/api/market/day-trade")
+async def get_day_trade(request: Request) -> dict[str, Any]:
+    """5-minute day-trade setups for the tracked list (money-flow picks + manual
+    symbols): bars, VWAP / EMA / opening range, signals with outcomes, open
+    trades and the session feed. ``?demo=1`` uses simulated sessions."""
+    if request.query_params.get("demo") == "1":
+        return await _demo_day_trade_snapshot()
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Zerodha not authenticated"}
+    return await svc.get_day_trade()
+
+
+@app.get("/api/market/day-trade/replay")
+async def replay_day_trade(request: Request, symbols: str = "", days: int = 30) -> dict[str, Any]:
+    """Replay the 5-minute setups over past sessions: ``?symbols=INFY,TCS&days=30``
+    (up to 10 symbols, 5-90 days). Results per setup / side / symbol, net of costs."""
+    names = [s for s in symbols.split(",") if s.strip()]
+    if not names or not all(re.fullmatch(r"[A-Za-z0-9&.-]{1,32}", n.strip()) for n in names):
+        raise HTTPException(400, "symbols required, e.g. ?symbols=INFY,TCS")
+    if request.query_params.get("demo") == "1":
+        return {"error": "Replay needs real historical 5-minute data - turn DEMO off and log in to Zerodha."}
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Zerodha not authenticated"}
+    return await svc.replay_day_trade_setups(names, days)
+
+
+@app.post("/api/market/day-trade/track")
+async def track_day_trade(request: Request) -> dict[str, Any]:
+    """Add or remove a symbol from day-trade tracking. Body: {symbol, action: add|remove}."""
+    body = await request.json()
+    symbol = str(body.get("symbol") or "").upper().strip()
+    action = body.get("action", "add")
+    if not re.fullmatch(r"[A-Z0-9&.-]{1,32}", symbol) or action not in ("add", "remove"):
+        raise HTTPException(400, "symbol and action (add|remove) required")
+    if request.query_params.get("demo") == "1":
+        result = await _demo_day_trade_snapshot(symbol, action)
+        return {"error": result["error"]} if result.get("error") else {"success": True}
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Zerodha not authenticated"}
+    return await svc.track_day_trade_symbol(symbol, action)
 
 
 @app.get("/api/market/fno-flow/history")

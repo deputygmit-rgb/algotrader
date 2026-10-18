@@ -29,7 +29,7 @@ src/
   utils/          - Config, structured logging, exceptions
 templates/        - Jinja2 HTML templates (dashboard)
 static/           - CSS + JS for frontend
-main.py           - FastAPI server entry point (port 5000)
+main.py           - FastAPI server entry point (port 5001)
 ```
 
 ## Multi-User Architecture

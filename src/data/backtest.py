@@ -15,6 +15,8 @@ Production-grade event-driven backtester with:
 
 from __future__ import annotations
 
+import copy
+
 import math
 import random
 from datetime import datetime, timedelta
@@ -23,6 +25,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from src.data.exit_plan import Exit, ExitPlan, allows_short, fills_next_open, is_intraday, product_for
 from src.data.models import BacktestResult, Signal, TransactionType
 from src.strategy.base import BaseStrategy
 from src.utils.logger import get_logger
@@ -203,351 +206,208 @@ class BacktestEngine:
         if "timestamp" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
             df["timestamp"] = df.index
         df = df.reset_index(drop=True)
-        self._strategy.update_bar_data(instrument_token, df)
+        return self._run_planned(df, data, instrument_token, tradingsymbol, benchmark_data, timeframe)
 
-        # Set timeframe on strategy for auto-scaling of lookback periods
-        if hasattr(self._strategy, 'set_timeframe'):
+    def _run_planned(
+        self, df: pd.DataFrame, data: pd.DataFrame, instrument_token: int, tradingsymbol: str,
+        benchmark_data: pd.DataFrame | None, timeframe: str,
+    ) -> dict[str, Any]:
+        """The backtest loop - the same execution rules as paper and live trading
+        (``src/data/exit_plan.py``):
+
+        * a signal is acted on at the next bar's open (it is only known at the close);
+        * exits follow the position's ``ExitPlan``: stop (trailing unless the
+          strategy says otherwise), optional scale-out with a breakeven stop,
+          target, and the 15:15 square-off on intraday timeframes;
+        * daily timeframes trade delivery: long-only, delivery charges;
+        * an opposite signal closes the position (and reverses it, where
+          shorting is allowed) at the next open; strategies with their own
+          exit plans (``uses_exit_plans``) are only closed by that plan.
+        """
+        if hasattr(self._strategy, "set_timeframe"):
             self._strategy.set_timeframe(timeframe)
+        has_ts = "timestamp" in df.columns
+        intraday = is_intraday(timeframe)
+        shorts = allows_short(timeframe)
+        plan_strategy = bool(getattr(self._strategy, "uses_exit_plans", False))
+        # Market fills pay slippage (the strategy's own rate if it sets one);
+        # broker charges are computed without a second slippage term.
+        slip = getattr(self._strategy, "slippage_pct", None)
+        fill_model = copy.copy(self._cost_model)
+        fill_model.slippage_pct = self._slippage_pct if slip is None else float(slip)
+        charge_model = copy.copy(self._cost_model)
+        charge_model.slippage_pct = 0.0
 
-        # Reset strategy signal state to prevent stale state from prior runs
-        if hasattr(self._strategy, '_prev_signal'):
-            self._strategy._prev_signal.clear()
-
-        # Pre-compute full indicator series once for efficiency (Issue #6)
-        # Strategies still receive the growing slice, but EMA/RSI etc. only
-        # need the tail values — this avoids O(n²) re-computation.
-        self._strategy.update_bar_data(instrument_token, df)
-
-        # Build bar timestamps: prefer "timestamp" column over index
-        _has_ts_col = "timestamp" in df.columns
-        def _bar_ts(idx: int) -> str:
-            if _has_ts_col:
-                return str(df["timestamp"].iloc[idx])
-            return str(df.index[idx])
+        def ts(i: int) -> str:
+            return str(df["timestamp"].iloc[i]) if has_ts else str(i)
 
         capital = self._initial_capital
-        position = 0
-        entry_price = 0.0
-        entry_bar = 0
         trades: list[dict[str, Any]] = []
         equity_curve: list[float] = [capital]
-        bar_dates: list[str] = [_bar_ts(0)]
-        total_costs: dict[str, float] = {
-            "brokerage": 0, "stt": 0, "exchange_txn": 0,
-            "sebi": 0, "stamp_duty": 0, "gst": 0, "slippage": 0, "total": 0,
-        }
+        bar_dates: list[str] = [ts(0)]
+        total_costs = {k: 0.0 for k in ("brokerage", "stt", "exchange_txn", "sebi", "stamp_duty", "gst", "slippage", "total")}
         mae_values: list[float] = []
         mfe_values: list[float] = []
-        current_mae = 0.0
-        current_mfe = 0.0
-        active_stop_loss: float = 0.0      # absolute SL price for open position
-        active_target_price: float = 0.0   # absolute TP price for open position (Issue #3)
-        trailing_stop_pct: float = 0.0      # trailing stop moves with profit
-        highest_since_entry: float = 0.0    # track best price since entry (long)
-        lowest_since_entry: float = float("inf")  # track best price since entry (short)
+        plan: ExitPlan | None = None
+        pending_entry: Signal | None = None    # acted on at the next bar's open
+        pending_exit = False
+        qty = 0
+        entry_bar = 0
+        realized = 0.0
+        trade_costs = 0.0
+        mae = mfe = 0.0
+        exit_reasons: list[str] = []
+        open_qty = 0
+
+        def add_costs(costs: dict[str, float]) -> None:
+            for k in total_costs:
+                total_costs[k] += costs.get(k, 0)
+
+        def open_position(signal: Signal, price: float, i: int) -> None:
+            nonlocal plan, qty, open_qty, entry_bar, realized, trade_costs, capital, mae, mfe, exit_reasons
+            side = 1 if signal.transaction_type == TransactionType.BUY else -1
+            fill = fill_model.get_fill_price(price, side > 0)
+            plan = ExitPlan.from_signal(signal, side, fill, i, timeframe)
+            # risk-based sizing uses the plan's actual stop, built from this fill
+            if self._position_sizing == "risk_based" and plan.stop is not None:
+                qty = PositionSizer.risk_based(capital, fill, plan.stop, self._risk_per_trade)
+            else:
+                qty = self._size_position(capital, price, signal)
+            costs = charge_model.calculate(fill, qty, side > 0, intraday)
+            add_costs(costs)
+            capital -= costs["total"]
+            open_qty = qty
+            entry_bar, realized, trade_costs, mae, mfe, exit_reasons = i, 0.0, costs["total"], 0.0, 0.0, []
+            trades.append({
+                "entry_time": ts(i), "entry_bar": i, "tradingsymbol": tradingsymbol,
+                "entry_price": round(fill, 2), "quantity": qty,
+                "type": "LONG_ENTRY" if side > 0 else "SHORT_ENTRY",
+                "signal_confidence": getattr(signal, "confidence", 0),
+                "stop_loss": round(plan.stop, 2) if plan.stop else None,
+                "target": round(plan.target, 2) if plan.target else None,
+                "setup": (signal.metadata or {}).get("setup"),
+            })
+
+        def apply_exits(exits: list) -> None:
+            """Book each exit; the final one closes whatever is still open."""
+            nonlocal realized, trade_costs, capital, open_qty
+            side = plan.side
+            for ex in exits:
+                part_qty = open_qty if ex.final else min(open_qty, max(1, round(qty * ex.fraction)))
+                if part_qty <= 0:
+                    continue
+                # the final target is a resting limit order; every other exit is at market
+                market = ex.reason != "TARGET"
+                fill = fill_model.get_fill_price(ex.price, side < 0) if market else ex.price
+                costs = charge_model.calculate(fill, part_qty, side < 0, intraday)
+                add_costs(costs)
+                pnl = side * (fill - plan.entry) * part_qty - costs["total"]
+                realized += pnl
+                trade_costs += costs["total"]
+                capital += pnl
+                open_qty -= part_qty
+                exit_reasons.append(ex.reason)
+
+        def record_close(i: int, exit_price: float) -> None:
+            nonlocal plan
+            side = plan.side
+            mae_values.append(mae)
+            mfe_values.append(mfe)
+            last = exit_reasons[-1]
+            direction = "LONG" if side > 0 else "SHORT"
+            kind = {
+                "STOP": f"SL_{direction}_EXIT", "BREAKEVEN": f"BE_{direction}_EXIT",
+                "TARGET": f"TP_{direction}_EXIT", "SCALE_OUT": f"TP_{direction}_EXIT",
+                "TIME_EXIT": f"TIME_{direction}_EXIT", "SIGNAL_EXIT": f"{direction}_EXIT",
+                "FINAL": "FINAL_EXIT",
+            }[last]
+            trades.append({
+                "entry_time": ts(entry_bar), "entry_price": round(plan.entry, 2),
+                "quantity": qty, "direction": direction,
+                "exit_time": ts(i), "exit_bar": i,
+                "exit_price": round(exit_price, 2), "pnl": round(realized, 2),
+                "costs": round(trade_costs, 2), "type": kind,
+                "exit_path": " > ".join(exit_reasons),
+                "scaled_out": "SCALE_OUT" in exit_reasons,
+                "hold_bars": i - entry_bar,
+                "mae_pct": round(mae, 2), "mfe_pct": round(mfe, 2),
+            })
+            plan = None
 
         for i in range(1, len(df)):
             bar = df.iloc[i]
-            bar_dates.append(_bar_ts(i))
-            slice_df = df.iloc[: i + 1].copy()
+            bar_dates.append(ts(i))
+            hhmm = ts(i)[11:16]
+
+            # orders decided at the previous close execute at this bar's open
+            if pending_exit and plan is not None:
+                apply_exits([Exit("SIGNAL_EXIT", float(bar["open"]), plan.remaining, True)])
+                record_close(i, float(bar["open"]))
+            pending_exit = False
+            if pending_entry is not None and plan is None:
+                open_position(pending_entry, float(bar["open"]), i)
+            pending_entry = None
+
+            if plan is not None:
+                side = plan.side
+                mfe = max(mfe, side * ((bar["high"] if side > 0 else bar["low"]) - plan.entry) / plan.entry * 100)
+                mae = min(mae, side * ((bar["low"] if side > 0 else bar["high"]) - plan.entry) / plan.entry * 100)
+                exits = plan.on_bar(bar, i, hhmm)
+                if exits:
+                    apply_exits(exits)
+                    if open_qty <= 0:
+                        record_close(i, exits[-1].price)
+
+            slice_df = df.iloc[: i + 1]
             self._strategy.update_bar_data(instrument_token, slice_df)
             signal = self._strategy.generate_signal(slice_df, instrument_token)
-
-            # Track MAE/MFE for open position
-            if position != 0:
-                if position > 0:
-                    excursion_up = (bar["high"] - entry_price) / entry_price * 100
-                    excursion_down = (bar["low"] - entry_price) / entry_price * 100
-                    current_mfe = max(current_mfe, excursion_up)
-                    current_mae = min(current_mae, excursion_down)
-                    highest_since_entry = max(highest_since_entry, bar["high"])
-                else:
-                    excursion_up = (entry_price - bar["low"]) / entry_price * 100
-                    excursion_down = (entry_price - bar["high"]) / entry_price * 100
-                    current_mfe = max(current_mfe, excursion_up)
-                    current_mae = min(current_mae, excursion_down)
-                    lowest_since_entry = min(lowest_since_entry, bar["low"])
-
-            # ── Stop-loss / Trailing-stop check BEFORE signal processing ──
-            sl_triggered = False
-            if position != 0 and active_stop_loss > 0:
-                # Update trailing stop
-                if trailing_stop_pct > 0:
-                    if position > 0:
-                        new_trail = highest_since_entry * (1 - trailing_stop_pct / 100)
-                        active_stop_loss = max(active_stop_loss, new_trail)
+            if signal is not None:
+                side = 1 if signal.transaction_type == TransactionType.BUY else -1
+                is_exit = bool(signal.metadata and signal.metadata.get("action") == "exit")
+                can_open = not is_exit and (side > 0 or shorts)
+                next_open = fills_next_open(signal, timeframe)
+                if plan is None:
+                    if can_open and pending_entry is None:
+                        if next_open:
+                            pending_entry = signal
+                        else:
+                            open_position(signal, float(bar["close"]), i)
+                elif not plan_strategy and side != plan.side:
+                    # opposite signal: close, and reverse into it where allowed
+                    if next_open:
+                        pending_exit = True
+                        pending_entry = signal if can_open else None
                     else:
-                        new_trail = lowest_since_entry * (1 + trailing_stop_pct / 100)
-                        active_stop_loss = min(active_stop_loss, new_trail)
+                        apply_exits([Exit("SIGNAL_EXIT", float(bar["close"]), plan.remaining, True)])
+                        record_close(i, float(bar["close"]))
+                        if can_open:
+                            open_position(signal, float(bar["close"]), i)
 
-                if position > 0 and bar["low"] <= active_stop_loss:
-                    # Long stop-loss hit
-                    fill_price = self._cost_model.get_fill_price(active_stop_loss, False)
-                    costs = self._cost_model.calculate(fill_price, position, False, self._is_intraday)
-                    pnl = (fill_price - entry_price) * position - costs["total"]
-                    capital += pnl
-                    for k in total_costs:
-                        total_costs[k] += costs.get(k, 0)
-                    mae_values.append(current_mae)
-                    mfe_values.append(current_mfe)
-                    trades.append({
-                        "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                        "quantity": position, "direction": "LONG",
-                        "exit_time": _bar_ts(i), "exit_bar": i,
-                        "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                        "costs": round(costs["total"], 2), "type": "SL_LONG_EXIT",
-                        "hold_bars": i - entry_bar,
-                        "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-                        "stop_loss_price": round(active_stop_loss, 2),
-                    })
-                    position = 0
-                    active_stop_loss = 0.0
-                    active_target_price = 0.0
-                    sl_triggered = True
-                elif position < 0 and bar["high"] >= active_stop_loss:
-                    # Short stop-loss hit
-                    fill_price = self._cost_model.get_fill_price(active_stop_loss, True)
-                    costs = self._cost_model.calculate(fill_price, abs(position), True, self._is_intraday)
-                    pnl = (entry_price - fill_price) * abs(position) - costs["total"]
-                    capital += pnl
-                    for k in total_costs:
-                        total_costs[k] += costs.get(k, 0)
-                    mae_values.append(current_mae)
-                    mfe_values.append(current_mfe)
-                    trades.append({
-                        "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                        "quantity": abs(position), "direction": "SHORT",
-                        "exit_time": _bar_ts(i), "exit_bar": i,
-                        "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                        "costs": round(costs["total"], 2), "type": "SL_SHORT_EXIT",
-                        "hold_bars": i - entry_bar,
-                        "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-                        "stop_loss_price": round(active_stop_loss, 2),
-                    })
-                    position = 0
-                    active_stop_loss = 0.0
-                    active_target_price = 0.0
-                    sl_triggered = True
+            mtm = capital
+            if plan is not None:
+                mtm += plan.side * (float(bar["close"]) - plan.entry) * open_qty
+            equity_curve.append(mtm)
 
-            # ── Profit-Target check BEFORE signal processing (Issue #3) ──
-            tp_triggered = False
-            if position != 0 and not sl_triggered and active_target_price > 0:
-                if position > 0 and bar["high"] >= active_target_price:
-                    fill_price = self._cost_model.get_fill_price(active_target_price, False)
-                    costs = self._cost_model.calculate(fill_price, position, False, self._is_intraday)
-                    pnl = (fill_price - entry_price) * position - costs["total"]
-                    capital += pnl
-                    for k in total_costs:
-                        total_costs[k] += costs.get(k, 0)
-                    mae_values.append(current_mae)
-                    mfe_values.append(current_mfe)
-                    trades.append({
-                        "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                        "quantity": position, "direction": "LONG",
-                        "exit_time": _bar_ts(i), "exit_bar": i,
-                        "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                        "costs": round(costs["total"], 2), "type": "TP_LONG_EXIT",
-                        "hold_bars": i - entry_bar,
-                        "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-                        "target_price": round(active_target_price, 2),
-                    })
-                    position = 0
-                    active_stop_loss = 0.0
-                    active_target_price = 0.0
-                    tp_triggered = True
-                elif position < 0 and bar["low"] <= active_target_price:
-                    fill_price = self._cost_model.get_fill_price(active_target_price, True)
-                    costs = self._cost_model.calculate(fill_price, abs(position), True, self._is_intraday)
-                    pnl = (entry_price - fill_price) * abs(position) - costs["total"]
-                    capital += pnl
-                    for k in total_costs:
-                        total_costs[k] += costs.get(k, 0)
-                    mae_values.append(current_mae)
-                    mfe_values.append(current_mfe)
-                    trades.append({
-                        "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                        "quantity": abs(position), "direction": "SHORT",
-                        "exit_time": _bar_ts(i), "exit_bar": i,
-                        "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                        "costs": round(costs["total"], 2), "type": "TP_SHORT_EXIT",
-                        "hold_bars": i - entry_bar,
-                        "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-                        "target_price": round(active_target_price, 2),
-                    })
-                    position = 0
-                    active_stop_loss = 0.0
-                    active_target_price = 0.0
-                    tp_triggered = True
+        if plan is not None:
+            last_close = float(df.iloc[-1]["close"])
+            apply_exits([Exit("FINAL", last_close, plan.remaining, True)])
+            record_close(len(df) - 1, last_close)
+            equity_curve[-1] = capital
 
-            if signal and not sl_triggered and not tp_triggered:
-                price = bar["close"]
-                # A signal tagged action=exit (mean-reversion z-exit, custom-builder
-                # exit rules, ...) means "close the open position" - it must NOT
-                # reverse into a new counter-trend position.
-                is_exit_signal = bool(getattr(signal, "metadata", None) and signal.metadata.get("action") == "exit")
+        result = self._assemble_result(
+            data, trades, equity_curve, bar_dates, mae_values, mfe_values,
+            total_costs, capital, tradingsymbol, timeframe, benchmark_data,
+        )
+        result["execution_model"] = "exit_plan"
+        result["product"] = product_for(timeframe)
+        return result
 
-                if signal.transaction_type == TransactionType.BUY and position <= 0:
-                    if position < 0:
-                        fill_price = self._cost_model.get_fill_price(price, True)
-                        costs = self._cost_model.calculate(fill_price, abs(position), True, self._is_intraday)
-                        pnl = (entry_price - fill_price) * abs(position) - costs["total"]
-                        capital += pnl
-                        for k in total_costs:
-                            total_costs[k] += costs.get(k, 0)
-                        mae_values.append(current_mae)
-                        mfe_values.append(current_mfe)
-                        trades.append({
-                            "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                            "quantity": abs(position), "direction": "SHORT",
-                            "exit_time": _bar_ts(i), "exit_bar": i,
-                            "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                            "costs": round(costs["total"], 2), "type": "SHORT_EXIT",
-                            "hold_bars": i - entry_bar,
-                            "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-                        })
-                        position = 0
-                        active_stop_loss = 0.0
-                        active_target_price = 0.0
-
-                    if is_exit_signal:
-                        continue  # exit-only signal: position closed above, no new entry
-
-                    qty = self._size_position(capital, price, signal)
-                    fill_price = self._cost_model.get_fill_price(price, True)
-                    costs = self._cost_model.calculate(fill_price, qty, True, self._is_intraday)
-                    for k in total_costs:
-                        total_costs[k] += costs.get(k, 0)
-                    entry_price = fill_price
-                    entry_bar = i
-                    position = qty
-                    capital -= costs["total"]
-                    current_mae = 0.0
-                    current_mfe = 0.0
-                    highest_since_entry = bar["high"]
-                    lowest_since_entry = bar["low"]
-                    # Set stop-loss from signal (ATR-based)
-                    if signal.stop_loss:
-                        active_stop_loss = fill_price - signal.stop_loss
-                        trailing_stop_pct = signal.stop_loss / fill_price * 100  # auto trail
-                    else:
-                        active_stop_loss = 0.0
-                        trailing_stop_pct = 0.0
-                    # Set profit target from signal (Issue #3)
-                    if signal.target and signal.target > 0:
-                        active_target_price = fill_price + signal.target
-                    elif signal.stop_loss and signal.stop_loss > 0:
-                        # Default: 2:1 reward-to-risk ratio
-                        active_target_price = fill_price + signal.stop_loss * 2
-                    else:
-                        active_target_price = 0.0
-                    trades.append({
-                        "entry_time": _bar_ts(i), "entry_bar": i,
-                        "tradingsymbol": tradingsymbol,
-                        "entry_price": round(fill_price, 2), "quantity": qty,
-                        "type": "LONG_ENTRY",
-                        "signal_confidence": getattr(signal, "confidence", 0),
-                        "stop_loss": round(active_stop_loss, 2) if active_stop_loss else None,
-                        "target": round(active_target_price, 2) if active_target_price else None,
-                    })
-
-                elif signal.transaction_type == TransactionType.SELL and position >= 0:
-                    if position > 0:
-                        fill_price = self._cost_model.get_fill_price(price, False)
-                        costs = self._cost_model.calculate(fill_price, position, False, self._is_intraday)
-                        pnl = (fill_price - entry_price) * position - costs["total"]
-                        capital += pnl
-                        for k in total_costs:
-                            total_costs[k] += costs.get(k, 0)
-                        mae_values.append(current_mae)
-                        mfe_values.append(current_mfe)
-                        trades.append({
-                            "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                            "quantity": position, "direction": "LONG",
-                            "exit_time": _bar_ts(i), "exit_bar": i,
-                            "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                            "costs": round(costs["total"], 2), "type": "LONG_EXIT",
-                            "hold_bars": i - entry_bar,
-                            "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-                        })
-                        position = 0
-                        active_stop_loss = 0.0
-                        active_target_price = 0.0
-
-                    if is_exit_signal:
-                        continue  # exit-only signal: position closed above, no new entry
-
-                    qty = self._size_position(capital, price, signal)
-                    fill_price = self._cost_model.get_fill_price(price, False)
-                    costs = self._cost_model.calculate(fill_price, qty, False, self._is_intraday)
-                    for k in total_costs:
-                        total_costs[k] += costs.get(k, 0)
-                    entry_price = fill_price
-                    entry_bar = i
-                    position = -qty
-                    capital -= costs["total"]
-                    current_mae = 0.0
-                    current_mfe = 0.0
-                    highest_since_entry = bar["high"]
-                    lowest_since_entry = bar["low"]
-                    # Set stop-loss from signal (ATR-based)
-                    if signal.stop_loss:
-                        active_stop_loss = fill_price + signal.stop_loss
-                        trailing_stop_pct = signal.stop_loss / fill_price * 100
-                    else:
-                        active_stop_loss = 0.0
-                        trailing_stop_pct = 0.0
-                    # Set profit target from signal (Issue #3)
-                    if signal.target and signal.target > 0:
-                        active_target_price = fill_price - signal.target
-                    elif signal.stop_loss and signal.stop_loss > 0:
-                        active_target_price = fill_price - signal.stop_loss * 2
-                    else:
-                        active_target_price = 0.0
-                    trades.append({
-                        "entry_time": _bar_ts(i), "entry_bar": i,
-                        "tradingsymbol": tradingsymbol,
-                        "entry_price": round(fill_price, 2), "quantity": qty,
-                        "type": "SHORT_ENTRY",
-                        "signal_confidence": getattr(signal, "confidence", 0),
-                        "stop_loss": round(active_stop_loss, 2) if active_stop_loss else None,
-                        "target": round(active_target_price, 2) if active_target_price else None,
-                    })
-
-            # Mark to market
-            mark_to_market = capital
-            if position != 0:
-                current_price = bar["close"]
-                if position > 0:
-                    mark_to_market += (current_price - entry_price) * position
-                else:
-                    mark_to_market += (entry_price - current_price) * abs(position)
-            equity_curve.append(mark_to_market)
-
-        # Force exit at end
-        if position != 0:
-            final_price = df.iloc[-1]["close"]
-            is_long = position > 0
-            fill_price = self._cost_model.get_fill_price(final_price, not is_long)
-            costs = self._cost_model.calculate(fill_price, abs(position), not is_long, self._is_intraday)
-            if is_long:
-                pnl = (fill_price - entry_price) * position - costs["total"]
-            else:
-                pnl = (entry_price - fill_price) * abs(position) - costs["total"]
-            capital += pnl
-            for k in total_costs:
-                total_costs[k] += costs.get(k, 0)
-            mae_values.append(current_mae)
-            mfe_values.append(current_mfe)
-            trades.append({
-                "entry_time": _bar_ts(entry_bar), "entry_price": round(entry_price, 2),
-                "quantity": abs(position), "direction": "LONG" if is_long else "SHORT",
-                "exit_time": _bar_ts(len(df) - 1), "exit_bar": len(df) - 1,
-                "exit_price": round(fill_price, 2), "pnl": round(pnl, 2),
-                "costs": round(costs["total"], 2), "type": "FINAL_EXIT",
-                "hold_bars": len(df) - 1 - entry_bar,
-                "mae_pct": round(current_mae, 2), "mfe_pct": round(current_mfe, 2),
-            })
-
+    def _assemble_result(
+        self, data: pd.DataFrame, trades: list[dict[str, Any]], equity_curve: list[float],
+        bar_dates: list[str], mae_values: list[float], mfe_values: list[float],
+        total_costs: dict[str, float], capital: float, tradingsymbol: str, timeframe: str,
+        benchmark_data: pd.DataFrame | None,
+    ) -> dict[str, Any]:
         # Build comprehensive result
         equity = np.array(equity_curve)
         metrics = self._calculate_metrics(equity, trades, data)
@@ -595,7 +455,7 @@ class BacktestEngine:
             "bar_dates": bar_dates[:len(equity_curve)],
             "trades": trades,
             "position_sizing": self._position_sizing,
-            "cost_model": "indian" if self._is_intraday else "delivery",
+            "cost_model": "indian" if is_intraday(timeframe) else "delivery",
         })
 
     # ────────────────────────────────────────────────────────

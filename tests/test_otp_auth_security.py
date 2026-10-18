@@ -11,8 +11,9 @@ from src.auth.otp_auth import OTPAuth
 class _Request:
     client = SimpleNamespace(host="127.0.0.1")
 
-    def __init__(self, body):
+    def __init__(self, body, headers=None):
         self._body = body
+        self.headers = headers or {}
 
     async def json(self):
         return self._body
@@ -96,6 +97,19 @@ def test_dev_otp_fallback_requires_explicit_flag(monkeypatch):
     monkeypatch.delenv("OTP_DEV_FALLBACK_ENABLED", raising=False)
 
     assert webapp._dev_otp_fallback_enabled(_Request({})) is False
+
+
+def test_dev_otp_fallback_is_denied_to_proxied_requests(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("OTP_DEV_FALLBACK_ENABLED", "true")
+
+    assert webapp._dev_otp_fallback_enabled(_Request({})) is True
+    assert webapp._dev_otp_fallback_enabled(
+        _Request({}, headers={"x-forwarded-for": "203.0.113.7"})
+    ) is False
+    assert webapp._dev_otp_fallback_enabled(
+        _Request({}, headers={"forwarded": "for=203.0.113.7"})
+    ) is False
 
 
 def test_send_otp_requires_saved_email_match(monkeypatch):

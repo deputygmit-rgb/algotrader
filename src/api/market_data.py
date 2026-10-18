@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.api.client import KiteClient
+from src.analysis import indicators as ind
 from src.data.models import Interval
 from src.utils.logger import get_logger
 
@@ -37,6 +38,81 @@ INTERVAL_MAP: dict[str, Interval] = {
     "60minute": Interval("60minute"),
     "day": Interval("day"),
 }
+
+# Bars needed before the visible window so SMA 200 is valid on the first candle.
+_WARMUP_BARS = 210
+# Kite's maximum span per historical request, in calendar days.
+_MAX_SPAN_DAYS = {
+    "minute": 60, "3minute": 100, "5minute": 100, "10minute": 100,
+    "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000,
+}
+# Approximate bars per trading session (NSE 09:15-15:30).
+_BARS_PER_SESSION = {
+    "minute": 375, "3minute": 125, "5minute": 75, "10minute": 38,
+    "15minute": 25, "30minute": 13, "60minute": 7, "day": 1,
+}
+
+
+def _warmup_start(from_date: str, to_date: str, interval: str, weekly: bool) -> str:
+    """Earliest fetch date that warms up the overlays without exceeding Kite's span limit."""
+    sessions = _WARMUP_BARS * 5 if weekly else -(-_WARMUP_BARS // _BARS_PER_SESSION[interval])
+    # ~250 sessions per 365 calendar days, plus slack for holidays
+    warmup_days = int(sessions * 365 / 250) + 7
+    start = datetime.strptime(from_date[:10], "%Y-%m-%d")
+    end = datetime.strptime(to_date[:10], "%Y-%m-%d")
+    earliest = end - timedelta(days=_MAX_SPAN_DAYS[interval])
+    return max(start - timedelta(days=warmup_days), min(earliest, start)).strftime("%Y-%m-%d")
+
+
+def _resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Daily candles -> Friday-ending weekly candles, stamped with the week's last session."""
+    frame = df.copy()
+    frame.index = pd.to_datetime(frame["timestamp"].astype(str).str[:10])
+    weekly = frame.resample("W-FRI").agg({
+        "timestamp": "last", "open": "first", "high": "max",
+        "low": "min", "close": "last", "volume": "sum",
+    }).dropna(subset=["close"])
+    return weekly.reset_index(drop=True)
+
+
+def _series_values(series: pd.Series, digits: int = 2) -> list[float | None]:
+    return [round(float(v), digits) if pd.notna(v) and np.isfinite(v) else None for v in series]
+
+
+def _chart_indicators(df: pd.DataFrame, intraday: bool) -> dict[str, list[float | None]]:
+    """Chart overlays, computed with the analysis engine's indicator functions."""
+    close = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+    out: dict[str, list[float | None]] = {}
+    for period in (20, 50, 200):
+        if len(close) >= period:
+            out[f"sma_{period}"] = _series_values(ind.sma(close, period))
+    for period in (9, 21):
+        if len(close) >= period:
+            out[f"ema_{period}"] = _series_values(ind.ema(close, period))
+    if len(close) > 14:
+        rsi = ind.rsi(close, 14)
+        # all gains and no losses in the window: RSI is 100, not undefined
+        rsi = rsi.where(~(rsi.isna() & close.diff().rolling(14).min().ge(0)), 100.0)
+        out["rsi_14"] = _series_values(rsi)
+    bands = ind.bollinger_bands(close, 20, 2.0)
+    out["bb_upper"] = _series_values(bands["upper"])
+    out["bb_lower"] = _series_values(bands["lower"])
+    if volume.sum() > 0:
+        typical = (df["high"] + df["low"] + close) / 3
+        tp_vol = typical * volume
+        if intraday:
+            # VWAP resets every session
+            session = df["timestamp"].astype(str).str[:10]
+            cum_tp_vol = tp_vol.groupby(session).cumsum()
+            cum_vol = volume.groupby(session).cumsum()
+        else:
+            cum_tp_vol, cum_vol = tp_vol.cumsum(), volume.cumsum()
+        out["vwap"] = _series_values(cum_tp_vol / cum_vol.replace(0, np.nan))
+    if len(volume) >= 20:
+        out["volume_sma_20"] = _series_values(ind.sma(volume, 20), 0)
+    return out
+
 
 # ────────────────────────────────────────────────────────────────
 # Market Data Provider
@@ -116,69 +192,75 @@ class MarketDataProvider:
         """
         Fetch historical OHLCV data for charting.
         Returns data formatted for candlestick chart rendering.
+
+        With ``include_indicators`` the fetch reaches back far enough to warm
+        up the longest overlay (SMA 200), the overlays are computed with the
+        same functions as the analysis engine, and only the requested window
+        is returned — so chart values match the technical dashboard.
+        ``interval="week"`` resamples daily candles to Friday-ending weeks.
         """
-        kite_interval = INTERVAL_MAP.get(interval)
+        weekly = interval == "week"
+        fetch_interval = "day" if weekly else interval
+        kite_interval = INTERVAL_MAP.get(fetch_interval)
         if not kite_interval:
-            return {"error": f"Invalid interval: {interval}. Valid: {list(INTERVAL_MAP.keys())}"}
+            return {"error": f"Invalid interval: {interval}. Valid: {[*INTERVAL_MAP.keys(), 'week']}"}
 
         if to_date is None:
             to_date = datetime.now().strftime("%Y-%m-%d")
         if from_date is None:
             from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        fetch_from = (
+            _warmup_start(from_date, to_date, fetch_interval, weekly)
+            if include_indicators else from_date
+        )
 
         try:
             candles = await self._client.get_historical_data(
                 instrument_token=instrument_token,
                 interval=kite_interval,
-                from_date=from_date,
+                from_date=fetch_from,
                 to_date=to_date,
             )
 
             if not candles:
                 return {"error": "No data returned for the given parameters"}
 
-            # Build OHLCV arrays for charting
-            timestamps = []
-            opens = []
-            highs = []
-            lows = []
-            closes = []
-            volumes = []
+            df = pd.DataFrame([{
+                "timestamp": c.timestamp,
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume,
+            } for c in candles])
+            if weekly:
+                df = _resample_weekly(df)
 
-            for c in candles:
-                timestamps.append(c.timestamp)
-                opens.append(c.open)
-                highs.append(c.high)
-                lows.append(c.low)
-                closes.append(c.close)
-                volumes.append(c.volume)
+            indicators = (
+                _chart_indicators(df, intraday=fetch_interval != "day")
+                if include_indicators and len(df) >= 20 else None
+            )
 
-            # Build array-of-objects for JS candlestick rendering
-            candle_list = []
-            for i in range(len(timestamps)):
-                candle_list.append({
-                    "timestamp": timestamps[i],
-                    "open": opens[i],
-                    "high": highs[i],
-                    "low": lows[i],
-                    "close": closes[i],
-                    "volume": volumes[i],
-                })
+            # Trim the warm-up bars; indicator arrays stay index-aligned.
+            visible = (df["timestamp"].astype(str).str[:10] >= from_date[:10]).to_numpy()
+            if not visible.any():
+                return {"error": "No data returned for the given parameters"}
+            df = df[visible].reset_index(drop=True)
 
             result: dict[str, Any] = {
                 "instrument_token": instrument_token,
                 "interval": interval,
                 "from_date": from_date,
                 "to_date": to_date,
-                "data_points": len(candles),
-                "candles": candle_list,
+                "data_points": len(df),
+                "candles": df.to_dict("records"),
+                "as_of": datetime.now().isoformat(timespec="seconds"),
             }
-
-            if include_indicators and len(closes) >= 20:
-                result["indicators"] = self._compute_chart_indicators(
-                    closes, highs, lows, volumes
-                )
-
+            if indicators is not None:
+                result["indicators"] = {
+                    key: [values[i] for i in range(len(values)) if visible[i]]
+                    for key, values in indicators.items()
+                }
             return result
 
         except Exception as e:
@@ -227,74 +309,6 @@ class MarketDataProvider:
             df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
             df.set_index("timestamp", inplace=True)
         return df
-
-    def _compute_chart_indicators(
-        self,
-        closes: list, highs: list, lows: list, volumes: list
-    ) -> dict[str, Any]:
-        """Compute basic chart overlay indicators."""
-        c = np.array(closes, dtype=float)
-        h = np.array(highs, dtype=float)
-        lo = np.array(lows, dtype=float)
-
-        indicators: dict[str, Any] = {}
-
-        # SMA 20, 50, 200
-        for period in [20, 50, 200]:
-            if len(c) >= period:
-                sma_vals = pd.Series(c).rolling(period).mean().tolist()
-                indicators[f"sma_{period}"] = [
-                    round(v, 2) if v == v and v is not None else None for v in sma_vals
-                ]
-
-        # EMA 9, 21
-        for period in [9, 21]:
-            if len(c) >= period:
-                ema_vals = pd.Series(c).ewm(span=period, adjust=False).mean().tolist()
-                indicators[f"ema_{period}"] = [
-                    round(v, 2) if v == v and v is not None else None for v in ema_vals
-                ]
-
-        # RSI 14
-        if len(c) >= 15:
-            delta = np.diff(c)
-            gain = np.where(delta > 0, delta, 0)
-            loss = np.where(delta < 0, -delta, 0)
-            avg_gain = pd.Series(gain).rolling(14).mean()
-            avg_loss = pd.Series(loss).rolling(14).mean()
-            rs = avg_gain / avg_loss.replace(0, np.nan)
-            rsi = 100 - (100 / (1 + rs))
-            indicators["rsi_14"] = [None] + [
-                round(v, 2) if pd.notna(v) else None for v in rsi.tolist()
-            ]
-
-        # Bollinger Bands
-        if len(c) >= 20:
-            sma20 = pd.Series(c).rolling(20).mean()
-            std20 = pd.Series(c).rolling(20).std()
-            indicators["bb_upper"] = [
-                round(v, 2) if pd.notna(v) else None for v in (sma20 + 2 * std20).tolist()
-            ]
-            indicators["bb_lower"] = [
-                round(v, 2) if pd.notna(v) else None for v in (sma20 - 2 * std20).tolist()
-            ]
-
-        # VWAP (intraday)
-        if len(volumes) > 0 and sum(volumes) > 0:
-            typical = (h + lo + c) / 3
-            cum_tp_vol = np.cumsum(typical * np.array(volumes, dtype=float))
-            cum_vol = np.cumsum(np.array(volumes, dtype=float))
-            vwap = np.where(cum_vol > 0, cum_tp_vol / cum_vol, 0)
-            indicators["vwap"] = [round(float(v), 2) for v in vwap]
-
-        # Volume SMA 20
-        if len(volumes) >= 20:
-            vol_sma = pd.Series(volumes, dtype=float).rolling(20).mean().tolist()
-            indicators["volume_sma_20"] = [
-                round(v, 0) if pd.notna(v) else None for v in vol_sma
-            ]
-
-        return indicators
 
     # ────────────────────────────────────────────────────────
     # Live Market Quotes

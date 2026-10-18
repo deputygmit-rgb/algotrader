@@ -129,6 +129,11 @@ class FuturesOIReport(BaseModel):
     market_sentiment: dict[str, Any] = Field(default_factory=dict)
 
 
+def futures_report_has_quotes(report: FuturesOIReport) -> bool:
+    """True when any displayed (nearest-expiry) future has a live price."""
+    return any(entry.ltp > 0 for entry in [*report.index_futures, *report.stock_futures])
+
+
 class OptionsOIStrike(BaseModel):
     """OI data for a single strike in the options chain."""
     strike: float = 0.0
@@ -185,6 +190,16 @@ class OptionsOIReport(BaseModel):
     # Verdict
     bias: str = ""              # BULLISH | BEARISH | NEUTRAL
     bias_reasons: list[str] = Field(default_factory=list)
+
+
+def options_report_has_market_data(report: OptionsOIReport) -> bool:
+    """True when the report has a spot price and at least one quoted strike."""
+    return report.spot_price > 0 and any(
+        strike.ce_ltp > 0 or strike.pe_ltp > 0
+        or strike.ce_oi > 0 or strike.pe_oi > 0
+        or strike.ce_volume > 0 or strike.pe_volume > 0
+        for strike in report.strikes
+    )
 
 
 class OptionsOIComparison(BaseModel):
@@ -336,6 +351,9 @@ class FuturesOIAnalyzer:
             sector_summary=sector_summ,
             market_sentiment=sentiment,
         )
+        if not futures_report_has_quotes(report):
+            logger.warning("futures_oi_report_not_cached", reason="no usable quotes")
+            return report
         self._last_report = report
         return report
 
@@ -807,6 +825,14 @@ class OptionsOIAnalyzer:
             bias=bias,
             bias_reasons=bias_reasons,
         )
+
+        if not options_report_has_market_data(report):
+            logger.warning(
+                "options_oi_report_not_cached",
+                underlying=underlying,
+                reason="no usable market data",
+            )
+            return report
 
         # Track PCR and straddle history
         self._track_history(underlying, pcr_oi, straddle_premium)
