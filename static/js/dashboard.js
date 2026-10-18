@@ -168,6 +168,11 @@ function stockLink(sym, label) {
     return `<span class="t-sym" data-stock="${escHtml(sym)}" title="Technical analysis">${escHtml(label ?? sym)}</span>`;
 }
 
+function futuresOILink(sym) {
+    if (!sym) return '';
+    return `<span class="t-sym" data-futures-oi-symbol="${escHtml(sym)}" role="button" tabindex="0" title="View futures OI details">${escHtml(sym)}</span>`;
+}
+
 function openStock(sym) {
     const u = underlyingOf(sym);
     if (!u) return;
@@ -180,6 +185,12 @@ function openStock(sym) {
 }
 
 document.addEventListener('click', (e) => {
+    const fut = e.target.closest('[data-futures-oi-symbol]');
+    if (fut) {
+        e.preventDefault();
+        openFuturesOIDetail(fut.dataset.futuresOiSymbol);
+        return;
+    }
     const el = e.target.closest('[data-stock]');
     if (!el) return;
     // other controls inside a linked row (checkboxes, inputs, other buttons) keep working
@@ -187,6 +198,13 @@ document.addEventListener('click', (e) => {
     if (ctl && !ctl.hasAttribute('data-stock')) return;
     e.preventDefault();
     openStock(el.dataset.stock);
+});
+
+document.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-futures-oi-symbol]')) {
+        e.preventDefault();
+        openFuturesOIDetail(e.target.dataset.futuresOiSymbol);
+    }
 });
 
 async function loadFullStatus() {
@@ -983,20 +1001,23 @@ function initOITracker() {
         // call the websocket only ever shows one static snapshot and never updates.
         fetch('/api/oi/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
             .catch(e => console.error('OI tracking start failed:', e));
+        document.getElementById('oi-underlying-select').addEventListener('change', () => {
+            const activeView = document.querySelector('.oi-view.active');
+            if (activeView && activeView.id === 'oi-view-options') loadOptionsOI();
+            if (activeView && activeView.id === 'oi-view-live') loadOIData();
+        });
+        loadOptionsOI();
     }
-    document.getElementById('oi-underlying-select').addEventListener('change', () => {
-        const activeView = document.querySelector('.oi-view.active');
-        if (activeView && activeView.id === 'oi-view-options') loadCachedOptionsOI();
-        if (activeView && activeView.id === 'oi-view-live') loadOIData();
-    });
 }
 
 /* ─── OI Sub-tab switching ─── */
 function switchOITab(tab) {
     document.querySelectorAll('.oi-tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.oi-view').forEach(v => v.classList.remove('active'));
-    document.querySelector(`.oi-tab-btn[data-oi-tab="${tab}"]`).classList.add('active');
-    document.getElementById('oi-view-' + tab).classList.add('active');
+    document.querySelector(`.oi-tab-btn[data-oi-tab="${tab}"]`)?.classList.add('active');
+    document.getElementById('oi-view-' + tab)?.classList.add('active');
+    if (tab === 'options') loadOptionsOI();
+    if (tab === 'futures') loadFuturesOI();
     if (tab === 'live') loadOIData();
     if (tab === 'strategy') loadOIStrategyOnSwitch();
 }
@@ -1419,10 +1440,30 @@ async function runOptionsOIScan() {
 async function loadCachedOptionsOI() {
     const sel = document.getElementById('oi-underlying-select').value;
     if (cachedOptReport[sel]) { renderOptionsOI(cachedOptReport[sel]); return; }
+    const statusEl = document.getElementById('opt-oi-status');
     try {
         const data = await API.get(`/api/oi/options/report?underlying=${sel}`);
-        if (!data.error) { cachedOptReport[sel] = data; renderOptionsOI(data); }
-    } catch (e) { /* ignore */ }
+        if (!data.error) {
+            cachedOptReport[sel] = data;
+            renderOptionsOI(data);
+            if (statusEl) {
+                statusEl.textContent = data.timestamp ? `Loaded ${new Date(data.timestamp).toLocaleTimeString()}` : 'Loaded cached report';
+                statusEl.style.color = 'var(--accent-green)';
+            }
+            return;
+        }
+        if (!/no data yet/i.test(data.error)) throw new Error(data.error);
+        await runOptionsOIScan();
+    } catch (e) {
+        if (statusEl) {
+            statusEl.textContent = 'Error: ' + e.message;
+            statusEl.style.color = 'var(--accent-red)';
+        }
+    }
+}
+
+function loadOptionsOI() {
+    return loadCachedOptionsOI();
 }
 
 function renderOptionsOI(d) {
@@ -1561,7 +1602,9 @@ async function runFuturesOIScan() {
         const data = await API.post('/api/oi/futures/scan', {});
         if (data.error) throw new Error(data.error);
         cachedFutReport = data;
-        statusEl.textContent = 'Scanned at ' + new Date().toLocaleTimeString();
+        statusEl.textContent = data.timestamp
+            ? 'Scanned at ' + new Date(data.timestamp).toLocaleTimeString()
+            : 'Scan complete';
         statusEl.style.color = 'var(--accent-green)';
         renderFuturesOI(data);
     } catch (e) {
@@ -1570,7 +1613,82 @@ async function runFuturesOIScan() {
     }
 }
 
+async function loadFuturesOI() {
+    if (cachedFutReport) {
+        renderFuturesOI(cachedFutReport);
+        return;
+    }
+    const statusEl = document.getElementById('fut-oi-status');
+    statusEl.textContent = 'Loading futures OI report...';
+    statusEl.style.color = 'var(--accent-blue)';
+    try {
+        const data = await API.get('/api/oi/futures/report');
+        if (!data.error) {
+            cachedFutReport = data;
+            renderFuturesOI(data);
+            statusEl.textContent = data.timestamp
+                ? 'Loaded report from ' + new Date(data.timestamp).toLocaleTimeString()
+                : 'Loaded cached report';
+            statusEl.style.color = 'var(--accent-green)';
+            return;
+        }
+        if (!/no data yet/i.test(data.error)) throw new Error(data.error);
+        await runFuturesOIScan();
+    } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+        statusEl.style.color = 'var(--accent-red)';
+    }
+}
+
+function openFuturesOIDetail(symbol) {
+    const entries = [
+        ...(cachedFutReport?.index_futures || []),
+        ...(cachedFutReport?.stock_futures || []),
+    ];
+    const entry = entries.find(item => item.symbol === symbol);
+    if (!entry) {
+        showToast(`No futures OI details are loaded for ${symbol}.`, 'error');
+        return;
+    }
+
+    const baseline = entry.oi_baseline_available
+        ? `Previous-session baseline (${escHtml(entry.oi_baseline_date)})`
+        : 'Previous-session OI baseline is unavailable; OI change and buildup are not classified.';
+    const rows = [
+        ['Contract', `${escHtml(entry.symbol)} · ${escHtml(entry.expiry || '--')}`],
+        ['Sector', escHtml(entry.sector || '--')],
+        ['LTP / previous close', `${formatNum(entry.ltp)} / ${formatNum(entry.prev_close)}`],
+        ['Price change', fmtPct(entry.change_pct)],
+        ['Current OI', formatLargeNum(entry.oi)],
+        ['Previous-session OI', entry.oi_baseline_available ? formatLargeNum(entry.prev_oi) : '--'],
+        ['OI change', entry.oi_baseline_available ? formatLargeNum(entry.oi_change) : '--'],
+        ['OI change %', entry.oi_baseline_available ? fmtPct(entry.oi_change_pct) : '--'],
+        ['Volume', formatLargeNum(entry.volume)],
+        ['Lot size', formatLargeNum(entry.lot_size)],
+        ['Notional value', `${formatNum(entry.value_lakhs)} lakh`],
+        ['Buildup', `${escHtml(entry.buildup || 'NEUTRAL')} · ${escHtml(entry.sentiment || 'NEUTRAL')}`],
+    ];
+    document.getElementById('fut-oi-detail-title').textContent = `${entry.symbol} Futures OI`;
+    document.getElementById('fut-oi-detail-body').innerHTML = `
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px">${baseline}</p>
+        <div class="table-wrap"><table><tbody>
+            ${rows.map(([label, value]) => `<tr><th style="text-align:left">${label}</th><td>${value}</td></tr>`).join('')}
+        </tbody></table></div>
+        <p style="font-size:11px;color:var(--text-muted);margin:12px 0 0">
+            Buildup requires price movement of at least 0.05% and OI movement of at least 0.1%. Rising price + rising OI is long buildup; falling price + rising OI is short buildup; falling price + falling OI is long unwinding; rising price + falling OI is short covering.
+        </p>`;
+    showModal('modal-futures-oi-detail');
+}
+
 function renderFuturesOI(d) {
+    const allEntries = [...(d.index_futures || []), ...(d.stock_futures || [])];
+    const basedEntries = allEntries.filter(entry => entry.oi_baseline_available);
+    const baselineDates = [...new Set(basedEntries.map(entry => entry.oi_baseline_date).filter(Boolean))];
+    const baselineNote = document.getElementById('fut-oi-baseline-note');
+    baselineNote.textContent = `${basedEntries.length}/${allEntries.length} contracts have previous-session OI baselines` +
+        (baselineDates.length ? ` (${baselineDates.join(', ')})` : '') +
+        (basedEntries.length < allEntries.length ? '. Missing baselines are shown as -- and classified neutral.' : '.');
+
     // Market Sentiment
     const s = d.market_sentiment || {};
     const biasEl = document.getElementById('fut-bias');
@@ -1607,13 +1725,13 @@ function renderFutIndexTable(entries) {
         return;
     }
     body.innerHTML = entries.map(e => `<tr>
-        <td style="font-weight:600">${stockLink(e.symbol || '')}</td>
+        <td style="font-weight:600">${futuresOILink(e.symbol || '')}</td>
         <td style="font-size:11px">${e.expiry || ''}</td>
         <td>${formatNum(e.ltp || 0)}</td>
         <td class="${chgClass(e.change_pct)}">${fmtPct(e.change_pct)}</td>
         <td>${formatLargeNum(e.oi || 0)}</td>
-        <td class="${chgClass(e.oi_change)}">${formatLargeNum(e.oi_change || 0)}</td>
-        <td class="${chgClass(e.oi_change_pct)}">${fmtPct(e.oi_change_pct)}</td>
+        <td class="${chgClass(e.oi_change)}">${e.oi_baseline_available ? formatLargeNum(e.oi_change) : '--'}</td>
+        <td class="${chgClass(e.oi_change_pct)}">${e.oi_baseline_available ? fmtPct(e.oi_change_pct) : '--'}</td>
         <td>${formatLargeNum(e.volume || 0)}</td>
         <td>${buildupBadge(e.buildup)}</td>
     </tr>`).join('');
@@ -1626,7 +1744,7 @@ function renderFutBuildupTable(entries, bodyId) {
         return;
     }
     body.innerHTML = entries.map(e => `<tr>
-        <td style="font-weight:600;font-size:12px">${stockLink(e.symbol || '')}</td>
+        <td style="font-weight:600;font-size:12px">${futuresOILink(e.symbol || '')}</td>
         <td style="font-size:11px;color:var(--text-muted)">${e.sector || '--'}</td>
         <td>${formatNum(e.ltp || 0)}</td>
         <td class="${chgClass(e.change_pct)}" style="font-weight:600">${fmtPct(e.change_pct)}</td>
@@ -1642,14 +1760,14 @@ function renderFutAllStocks(entries) {
         return;
     }
     body.innerHTML = entries.map(e => `<tr>
-        <td style="font-weight:600;font-size:12px">${stockLink(e.symbol || '')}</td>
+        <td style="font-weight:600;font-size:12px">${futuresOILink(e.symbol || '')}</td>
         <td style="font-size:11px;color:var(--text-muted)">${e.sector || '--'}</td>
         <td style="font-size:11px">${e.expiry || ''}</td>
         <td>${formatNum(e.ltp || 0)}</td>
         <td class="${chgClass(e.change_pct)}">${fmtPct(e.change_pct)}</td>
         <td>${formatLargeNum(e.oi || 0)}</td>
-        <td class="${chgClass(e.oi_change)}">${formatLargeNum(e.oi_change || 0)}</td>
-        <td class="${chgClass(e.oi_change_pct)}">${fmtPct(e.oi_change_pct)}</td>
+        <td class="${chgClass(e.oi_change)}">${e.oi_baseline_available ? formatLargeNum(e.oi_change) : '--'}</td>
+        <td class="${chgClass(e.oi_change_pct)}">${e.oi_baseline_available ? fmtPct(e.oi_change_pct) : '--'}</td>
         <td>${formatLargeNum(e.volume || 0)}</td>
         <td style="font-size:11px">${formatNum(e.value_lakhs || 0, 0)}</td>
         <td>${buildupBadge(e.buildup)}</td>
@@ -1666,7 +1784,7 @@ function renderFutRollover(entries) {
         const sig = (e.signal || '').toUpperCase();
         const sigCls = sig.includes('POSITIVE') ? 'positive' : sig.includes('NEGATIVE') ? 'negative' : 'neutral';
         return `<tr>
-            <td style="font-weight:600">${stockLink(e.symbol || '')}</td>
+            <td style="font-weight:600">${futuresOILink(e.symbol || '')}</td>
             <td style="font-size:11px">${e.current_expiry || ''}</td>
             <td style="font-size:11px">${e.next_expiry || ''}</td>
             <td>${formatLargeNum(e.current_oi || 0)}</td>
@@ -2537,7 +2655,15 @@ async function confirmExecuteStockSignal() {
 
 // ─── Deep Profile Modal ───────────────────────────────────────
 
-async function openDeepProfile(symbol) {
+async function openDeepProfileLegacy(symbol) {
+    const normalized = underlyingOf(symbol);
+    if (!normalized || !/^[A-Z0-9&.-]{1,32}$/.test(normalized)) {
+        showToast('Invalid stock symbol.', 'error');
+        return;
+    }
+    window.location.assign('/app/stock/' + encodeURIComponent(normalized));
+    return;
+
     const modal = document.getElementById('deep-profile-modal');
     const body = document.getElementById('deep-profile-body');
     const title = document.getElementById('deep-profile-title');
@@ -2558,9 +2684,11 @@ async function openDeepProfile(symbol) {
             <button class="btn btn-outline btn-sm" onclick="stockAction('flow','${escHtml(symbol)}')">Market Flow</button>
         </div>`;
     body.innerHTML = actions + holdingContextHtml(symbol, null) +
-        '<div id="dp-analysis"><div style="text-align:center;padding:40px;color:var(--text-muted)">Running technical analysis… (first look at a stock fetches its history)</div></div>';
+        '<div id="dp-analysis"><div style="text-align:center;padding:40px;color:var(--text-muted)">Running technical analysis… (first look at a stock fetches its history)</div></div>' +
+        '<div id="dp-research"><div class="card" style="padding:12px;margin:12px 0;color:var(--text-muted)">Loading fundamentals, filings and news…</div></div>';
     modal.style.display = 'flex';
     const requested = symbol;
+    loadDeepProfileResearch(symbol);
 
     try {
         const data = await API.get('/api/analysis/deep/' + encodeURIComponent(symbol));
@@ -2587,6 +2715,103 @@ async function openDeepProfile(symbol) {
         const target = document.getElementById('dp-analysis');
         if (target) target.innerHTML = `<div style="color:#ff5252;text-align:center">Failed to load: ${escHtml(e.message)}</div>`;
     }
+}
+
+function openDeepProfile(symbol) {
+    const normalized = underlyingOf(symbol);
+    if (!normalized || !/^[A-Z0-9&.-]{1,32}$/.test(normalized)) {
+        showToast('Invalid stock symbol.', 'error');
+        return;
+    }
+    window.location.assign('/app/stock/' + encodeURIComponent(normalized));
+}
+
+async function loadDeepProfileResearch(symbol) {
+    try {
+        const data = await API.get('/api/research/stock/' + encodeURIComponent(symbol));
+        if (document.getElementById('deep-profile-title')?.textContent.indexOf(symbol + ' ') !== 0) return;
+        const target = document.getElementById('dp-research');
+        if (target) target.innerHTML = data?.error
+            ? `<div class="card" style="padding:12px;margin:12px 0">
+                <div style="font-weight:600">Fundamentals &amp; company updates</div>
+                <div style="font-size:12px;color:var(--accent-red);margin-top:6px">${escHtml(data.error)}</div>
+                ${stockResearchSourceLinks(symbol)}
+            </div>`
+            : renderStockResearch(data, symbol);
+    } catch (e) {
+        if (document.getElementById('deep-profile-title')?.textContent.indexOf(symbol + ' ') !== 0) return;
+        const target = document.getElementById('dp-research');
+        if (target) {
+            target.innerHTML = `<div class="card" style="padding:12px;margin:12px 0">
+                <div style="font-weight:600">Fundamentals &amp; company updates</div>
+                <div style="font-size:12px;color:var(--accent-red);margin-top:6px">Unable to load research: ${escHtml(e.message || 'Request failed')}</div>
+                ${stockResearchSourceLinks(symbol)}
+            </div>`;
+        }
+    }
+}
+
+function stockResearchSourceLinks(symbol) {
+    const encoded = encodeURIComponent(symbol);
+    return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <a class="btn btn-outline btn-sm" href="https://www.screener.in/company/${encoded}/consolidated/" target="_blank" rel="noopener noreferrer">Screener: EPS, ratios &amp; peer comparison</a>
+        <a class="btn btn-outline btn-sm" href="https://www.nseindia.com/companies-listing/corporate-filings-shareholding-pattern" target="_blank" rel="noopener noreferrer">NSE: shareholding filings</a>
+        <a class="btn btn-outline btn-sm" href="https://www.nseindia.com/companies-listing/corporate-filings-announcements" target="_blank" rel="noopener noreferrer">NSE: announcements</a>
+    </div>`;
+}
+
+function renderStockResearch(research, symbol) {
+    const highlights = research?.annual_reports?.financial_highlights || {};
+    const news = research?.latest_news?.articles || [];
+    const reports = research?.annual_reports?.reports || [];
+    const metricRows = Object.entries(highlights)
+        .filter(([key, value]) => !['pros', 'cons', 'company_name'].includes(key) && (typeof value !== 'object' || value === null))
+        .map(([key, value]) => `<tr><th style="text-align:left">${escHtml(key)}</th><td>${escHtml(value)}</td></tr>`)
+        .join('');
+    const prosCons = ['pros', 'cons'].filter(key => Array.isArray(highlights[key]) && highlights[key].length)
+        .map(key => `<div style="margin-top:8px"><strong>${key === 'pros' ? 'Screener pros' : 'Screener concerns'}</strong>
+            <ul style="margin:4px 0;padding-left:20px">${highlights[key].map(item => `<li>${escHtml(item)}</li>`).join('')}</ul></div>`)
+        .join('');
+    const articleList = news.length
+        ? news.slice(0, 10).map(item => {
+            const href = /^https:\/\//i.test(item.url || '') ? item.url : '';
+            const title = escHtml(item.title || 'Company update');
+            return `<li style="margin:7px 0">${href
+                ? `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${title}</a>`
+                : title}
+                <span style="font-size:10px;color:var(--text-muted)"> · ${escHtml(item.source || 'News')}${item.published ? ' · ' + escHtml(item.published) : ''}</span></li>`;
+        }).join('')
+        : '<li style="color:var(--text-muted)">No recent news or announcements returned.</li>';
+    const reportList = reports.length
+        ? reports.slice(0, 5).map(item => {
+            const href = /^https:\/\//i.test(item.url || '') ? item.url : '';
+            const title = escHtml(item.title || `${symbol} annual report`);
+            return `<li style="margin:6px 0">${href
+                ? `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${title}</a>`
+                : title}
+                <span style="font-size:10px;color:var(--text-muted)"> · ${escHtml(item.source || 'Report')}${item.year ? ' · ' + escHtml(item.year) : ''}</span></li>`;
+        }).join('')
+        : '<li style="color:var(--text-muted)">No report links returned.</li>';
+    const fetchedAt = research?.latest_news?.fetched_at || research?.annual_reports?.fetched_at;
+
+    return `<section class="card" style="padding:12px;margin:12px 0">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline">
+            <div style="font-weight:700;font-size:16px">Fundamentals &amp; Company Updates</div>
+            <div style="font-size:10px;color:var(--text-muted)">${fetchedAt ? `Fetched ${escHtml(new Date(fetchedAt).toLocaleString())}` : 'External research data'}</div>
+        </div>
+        <p style="font-size:11px;color:var(--text-muted);margin:6px 0 10px">
+            Financial highlights are sourced from Screener.in when available; filings and news are linked to their source. Verify reporting periods and disclosures before acting.
+        </p>
+        ${metricRows
+            ? `<div class="table-wrap" style="max-height:240px"><table style="width:100%;font-size:12px"><tbody>${metricRows}</tbody></table></div>`
+            : '<div style="font-size:12px;color:var(--text-muted)">No financial highlights returned by the data source.</div>'}
+        ${prosCons}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:14px">
+            <div><strong>Latest news &amp; announcements</strong><ul style="font-size:11px;padding-left:18px">${articleList}</ul></div>
+            <div><strong>Annual reports &amp; filings</strong><ul style="font-size:11px;padding-left:18px">${reportList}</ul></div>
+        </div>
+        ${stockResearchSourceLinks(symbol)}
+    </section>`;
 }
 
 // "Your holding" block shown above the analysis when the stock is in the

@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#080d18">
+    <meta name="description" content="VerquoAI brings market flow, research, strategy tools, risk controls, and trade journaling into one trading workspace.">
+    <title>VerquoAI™ — A clearer view of the market</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #080d18;
+            --panel: #101827;
+            --line: rgba(160, 180, 210, .16);
+            --muted: #91a0b8;
+            --text: #f1f5fb;
+            --mint: #8cf0cd;
+            --blue: #8baeff;
+        }
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            margin: 0;
+            background:
+                radial-gradient(ellipse at 76% 8%, rgba(92, 129, 255, .17), transparent 34rem),
+                radial-gradient(ellipse at 12% 35%, rgba(91, 237, 193, .08), transparent 30rem),
+                var(--bg);
+            color: var(--text);
+            font-family: "DM Sans", sans-serif;
+            line-height: 1.6;
+        }
+        a { color: inherit; text-decoration: none; }
+        .shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+        .nav {
+            height: 82px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--line);
+        }
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 11px;
+            font: 700 20px "Space Grotesk", sans-serif;
+            letter-spacing: -.6px;
+        }
+        .brand-mark {
+            display: grid;
+            width: 34px;
+            height: 34px;
+            place-items: center;
+            border: 1px solid rgba(140, 240, 205, .45);
+            border-radius: 11px;
+            color: var(--mint);
+            background: rgba(140, 240, 205, .08);
+            font-size: 17px;
+        }
+        .brand sup { margin-left: -9px; color: var(--mint); font: 600 9px "DM Sans", sans-serif; }
+        .nav-right { display: flex; align-items: center; gap: 27px; color: #c1cad8; font-size: 13px; }
+        .nav-link:hover { color: var(--mint); }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 43px;
+            padding: 0 17px;
+            border: 1px solid rgba(140, 240, 205, .4);
+            border-radius: 9px;
+            background: var(--mint);
+            color: #081510;
+            font-weight: 700;
+            transition: transform .18s ease, filter .18s ease;
+        }
+        .button:hover { transform: translateY(-1px); filter: brightness(1.06); }
+        .button-quiet { background: transparent; color: var(--text); border-color: var(--line); }
+        .hero { padding: 72px 0 78px; }
+        .hero-intro { display: grid; grid-template-columns: 1fr .7fr; align-items: end; gap: 55px; margin-bottom: 32px; }
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            color: var(--mint);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1.7px;
+            text-transform: uppercase;
+        }
+        .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 15px var(--mint); }
+        h1, h2, h3, p { margin-top: 0; }
+        h1 {
+            max-width: 650px;
+            margin: 18px 0;
+            font: 600 clamp(42px, 6vw, 68px)/1.04 "Space Grotesk", sans-serif;
+            letter-spacing: -3.2px;
+        }
+        h1 span { color: var(--mint); }
+        .hero-copy { max-width: 470px; margin: 0 0 10px; color: #aab6c9; font-size: 15px; }
+        .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 29px; }
+        .subnote { margin-top: 18px; color: #78879f; font-size: 11px; }
+        .sim-terminal {
+            overflow: hidden;
+            border: 1px solid rgba(155, 180, 220, .17);
+            border-radius: 14px;
+            background: #070b12;
+            box-shadow: 0 32px 100px rgba(0, 0, 0, .4), 0 0 75px rgba(64, 170, 255, .06);
+        }
+        .sim-topbar, .sim-controls, .sim-bottom {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 15px;
+            padding: 11px 17px;
+        }
+        .sim-topbar { min-height: 48px; border-bottom: 1px solid rgba(155, 180, 220, .11); }
+        .sim-brand { display: flex; align-items: center; gap: 9px; font: 700 12px "Space Grotesk", sans-serif; letter-spacing: 1.6px; }
+        .sim-brand-mark { color: #19c9ea; font-size: 16px; }
+        .sim-workspace { color: #8491a6; font-size: 9px; letter-spacing: 1px; }
+        .sim-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid rgba(255, 194, 112, .26); border-radius: 4px; color: #ffc270; background: rgba(255, 194, 112, .06); font-size: 8px; font-weight: 700; letter-spacing: .8px; white-space: nowrap; }
+        .sim-pill::before { width: 6px; height: 6px; border-radius: 50%; background: #ffc270; content: ""; box-shadow: 0 0 9px rgba(255, 194, 112, .7); }
+        .sim-top-right { display: flex; align-items: center; gap: 14px; }
+        .sim-session { color: #8793a7; font: 500 9px "DM Sans", sans-serif; letter-spacing: .7px; }
+        .sim-stats { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid rgba(155, 180, 220, .1); }
+        .sim-stat { min-width: 0; padding: 10px 16px; border-right: 1px solid rgba(155, 180, 220, .1); }
+        .sim-stat:last-child { border-right: 0; }
+        .sim-stat-label { display: block; overflow: hidden; margin-bottom: 4px; color: #758196; font-size: 8px; letter-spacing: .8px; text-overflow: ellipsis; white-space: nowrap; }
+        .sim-stat-value { font: 600 14px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; }
+        .sim-stat-change { margin-left: 6px; color: #61e4a5; font-size: 9px; font-variant-numeric: tabular-nums; }
+        .sim-main { display: grid; grid-template-columns: minmax(0, 1fr) 296px; min-height: 425px; }
+        .flow-chart-wrap { position: relative; min-width: 0; padding: 9px 2px 0 12px; }
+        .flow-chart-head { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px 0; color: #8290a6; font: 9px "DM Sans", sans-serif; letter-spacing: .8px; }
+        .flow-chart-head span:last-child { color: #58667d; font-size: 8px; letter-spacing: .3px; }
+        .flow-chart { display: block; width: 100%; height: 389px; }
+        .flow-grid { stroke: rgba(155, 180, 220, .09); stroke-width: 1; stroke-dasharray: 2 8; }
+        .flow-midline { stroke: rgba(177, 195, 222, .22); stroke-width: 1; }
+        .flow-gate { stroke: rgba(62, 191, 224, .54); stroke-width: 1; stroke-dasharray: 3 5; }
+        .flow-label { fill: #526078; font: 9px "DM Sans", sans-serif; }
+        .flow-count { font: 700 11px "Space Grotesk", sans-serif; letter-spacing: .5px; }
+        .flow-count.bull { fill: #68eab6; }
+        .flow-count.bear { fill: #ff718b; }
+        .flow-path { fill: none; stroke-width: 1.2; stroke-linecap: round; opacity: .5; }
+        .flow-path.bull { stroke: #63eab1; }
+        .flow-path.bear { stroke: #ff6885; }
+        .flow-path.featured { stroke-width: 1.8; opacity: .88; }
+        .flow-dot.bull { fill: #bcffe1; filter: drop-shadow(0 0 3px #4ce3a1); }
+        .flow-dot.bear { fill: #ffd1d9; filter: drop-shadow(0 0 3px #ff5879); }
+        .sim-movers { display: flex; flex-direction: column; padding: 13px 13px 10px; border-left: 1px solid rgba(155, 180, 220, .12); background: rgba(5, 9, 15, .56); }
+        .movers-head { display: flex; justify-content: space-between; margin-bottom: 9px; color: #aeb9c9; font-size: 8px; font-weight: 700; letter-spacing: .8px; }
+        .movers-total { color: #8694a9; font-weight: 400; letter-spacing: 0; }
+        .mover-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 8px; align-items: center; margin-bottom: 7px; padding: 9px 9px 8px; border: 1px solid rgba(155, 180, 220, .11); border-radius: 6px; background: linear-gradient(105deg, rgba(21, 31, 43, .76), rgba(10, 15, 24, .72)); }
+        .mover-row:last-of-type { margin-bottom: 0; }
+        .mover-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
+        .mover-badge { padding: 3px 5px; border-radius: 3px; color: #092015; background: #75edb8; font-size: 7px; font-weight: 800; letter-spacing: .5px; }
+        .mover-badge.bear { color: #2a0b12; background: #ff8195; }
+        .mover-symbol { overflow: hidden; color: #e0e7f1; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+        .mover-value { color: #69eab5; font: 600 10px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .mover-value.bear { color: #ff8295; }
+        .mover-kind { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 5px; color: #8693a6; font-size: 8px; }
+        .mover-kind span:last-child { color: #68768a; }
+        .sim-legend { display: flex; gap: 12px; margin-top: auto; padding: 12px 3px 3px; color: #758297; font-size: 8px; }
+        .sim-legend span { display: inline-flex; align-items: center; gap: 5px; }
+        .legend-dot { width: 6px; height: 6px; border-radius: 50%; background: #68eab6; }
+        .legend-dot.bear { background: #ff718b; }
+        .sim-controls { min-height: 42px; border-top: 1px solid rgba(155, 180, 220, .11); }
+        .sim-lenses { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid rgba(155, 180, 220, .13); border-radius: 5px; background: rgba(4, 9, 17, .55); }
+        .sim-control, .sim-play { min-height: 25px; padding: 0 9px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #91a0b8; font: 600 9px "DM Sans", sans-serif; cursor: pointer; }
+        .sim-control[aria-pressed="true"] { border-color: rgba(140, 240, 205, .18); background: rgba(140, 240, 205, .1); color: var(--mint); }
+        .sim-play { border-color: rgba(155, 180, 220, .17); color: #c8d1df; }
+        .sim-play:hover, .sim-control:hover { color: var(--mint); }
+        .sim-updated { color: #758297; font-size: 8px; }
+        .sim-bottom { min-height: 36px; border-top: 1px solid rgba(155, 180, 220, .09); color: #6e7c91; font-size: 8px; }
+        .sim-bottom strong { color: #9aa8bb; font-weight: 500; }
+        .sim-bottom a { color: #62dfb1; font-weight: 600; }
+        .sim-terminal.paused .flow-dot { opacity: .45; }
+        .section { padding: 82px 0; border-top: 1px solid var(--line); }
+        .section-heading { max-width: 630px; margin-bottom: 29px; }
+        .section-heading h2 { margin: 12px 0; font: 600 clamp(28px, 4vw, 40px)/1.15 "Space Grotesk", sans-serif; letter-spacing: -1.5px; }
+        .section-heading p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+        .platform-intro { display: flex; justify-content: space-between; align-items: end; gap: 36px; max-width: none; margin-bottom: 32px; }
+        .platform-intro h2 { max-width: 620px; margin-bottom: 0; font-size: clamp(34px, 5vw, 54px); letter-spacing: -2.2px; }
+        .platform-intro p { max-width: 355px; padding-bottom: 5px; }
+        .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+        .feature {
+            position: relative;
+            min-height: 205px;
+            overflow: hidden;
+            padding: 23px;
+            border: 1px solid rgba(155, 180, 220, .14);
+            border-radius: 12px;
+            background:
+                radial-gradient(ellipse at 100% 0%, rgba(66, 122, 175, .10), transparent 55%),
+                linear-gradient(145deg, rgba(17, 27, 43, .86), rgba(10, 16, 28, .92));
+            transition: border-color .2s ease, transform .2s ease, background-color .2s ease;
+        }
+        .feature:hover { transform: translateY(-3px); border-color: rgba(140, 240, 205, .32); }
+        .feature-number { position: absolute; top: 22px; right: 22px; color: #46546a; font: 500 10px "Space Grotesk", sans-serif; letter-spacing: 1px; }
+        .feature-icon {
+            display: grid;
+            width: 39px;
+            height: 39px;
+            margin-bottom: 22px;
+            place-items: center;
+            border: 1px solid rgba(140, 240, 205, .24);
+            border-radius: 11px;
+            color: var(--mint);
+            background: rgba(140, 240, 205, .07);
+            font-size: 17px;
+        }
+        .feature h3 { margin-bottom: 9px; font: 600 17px "Space Grotesk", sans-serif; letter-spacing: -.3px; }
+        .feature p { max-width: 340px; margin-bottom: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+        .feature-link { display: inline-flex; gap: 7px; align-items: center; margin-top: 18px; color: #9fdbc9; font-size: 10px; font-weight: 600; }
+        .feature-link span { transition: transform .18s ease; }
+        .feature:hover .feature-link span { transform: translateX(3px); }
+        .flow-showcase { position: relative; overflow: hidden; background: radial-gradient(ellipse at 73% 46%, rgba(29, 83, 104, .15), transparent 32rem), #080d17; }
+        .flow-showcase::before { position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(136, 161, 197, .025) 1px, transparent 1px), linear-gradient(90deg, rgba(136, 161, 197, .025) 1px, transparent 1px); background-size: 38px 38px; content: ""; mask-image: linear-gradient(90deg, transparent, #000 45%, #000); }
+        .flow-showcase-inner { position: relative; }
+        .flow-section { display: grid; grid-template-columns: .82fr 1.18fr; gap: 70px; align-items: center; }
+        .flow-intro .section-heading { margin-bottom: 25px; }
+        .flow-intro .section-heading h2 { max-width: 480px; font-size: clamp(34px, 4.7vw, 52px); letter-spacing: -2px; }
+        .flow-overline { color: #76d9c2; font-size: 10px; font-weight: 700; letter-spacing: 1.7px; text-transform: uppercase; }
+        .flow-steps { display: grid; gap: 18px; }
+        .flow-step { display: grid; grid-template-columns: 31px 1fr; gap: 13px; align-items: start; }
+        .step-number {
+            display: grid;
+            width: 29px;
+            height: 29px;
+            place-items: center;
+            border: 1px solid rgba(140, 240, 205, .24);
+            border-radius: 9px;
+            color: #8be8ca;
+            font-size: 11px;
+        }
+        .flow-step b { display: block; margin-bottom: 4px; font: 600 13px "Space Grotesk", sans-serif; }
+        .flow-step p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+        .flow-insight { overflow: hidden; border: 1px solid rgba(155, 180, 220, .16); border-radius: 12px; background: linear-gradient(150deg, rgba(15, 23, 37, .97), rgba(7, 12, 21, .98)); box-shadow: 0 28px 75px rgba(0, 0, 0, .28); }
+        .flow-insight-head { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 16px 18px; border-bottom: 1px solid rgba(155, 180, 220, .1); }
+        .flow-insight-title { color: #e0e7f1; font: 600 12px "Space Grotesk", sans-serif; }
+        .flow-insight-subtitle { margin-top: 4px; color: #76849a; font-size: 9px; }
+        .insight-demo { padding: 4px 7px; border: 1px solid rgba(255, 194, 112, .25); border-radius: 4px; color: #ffc270; font-size: 8px; font-weight: 700; letter-spacing: .7px; white-space: nowrap; }
+        .insight-body { display: grid; grid-template-columns: minmax(0, 1fr) 148px; min-height: 225px; }
+        .insight-chart { min-width: 0; padding: 12px 9px 7px 14px; }
+        .insight-svg { display: block; width: 100%; height: 194px; }
+        .insight-axis { fill: #67758c; font: 8px "DM Sans", sans-serif; }
+        .insight-grid { stroke: rgba(155, 180, 220, .11); stroke-width: 1; stroke-dasharray: 2 6; }
+        .insight-line { fill: none; stroke: #79e6c4; stroke-width: 2; }
+        .insight-area { fill: url(#insight-area-gradient); opacity: .38; }
+        .insight-cursor { stroke: rgba(255, 194, 112, .7); stroke-width: 1; stroke-dasharray: 3 4; }
+        .insight-detail { padding: 14px 12px; border-left: 1px solid rgba(155, 180, 220, .1); background: rgba(3, 8, 15, .36); }
+        .insight-detail-label { color: #78869b; font-size: 8px; letter-spacing: .9px; }
+        .insight-reading { margin-top: 8px; color: #7ee7be; font: 600 13px "Space Grotesk", sans-serif; }
+        .insight-reading.bear { color: #ff8b9e; }
+        .insight-divider { height: 1px; margin: 12px 0; background: rgba(155, 180, 220, .1); }
+        .insight-value { display: flex; justify-content: space-between; gap: 6px; margin-top: 9px; color: #8592a6; font-size: 8px; }
+        .insight-value strong { color: #d7e0ed; font-weight: 600; }
+        .insight-value strong.bull-text { color: #77e5b8; }
+        .insight-value strong.bear-text { color: #ff8b9e; }
+        .insight-scrubber { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 16px; border-top: 1px solid rgba(155, 180, 220, .1); color: #76849a; font-size: 8px; }
+        .insight-scrubber input { width: 100%; accent-color: #79e6c4; cursor: ew-resize; }
+        .flow-note { margin: 12px 0 0; color: #6f7d92; font-size: 9px; }
+        .disclaimer { padding: 23px 25px; border: 1px solid var(--line); border-radius: 12px; color: #a4afc1; background: rgba(16, 24, 39, .56); font-size: 11px; }
+        .disclaimer b { color: #dce4ef; }
+        footer { display: flex; justify-content: space-between; gap: 16px; padding: 28px 0 35px; color: #77869e; font-size: 11px; }
+        @media (max-width: 760px) {
+            .nav { height: 70px; }
+            .nav-right { gap: 12px; }
+            .nav-right .nav-link { display: none; }
+            .hero { padding: 57px 0 62px; }
+            .hero-intro { grid-template-columns: 1fr; gap: 8px; margin-bottom: 25px; }
+            h1 { letter-spacing: -2px; }
+            .feature-grid { grid-template-columns: repeat(2, 1fr); }
+            .flow-section { grid-template-columns: 1fr; gap: 28px; }
+            .platform-intro { display: block; }
+            .platform-intro p { margin-top: 18px; }
+            .sim-main { grid-template-columns: minmax(0, 1fr) 245px; min-height: 390px; }
+            .flow-chart { height: 354px; }
+            .flow-insight { max-width: 660px; }
+        }
+        @media (max-width: 480px) {
+            .shell { width: min(100% - 28px, 1120px); }
+            .brand { font-size: 17px; }
+            .nav-right { gap: 8px; }
+            .nav-right .button { min-height: 38px; padding: 0 11px; font-size: 11px; }
+            .feature-grid { grid-template-columns: 1fr; }
+            .section { padding: 61px 0; }
+            .platform-intro h2, .flow-intro .section-heading h2 { font-size: 35px; }
+            .sim-topbar, .sim-controls, .sim-bottom { padding-right: 9px; padding-left: 9px; }
+            .sim-workspace, .sim-updated { display: none; }
+            .sim-brand { font-size: 10px; }
+            .sim-pill { padding: 5px 6px; font-size: 7px; }
+            .sim-stats { grid-template-columns: repeat(2, 1fr); }
+            .sim-stat { padding: 11px 12px; }
+            .sim-stat:nth-child(2) { border-right: 0; }
+            .sim-stat:nth-child(-n+2) { border-bottom: 1px solid rgba(155, 180, 220, .1); }
+            .sim-main { grid-template-columns: 1fr; }
+            .sim-movers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 8px; border-top: 1px solid rgba(155, 180, 220, .1); border-left: 0; }
+            .movers-head, .sim-legend { grid-column: 1 / -1; }
+            .movers-head { margin-top: 2px; }
+            .mover-row { padding: 8px 0; }
+            .flow-chart { height: 245px; }
+            .flow-chart-wrap { padding-right: 7px; padding-left: 5px; }
+            .insight-body { grid-template-columns: minmax(0, 1fr) 118px; }
+            .insight-chart { padding-right: 4px; padding-left: 7px; }
+            .insight-detail { padding: 12px 8px; }
+            .insight-scrubber { gap: 7px; padding-right: 10px; padding-left: 10px; }
+            .flow-insight-head { padding: 13px 12px; }
+            .insight-svg { height: 170px; }
+            .sim-stat-value { font-size: 15px; }
+            .sim-bottom { font-size: 8px; }
+            footer { flex-direction: column; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+        }
+        .sim-terminal.paused .flow-dot { display: none; }
+    </style>
+</head>
+<body>
+    <header class="shell nav">
+        <a class="brand" href="/" aria-label="VerquoAI home">
+            <span class="brand-mark" aria-hidden="true">V</span>
+            <span>VerquoAI</span><sup>™</sup>
+        </a>
+        <nav class="nav-right" aria-label="Main navigation">
+            <a class="nav-link" href="#platform">Platform</a>
+            <a class="nav-link" href="#market-flow">Market Flow</a>
+            <a class="button button-quiet" href="/login">Sign in</a>
+            <a class="button" href="/login">Open workspace <span aria-hidden="true">&nbsp;↗</span></a>
+        </nav>
+    </header>
+
+    <main>
+        <section class="shell hero">
+            <div class="hero-intro">
+                <div>
+                    <div class="eyebrow"><span class="pulse"></span> A connected trading workspace</div>
+                    <h1>See the market.<br><span>Understand the flow.</span></h1>
+                    <div class="hero-actions">
+                        <a class="button" href="/login">Sign in securely <span aria-hidden="true">&nbsp;→</span></a>
+                        <a class="button button-quiet" href="#platform">Explore the platform</a>
+                    </div>
+                </div>
+                <div>
+                    <p class="hero-copy">Research, market activity, strategy tools, risk controls, and trade review—brought together in one focused workspace for your trading process.</p>
+                    <p class="subnote">Private workspace access is protected by email OTP sign-in.</p>
+                </div>
+            </div>
+            <section class="sim-terminal" id="market-simulation" aria-label="Simulated market flow preview. All displayed market values are illustrative, not live data.">
+                <div class="sim-topbar">
+                    <div class="sim-brand"><span class="sim-brand-mark" aria-hidden="true">ϟ</span><span>VERQUOAI™</span><span class="sim-workspace">/ MARKET FLOW</span></div>
+                    <div class="sim-top-right"><span class="sim-session" id="sim-clock">PAPER SESSION · --:-- IST</span><span class="sim-pill">SIMULATED MARKET</span></div>
+                </div>
+                <div class="sim-stats" aria-live="polite">
+                    <div class="sim-stat"><span class="sim-stat-label">SIMULATED INDEX</span><span class="sim-stat-value" id="sim-index">24,318.45</span><span class="sim-stat-change" id="sim-index-change">+0.42%</span></div>
+                    <div class="sim-stat"><span class="sim-stat-label">FLOW BREADTH</span><span class="sim-stat-value" id="sim-breadth">18 / 30</span></div>
+                    <div class="sim-stat"><span class="sim-stat-label">BULLISH STRANDS</span><span class="sim-stat-value" style="color:#68eab6" id="sim-bull-count">18</span></div>
+                    <div class="sim-stat"><span class="sim-stat-label">BEARISH STRANDS</span><span class="sim-stat-value" style="color:#ff718b" id="sim-bear-count">12</span></div>
+                </div>
+                <div class="sim-main">
+                    <div class="flow-chart-wrap">
+                        <div class="flow-chart-head"><span id="sim-chart-title">PRICE CHANGE · SIMULATED UNIVERSE</span><span>EARLIER FLOW <span aria-hidden="true">→</span> NOW</span></div>
+                        <svg class="flow-chart" id="sim-flow-svg" viewBox="0 0 1000 500" preserveAspectRatio="none" role="img" aria-label="Animated simulated bullish and bearish market-flow strands converging at the current time">
+                            <g aria-hidden="true">
+                                <line class="flow-grid" x1="33" y1="50" x2="988" y2="50"/>
+                                <line class="flow-grid" x1="33" y1="150" x2="988" y2="150"/>
+                                <line class="flow-midline" x1="33" y1="250" x2="988" y2="250"/>
+                                <line class="flow-grid" x1="33" y1="350" x2="988" y2="350"/>
+                                <line class="flow-grid" x1="33" y1="450" x2="988" y2="450"/>
+                                <line class="flow-gate" x1="466" y1="24" x2="466" y2="476"/>
+                                <text class="flow-label" x="8" y="54">+2σ</text>
+                                <text class="flow-label" x="8" y="154">+1σ</text>
+                                <text class="flow-label" x="8" y="254">0</text>
+                                <text class="flow-label" x="8" y="354">−1σ</text>
+                                <text class="flow-label" x="8" y="454">−2σ</text>
+                                <text class="flow-label" x="440" y="18">NOW</text>
+                                <text class="flow-count bull" x="485" y="226">▲ BULLISH <tspan id="sim-svg-bull-count">18</tspan></text>
+                                <text class="flow-count bear" x="485" y="278">▼ BEARISH <tspan id="sim-svg-bear-count">12</tspan></text>
+                                <g id="sim-flow-lines"></g>
+                            </g>
+                        </svg>
+                    </div>
+                    <aside class="sim-movers" aria-label="Simulated strongest movers">
+                        <div class="movers-head"><span>FLOW LEADERS</span><span class="movers-total">TOP MOVERS · DEMO</span></div>
+                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge">BULL</span><span class="mover-symbol">HDFCBANK</span></div><span class="mover-value bull" data-demo-value="1.01">+1.01%</span><div class="mover-kind"><span>LONG BUILD-UP</span><span>SIM · #1</span></div></div>
+                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge">BULL</span><span class="mover-symbol">INFY</span></div><span class="mover-value bull" data-demo-value="0.84">+0.84%</span><div class="mover-kind"><span>SHORT COVERING</span><span>SIM · #2</span></div></div>
+                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge bear">BEAR</span><span class="mover-symbol">RELIANCE</span></div><span class="mover-value bear" data-demo-value="-0.73">−0.73%</span><div class="mover-kind"><span>LONG UNWINDING</span><span>SIM · #3</span></div></div>
+                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge bear">BEAR</span><span class="mover-symbol">ICICIBANK</span></div><span class="mover-value bear" data-demo-value="-0.58">−0.58%</span><div class="mover-kind"><span>SHORT BUILD-UP</span><span>SIM · #4</span></div></div>
+                        <div class="sim-legend"><span><i class="legend-dot"></i>Bullish flow</span><span><i class="legend-dot bear"></i>Bearish flow</span><span>Illustrative</span></div>
+                    </aside>
+                </div>
+                <div class="sim-controls">
+                    <div class="sim-lenses" role="group" aria-label="Select simulation lens">
+                        <button class="sim-control" type="button" data-sim-lens="price" aria-pressed="true">PRICE</button>
+                        <button class="sim-control" type="button" data-sim-lens="oi" aria-pressed="false">FUTURES OI</button>
+                    </div>
+                    <span class="sim-updated" id="sim-updated">SIMULATION TICK · --:--:--</span>
+                    <button class="sim-play" id="sim-pause" type="button" aria-pressed="false">Ⅱ&nbsp; Pause</button>
+                </div>
+                <div class="sim-bottom"><span><strong>DEMO PREVIEW:</strong> Generated simulation only—not live prices, broker data, or trade signals.</span><a href="/login">Explore your workspace&nbsp; ↗</a></div>
+            </section>
+        </section>
+
+        <section class="section" id="platform">
+            <div class="shell">
+                <div class="section-heading platform-intro">
+                    <div>
+                        <div class="eyebrow">One workspace. Connected tools.</div>
+                        <h2>From market context<br>to considered action.</h2>
+                    </div>
+                    <p>Follow the market, explore your strategy, and review your process in a single workspace—built to keep context and risk in view.</p>
+                </div>
+                <div class="feature-grid">
+                    <article class="feature"><span class="feature-number">01 / FLOW</span><div class="feature-icon" aria-hidden="true">↗</div><h3>Market Flow</h3><p>Follow price and futures OI lenses, classify build-ups, compare market breadth, and replay recent flow history.</p><a class="feature-link" href="#market-flow">Explore the flow lens <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">02 / CONTEXT</span><div class="feature-icon" aria-hidden="true">⌁</div><h3>Market overview</h3><p>Bring index and stock quotes, contribution views, portfolio context, and market snapshots together.</p><a class="feature-link" href="/login">See workspace tools <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">03 / RESEARCH</span><div class="feature-icon" aria-hidden="true">⌕</div><h3>Signals &amp; analysis</h3><p>Explore scanner results, indicators, options OI analysis, charts, and signal-review workflows.</p><a class="feature-link" href="/login">Explore research tools <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">04 / STRATEGY</span><div class="feature-icon" aria-hidden="true">⌘</div><h3>Strategy lab</h3><p>Build strategies, examine F&amp;O structures, and work with backtest, replay, and paper-trading tools.</p><a class="feature-link" href="/login">Explore strategy tools <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">05 / RISK</span><div class="feature-icon" aria-hidden="true">◇</div><h3>Risk &amp; execution</h3><p>Keep positions, exposure, daily limits, protective controls, and broker connection status in view.</p><a class="feature-link" href="/login">Explore risk controls <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">06 / REVIEW</span><div class="feature-icon" aria-hidden="true">▤</div><h3>Journal &amp; agents</h3><p>Review trade analytics, portfolio health, system events, and supervised workflow-agent status.</p><a class="feature-link" href="/login">Explore trade review <span aria-hidden="true">→</span></a></article>
+                </div>
+            </div>
+        </section>
+
+        <section class="section flow-showcase" id="market-flow">
+            <div class="shell flow-showcase-inner flow-section">
+                <div class="flow-intro">
+                    <div class="flow-overline">Designed for market context</div>
+                    <div class="section-heading">
+                        <h2>Market Flow,<br>made visible.</h2>
+                        <p>See dozens of instruments resolve into a single market picture. Compare earlier movement with the current balance, then change the lens to see what positioning may be doing beneath price.</p>
+                    </div>
+                    <div class="flow-steps">
+                        <div class="flow-step"><span class="step-number">01</span><div><b>One line, one instrument</b><p>Each strand represents a symbol. Its direction and colour make relative bullish, bearish, and neutral flow easier to scan.</p></div></div>
+                        <div class="flow-step"><span class="step-number">02</span><div><b>Two ways to read participation</b><p>Switch between cash-price change and futures open-interest build-up classifications.</p></div></div>
+                        <div class="flow-step"><span class="step-number">03</span><div><b>Move through the session</b><p>Inspect the live workspace’s recent-history rail and focus on the symbols shaping the flow.</p></div></div>
+                    </div>
+                    <p class="flow-note">The preview beside this copy uses generated demo values. Live workspace availability depends on your broker connection and market-data access.</p>
+                </div>
+                <div>
+                    <div class="flow-insight" aria-label="Illustrative simulated market flow chart with interactive history scrubber">
+                        <div class="flow-insight-head">
+                            <div><div class="flow-insight-title">PARTICIPATION / NIFTY UNIVERSE</div><div class="flow-insight-subtitle">A sample view of how broad market flow can be explored</div></div>
+                            <span class="insight-demo">SIMULATION</span>
+                        </div>
+                        <div class="insight-body">
+                            <div class="insight-chart">
+                                <svg class="insight-svg" id="insight-svg" viewBox="0 0 620 230" preserveAspectRatio="none" role="img" aria-label="Illustrative line chart of simulated market-flow breadth">
+                                    <defs><linearGradient id="insight-area-gradient" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#79e6c4"/><stop offset="100%" stop-color="#79e6c4" stop-opacity="0"/></linearGradient></defs>
+                                    <line class="insight-grid" x1="36" y1="38" x2="607" y2="38"/>
+                                    <line class="insight-grid" x1="36" y1="83" x2="607" y2="83"/>
+                                    <line class="insight-grid" x1="36" y1="128" x2="607" y2="128"/>
+                                    <line class="insight-grid" x1="36" y1="173" x2="607" y2="173"/>
+                                    <text class="insight-axis" x="4" y="41">+2σ</text>
+                                    <text class="insight-axis" x="4" y="86">+1σ</text>
+                                    <text class="insight-axis" x="12" y="131">0</text>
+                                    <text class="insight-axis" x="4" y="176">−1σ</text>
+                                    <text class="insight-axis" x="35" y="211">−60m</text>
+                                    <text class="insight-axis" x="300" y="211">−30m</text>
+                                    <text class="insight-axis" x="586" y="211">NOW</text>
+                                    <path class="insight-area" d="M36 138 C70 127 78 90 115 103 S165 144 203 112 S250 64 287 90 S333 133 371 96 S420 110 456 78 S502 48 535 72 S577 95 607 48 L607 190 L36 190 Z"/>
+                                    <path class="insight-line" d="M36 138 C70 127 78 90 115 103 S165 144 203 112 S250 64 287 90 S333 133 371 96 S420 110 456 78 S502 48 535 72 S577 95 607 48"/>
+                                    <line class="insight-cursor" id="insight-cursor" x1="607" y1="21" x2="607" y2="190"/>
+                                    <circle id="insight-point" cx="607" cy="48" r="4" fill="#aaffdf" stroke="#09110f" stroke-width="2"/>
+                                </svg>
+                            </div>
+                            <aside class="insight-detail">
+                                <div class="insight-detail-label">SELECTED WINDOW</div>
+                                <div class="insight-reading" id="insight-window">NOW</div>
+                                <div class="insight-divider"></div>
+                                <div class="insight-detail-label">FLOW BALANCE</div>
+                                <div class="insight-value"><span>Bullish</span><strong class="bull-text" id="insight-bullish">18</strong></div>
+                                <div class="insight-value"><span>Bearish</span><strong class="bear-text" id="insight-bearish">12</strong></div>
+                                <div class="insight-value"><span>Neutral</span><strong id="insight-neutral">4</strong></div>
+                                <div class="insight-divider"></div>
+                                <div class="insight-detail-label">SAMPLE LENS</div>
+                                <div class="insight-reading" id="insight-lens">PRICE</div>
+                            </aside>
+                        </div>
+                        <label class="insight-scrubber" for="insight-scrubber">
+                            <span>−60 MIN</span>
+                            <input id="insight-scrubber" type="range" min="0" max="60" value="0" aria-label="Scrub illustrative market flow history">
+                            <span id="insight-time">NOW</span>
+                        </label>
+                    </div>
+                    <p class="flow-note">Interactive concept preview • synthetic values • not market data</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="shell section">
+            <div class="disclaimer"><b>Important:</b> VerquoAI provides analytical and workflow tools, not investment advice or a promise of returns. Market data may be delayed or unavailable. Trading involves substantial risk, including possible loss of capital. Verify information independently and make your own decisions.</div>
+        </section>
+    </main>
+
+    <footer class="shell">
+        <span>© <span id="year"></span> VerquoAI™</span>
+        <span>Market analysis and trading workflow tools. Trading involves risk.</span>
+    </footer>
+    <script>
+        (() => {
+            const svgNS = 'http://www.w3.org/2000/svg';
+            const lineLayer = document.getElementById('sim-flow-lines');
+            const terminal = document.getElementById('market-simulation');
+            const svg = document.getElementById('sim-flow-svg');
+            const insightCursor = document.getElementById('insight-cursor');
+            const insightPoint = document.getElementById('insight-point');
+            const insightScrubber = document.getElementById('insight-scrubber');
+            const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            let lens = 'price';
+            let paused = false;
+            let tick = 0;
+            let indexLevel = 24318.45;
+            let intervalId;
+
+            function svgElement(name, attributes = {}) {
+                const element = document.createElementNS(svgNS, name);
+                Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
+                return element;
+            }
+
+            function addStrand(index, side) {
+                const count = side === 'bull' ? 18 : 12;
+                const row = side === 'bull' ? index : index - 18;
+                const source = side === 'bull' ? 42 + row * 11.4 : 273 + row * 15.1;
+                const destination = side === 'bull'
+                    ? 39 + ((row * 7) % count) * 13.2
+                    : 278 + ((row * 5) % count) * 14.3;
+                const pathId = `sim-strand-${index}`;
+                const pathData = `M 34 ${source.toFixed(1)} C 185 ${source.toFixed(1)} 302 250 466 250 C 619 250 758 ${destination.toFixed(1)} 986 ${destination.toFixed(1)}`;
+                const path = svgElement('path', {
+                    id: pathId,
+                    d: pathData,
+                    class: `flow-path ${side}${row % 5 === 0 ? ' featured' : ''}`,
+                });
+                lineLayer.appendChild(path);
+                if (!reducedMotion) {
+                    const dot = svgElement('circle', { r: row % 5 === 0 ? 2.6 : 1.8, class: `flow-dot ${side}` });
+                    const motion = svgElement('animateMotion', {
+                        dur: `${4.4 + (row % 7) * 0.57}s`,
+                        begin: `${-((row * 0.83) % 5).toFixed(2)}s`,
+                        repeatCount: 'indefinite',
+                        rotate: 'auto',
+                    });
+                    motion.appendChild(svgElement('mpath', { href: `#${pathId}` }));
+                    dot.appendChild(motion);
+                    lineLayer.appendChild(dot);
+                }
+            }
+
+            for (let i = 0; i < 30; i++) addStrand(i, i < 18 ? 'bull' : 'bear');
+
+            function updateClock() {
+                const now = new Date();
+                const clock = new Intl.DateTimeFormat('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false,
+                }).format(now);
+                document.getElementById('sim-clock').textContent = `SIMULATED SESSION · ${clock} IST`;
+                document.getElementById('sim-updated').textContent = `SIMULATION TICK · ${clock}`;
+            }
+
+            function updateSimulation() {
+                if (paused) return;
+                tick += 1;
+                indexLevel += (Math.random() - 0.47) * 8;
+                const percent = 0.42 + Math.sin(tick / 8) * 0.17 + (Math.random() - 0.5) * 0.04;
+                document.getElementById('sim-index').textContent = indexLevel.toLocaleString('en-IN', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                });
+                document.getElementById('sim-index-change').textContent = `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`;
+                document.getElementById('sim-breadth').textContent = `${18 + Math.round(Math.sin(tick / 6) * 2)} / 30`;
+                document.getElementById('sim-bull-count').textContent = '18';
+                document.getElementById('sim-bear-count').textContent = '12';
+                document.getElementById('sim-svg-bull-count').textContent = '18';
+                document.getElementById('sim-svg-bear-count').textContent = '12';
+
+                document.querySelectorAll('[data-demo-value]').forEach((element) => {
+                    const base = Number(element.dataset.demoValue);
+                    const direction = Math.sign(base);
+                    const value = direction * (Math.abs(base) + (Math.random() - 0.5) * 0.1);
+                    const digits = Math.abs(value).toFixed(2);
+                    element.textContent = `${value >= 0 ? '+' : '−'}${digits}${lens === 'oi' ? '% OI' : '%'}`;
+                    element.classList.toggle('bear', value < 0);
+                    element.classList.toggle('bull', value >= 0);
+                });
+                updateClock();
+            }
+
+            function updateInsight() {
+                const elapsed = Number(insightScrubber.value);
+                const x = 36 + (60 - elapsed) * (571 / 60);
+                const wave = Math.sin(elapsed / 8);
+                const pointY = 112 - wave * 38;
+                const bullish = Math.max(4, Math.min(26, Math.round(16 + wave * 7)));
+                const bearish = 30 - bullish;
+                insightCursor.setAttribute('x1', x.toFixed(1));
+                insightCursor.setAttribute('x2', x.toFixed(1));
+                insightPoint.setAttribute('cx', x.toFixed(1));
+                insightPoint.setAttribute('cy', pointY.toFixed(1));
+                document.getElementById('insight-window').textContent = elapsed === 0 ? 'NOW' : `−${elapsed} MIN`;
+                document.getElementById('insight-time').textContent = elapsed === 0 ? 'NOW' : `−${elapsed} MIN`;
+                document.getElementById('insight-bullish').textContent = String(bullish);
+                document.getElementById('insight-bearish').textContent = String(bearish);
+                document.getElementById('insight-neutral').textContent = String(4 + Math.round(Math.cos(elapsed / 9) * 2));
+                document.getElementById('insight-lens').textContent = lens === 'oi' ? 'FUTURES OI' : 'PRICE';
+                document.getElementById('insight-window').classList.toggle('bear', wave < -0.2);
+            }
+
+            document.querySelectorAll('[data-sim-lens]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    lens = button.dataset.simLens;
+                    document.querySelectorAll('[data-sim-lens]').forEach((control) => {
+                        control.setAttribute('aria-pressed', String(control === button));
+                    });
+                    document.getElementById('sim-chart-title').textContent =
+                        lens === 'oi' ? 'FUTURES OPEN INTEREST · SIMULATED UNIVERSE' : 'PRICE CHANGE · SIMULATED UNIVERSE';
+                    updateInsight();
+                    document.querySelectorAll('[data-demo-value]').forEach((element) => {
+                        const value = Number(element.dataset.demoValue);
+                        const number = Math.abs(value).toFixed(2);
+                        element.textContent = `${value >= 0 ? '+' : '−'}${number}${lens === 'oi' ? '% OI' : '%'}`;
+                    });
+                    updateClock();
+                });
+            });
+            insightScrubber.addEventListener('input', updateInsight);
+
+            document.getElementById('sim-pause').addEventListener('click', (event) => {
+                paused = !paused;
+                terminal.classList.toggle('paused', paused);
+                event.currentTarget.setAttribute('aria-pressed', String(paused));
+                event.currentTarget.innerHTML = paused ? '▶&nbsp; Resume' : 'Ⅱ&nbsp; Pause';
+                if (paused) svg.pauseAnimations();
+                else if (!reducedMotion) svg.unpauseAnimations();
+                if (!paused) updateSimulation();
+            });
+
+            document.getElementById('year').textContent = new Date().getFullYear();
+            updateInsight();
+            updateSimulation();
+            intervalId = window.setInterval(updateSimulation, 1150);
+            window.addEventListener('pagehide', () => window.clearInterval(intervalId), { once: true });
+        })();
+    </script>
+</body>
+</html>

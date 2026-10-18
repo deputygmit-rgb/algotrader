@@ -6,11 +6,13 @@ import json
 import os
 import secrets
 import smtplib
+import ssl
 import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
+import certifi
 from dotenv import load_dotenv
 
 from src.utils.logger import get_logger
@@ -38,12 +40,6 @@ class OTPAuth:
         self._otp_request_count: dict[str, list[float]] = {}  # Track OTP requests per user
         self._ip_attempts: dict[str, list[float]] = {}  # Track requests per (bucket, ip)
         
-        # Load ADMIN_EMAIL from environment (loaded by dotenv.load_dotenv above)
-        self._admin_email = os.environ.get("ADMIN_EMAIL", "")
-        if not self._admin_email:
-            logger.warning("security_warning", msg="ADMIN_EMAIL not configured - OTP emails will not be sent")
-            self._admin_email = "admin@example.com"  # Fallback to prevent crashes
-        
         # SESSION_SECRET is REQUIRED in production
         self._secret = os.environ.get("SESSION_SECRET", "")
         if not self._secret:
@@ -57,7 +53,7 @@ class OTPAuth:
         
         # Secure session file permissions
         self._secure_session_file()
-        logger.info("otp_auth_initialized", admin_email=self._admin_email[:3] + "***")
+        logger.info("otp_auth_initialized")
 
     def _secure_session_file(self) -> None:
         """Ensure session file has secure permissions."""
@@ -138,25 +134,30 @@ class OTPAuth:
         logger.info("otp_generated", zerodha_id=zerodha_id)
         return otp
 
-    def send_otp_email(self, otp: str, zerodha_id: str = "") -> bool:
-        """Send OTP email to configured admin email.
+    def discard_pending_otp(self, zerodha_id: str) -> None:
+        """Invalidate an OTP that could not be delivered."""
+        self._pending_otps.pop(zerodha_id.upper(), None)
+
+    def send_otp_email(self, otp: str, recipient_email: str, zerodha_id: str = "") -> bool:
+        """Send an OTP to the email address configured for the user.
         
         Args:
             otp: OTP code to send
+            recipient_email: Verified email address from the user's configuration
             zerodha_id: Zerodha ID (for logging only)
         
         Returns:
             True if sent successfully
         """
-        if not self._smtp_email or not self._smtp_password:
-            logger.error("smtp_not_configured", msg="SMTP credentials not configured")
+        if not self._smtp_email or not self._smtp_password or not recipient_email:
+            logger.error("smtp_not_configured", zerodha_id=zerodha_id)
             return False
 
         try:
             msg = MIMEMultipart("alternative")
             msg["Subject"] = f"Kite Trading Agent - Login OTP: {otp}"
             msg["From"] = self._smtp_email
-            msg["To"] = self._admin_email
+            msg["To"] = recipient_email
 
             html = f"""
             <html>
@@ -174,10 +175,13 @@ class OTPAuth:
             """
             msg.attach(MIMEText(html, "html"))
 
-            with smtplib.SMTP(self._smtp_host, self._smtp_port) as server:
-                server.starttls()
+            with smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=10) as server:
+                server.starttls(context=ssl.create_default_context(cafile=certifi.where()))
                 server.login(self._smtp_email, self._smtp_password)
-                server.sendmail(self._smtp_email, self._admin_email, msg.as_string())
+                refused = server.sendmail(self._smtp_email, recipient_email, msg.as_string())
+                if refused:
+                    logger.error("otp_email_recipient_refused", zerodha_id=zerodha_id)
+                    return False
 
             logger.info("otp_email_sent", zerodha_id=zerodha_id)
             return True

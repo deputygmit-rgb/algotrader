@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
@@ -43,7 +45,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await mcp_driver.shutdown()
 
 
-app = FastAPI(title="Kite Trading Agent", version="2.0", lifespan=_lifespan)
+app = FastAPI(title="VerquoAI", version="2.0", lifespan=_lifespan)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -51,7 +53,7 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 SESSION_COOKIE = "kta_session"
 
-PUBLIC_PATHS = {"/login", "/auth/send-otp", "/auth/verify-otp", "/auth/callback", "/api/auth/callback", "/api/auth/postback"}
+PUBLIC_PATHS = {"/", "/login", "/auth/send-otp", "/auth/verify-otp", "/auth/callback", "/api/auth/callback", "/api/auth/postback"}
 
 
 def get_user_service(request: Request) -> TradingService:
@@ -78,6 +80,18 @@ def is_logged_in(request: Request) -> bool:
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+def _dev_otp_fallback_enabled(request: Request) -> bool:
+    if os.environ.get("APP_ENV", "").strip().lower() != "development":
+        return False
+    if os.environ.get("OTP_DEV_FALLBACK_ENABLED", "").strip().lower() != "true":
+        return False
+    client_ip = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(client_ip).is_loopback
+    except ValueError:
+        return False
 
 
 def _is_secure_request(request: Request) -> bool:
@@ -137,7 +151,7 @@ async def auth_middleware(request: Request, call_next):
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse("/app", status_code=302)
     return templates.TemplateResponse("login.html", {"request": request})
 
 
@@ -157,21 +171,29 @@ async def send_otp(request: Request) -> dict[str, Any]:
 
     user_cfg_svc = UserConfigService.get_instance()
     user = user_cfg_svc.get_user(zerodha_id)
-    if not user:
-        return {"success": False, "message": "Zerodha ID not registered"}
-    if user.email and user.email.lower() != email:
-        return {"success": False, "message": "Email does not match this Zerodha ID"}
+    if not user or not user.email or user.email.strip().lower() != email:
+        return {"success": False, "message": "Account details could not be verified"}
 
     try:
         otp = otp_auth.generate_otp(zerodha_id)
     except Exception as e:
         return {"success": False, "message": str(e)}
     
-    sent = otp_auth.send_otp_email(otp, zerodha_id)
-    if sent:
-        return {"success": True, "message": "OTP sent to your email", "mode": "email"}
-    else:
-        return {"success": True, "message": "OTP generated", "mode": "direct", "otp": otp}
+    if not otp_auth.send_otp_email(otp, user.email, zerodha_id):
+        if _dev_otp_fallback_enabled(request):
+            logger.warning("otp_email_failed_dev_fallback_enabled", zerodha_id=zerodha_id)
+            return {
+                "success": True,
+                "message": "Email delivery failed; development-only OTP fallback is active.",
+                "mode": "development",
+                "otp": otp,
+            }
+        otp_auth.discard_pending_otp(zerodha_id)
+        return {
+            "success": False,
+            "message": "Unable to deliver OTP. Check email configuration and try again.",
+        }
+    return {"success": True, "message": "OTP sent to your registered email"}
 
 
 @app.post("/auth/verify-otp")
@@ -222,6 +244,11 @@ def _static_version(rel_path: str) -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
+async def landing_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("landing.html", {"request": request})
+
+
+@app.get("/app", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     if not is_logged_in(request):
         return RedirectResponse("/login", status_code=302)
@@ -245,6 +272,22 @@ async def dashboard(request: Request) -> HTMLResponse:
         "terminal_css_version": _static_version("css/terminal.css"),
         "terminal_js_version": _static_version("js/terminal.js"),
         "agents_js_version": _static_version("js/agents.js"),
+    })
+
+
+@app.get("/app/stock/{symbol}", response_class=HTMLResponse)
+async def stock_detail_page(request: Request, symbol: str) -> HTMLResponse:
+    if not is_logged_in(request):
+        return RedirectResponse("/login", status_code=302)
+    normalized_symbol = symbol.upper().strip()
+    if not re.fullmatch(r"[A-Z0-9&.-]{1,32}", normalized_symbol):
+        raise HTTPException(400, "Invalid stock symbol")
+    return templates.TemplateResponse("stock_detail.html", {
+        "request": request,
+        "symbol": normalized_symbol,
+        "css_version": _static_version("css/stock_detail.css"),
+        "terminal_css_version": _static_version("css/terminal.css"),
+        "js_version": _static_version("js/stock_detail.js"),
     })
 
 
@@ -304,17 +347,17 @@ async def auth_callback(request: Request):
     request_token = request.query_params.get("request_token", "")
     status = request.query_params.get("status", "")
     if status != "success" or not request_token:
-        return RedirectResponse("/?auth_error=Login+failed+or+was+cancelled")
+        return RedirectResponse("/app?auth_error=Login+failed+or+was+cancelled")
     try:
         svc = get_user_service(request)
         await svc.authenticate(request_token)
         mcp_driver.wake_agent(svc.zerodha_id)
-        return RedirectResponse("/?auth=success")
+        return RedirectResponse("/app?auth=success")
     except HTTPException:
-        return RedirectResponse("/?auth_error=Please+login+first")
+        return RedirectResponse("/login?auth_error=Please+login+first")
     except Exception as e:
         logger.error("auth_callback_failed", error=str(e))
-        return RedirectResponse(f"/?auth_error={str(e)[:100]}")
+        return RedirectResponse(f"/app?auth_error={str(e)[:100]}")
 
 
 @app.get("/auth/callback")
@@ -323,17 +366,17 @@ async def auth_callback_bare(request: Request):
     request_token = request.query_params.get("request_token", "")
     status = request.query_params.get("status", "")
     if status != "success" or not request_token:
-        return RedirectResponse("/?auth_error=Login+failed+or+was+cancelled")
+        return RedirectResponse("/app?auth_error=Login+failed+or+was+cancelled")
     try:
         svc = get_user_service(request)
         await svc.authenticate(request_token)
         mcp_driver.wake_agent(svc.zerodha_id)
-        return RedirectResponse("/?auth=success")
+        return RedirectResponse("/app?auth=success")
     except HTTPException:
-        return RedirectResponse("/?auth_error=Please+login+first")
+        return RedirectResponse("/login?auth_error=Please+login+first")
     except Exception as e:
         logger.error("auth_callback_bare_failed", error=str(e))
-        return RedirectResponse(f"/?auth_error={str(e)[:100]}")
+        return RedirectResponse(f"/app?auth_error={str(e)[:100]}")
 
 
 @app.get("/api/auth/postback")

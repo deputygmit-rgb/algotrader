@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Kite Trading Agent</title>
+    <title>Sign in - VerquoAI</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -119,8 +119,8 @@
 </head>
 <body>
     <div class="login-container">
-        <div class="logo">Kite Trading Agent</div>
-        <div class="subtitle">Secure OTP Login</div>
+        <div class="logo">VerquoAI<span aria-hidden="true">™</span></div>
+        <div class="subtitle">Secure sign-in to your trading workspace</div>
 
         <div id="step-email" class="step active">
             <div class="form-group">
@@ -137,7 +137,7 @@
 
         <div id="step-otp" class="step">
             <p style="text-align:center;color:#8899aa;font-size:13px;margin-bottom:20px;">
-                A 6-digit code has been sent to the admin email.
+                <span id="otp-delivery-message">A 6-digit code has been sent to your registered email.</span>
             </p>
             <div class="form-group">
                 <label>Enter OTP</label>
@@ -191,13 +191,17 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    if (data.mode === 'direct' && data.otp) {
+                    if (data.mode === 'development' && data.otp) {
                         document.getElementById('otp-input').value = data.otp;
-                        msg.className = 'message success';
-                        msg.textContent = 'OTP auto-filled. Click Verify to login.';
+                        document.getElementById('otp-delivery-message').textContent =
+                            'Email failed. Development-only OTP fallback is active.';
+                        msg.className = 'message info';
+                        msg.textContent = 'Development OTP auto-filled. Do not enable this mode in production.';
                     } else {
+                        document.getElementById('otp-delivery-message').textContent =
+                            'A 6-digit code has been sent to your registered email.';
                         msg.className = 'message success';
-                        msg.textContent = 'OTP sent to admin email!';
+                        msg.textContent = 'OTP sent to your registered email!';
                     }
                     setTimeout(() => showStep('otp'), 500);
                     startTimer();
@@ -237,7 +241,7 @@
                 if (data.success) {
                     msg.className = 'message success';
                     msg.textContent = 'Login successful! Redirecting...';
-                    setTimeout(() => window.location.href = '/', 500);
+                    setTimeout(() => window.location.href = '/app', 500);
                 } else {
                     msg.className = 'message error';
                     msg.textContent = data.message || 'Invalid OTP';

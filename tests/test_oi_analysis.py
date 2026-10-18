@@ -8,7 +8,7 @@ import asyncio
 import json
 import sys
 import traceback
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -111,20 +111,21 @@ def test_constants():
 
 def test_buildup_classification_exhaustive():
     cb = FuturesOIAnalyzer._classify_buildup
-    assert cb(2.0, 1000) == ('LONG_BUILDUP', 'BULLISH')
-    assert cb(-2.0, 1000) == ('SHORT_BUILDUP', 'BEARISH')
-    assert cb(-1.0, -500) == ('LONG_UNWINDING', 'BEARISH')
-    assert cb(1.0, -500) == ('SHORT_COVERING', 'BULLISH')
-    assert cb(0.0, 0) == ('NEUTRAL', 'NEUTRAL')
-    assert cb(0.0, 1000) == ('NEUTRAL', 'NEUTRAL')
-    assert cb(0.0, -1000) == ('NEUTRAL', 'NEUTRAL')
-    assert cb(5.0, 0) == ('NEUTRAL', 'NEUTRAL')
-    assert cb(-5.0, 0) == ('NEUTRAL', 'NEUTRAL')
-    assert cb(0.01, 1) == ('LONG_BUILDUP', 'BULLISH')
-    assert cb(-0.01, -1) == ('LONG_UNWINDING', 'BEARISH')
-    assert cb(15.0, 100_000_000) == ('LONG_BUILDUP', 'BULLISH')
-    assert cb(-15.0, 100_000_000) == ('SHORT_BUILDUP', 'BEARISH')
-    print("  Buildup classification: 13/13 cases -- OK")
+    assert cb(2.0, 1.0) == ('LONG_BUILDUP', 'BULLISH')
+    assert cb(-2.0, 1.0) == ('SHORT_BUILDUP', 'BEARISH')
+    assert cb(-1.0, -1.0) == ('LONG_UNWINDING', 'BEARISH')
+    assert cb(1.0, -1.0) == ('SHORT_COVERING', 'BULLISH')
+    assert cb(0.0, 0.0) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(0.0, 1.0) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(0.0, -1.0) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(5.0, 0.09) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(-5.0, -0.09) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(0.04, 1.0) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(-0.04, -1.0) == ('NEUTRAL', 'NEUTRAL')
+    assert cb(0.05, 0.1) == ('LONG_BUILDUP', 'BULLISH')
+    assert cb(-0.05, 0.1) == ('SHORT_BUILDUP', 'BEARISH')
+    assert cb(1.0, None) == ('NEUTRAL', 'NEUTRAL')
+    print("  Buildup classification: neutral bands and quadrants -- OK")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -471,35 +472,29 @@ def test_history_tracking():
 
 
 # ─────────────────────────────────────────────────────────────
-#   TEST 11: _get_prev_oi (first-scan fix)
+#   TEST 11: Previous-session futures OI baseline
 # ─────────────────────────────────────────────────────────────
 
-def test_prev_oi_first_scan():
+def test_previous_session_oi_baseline():
     fa = FuturesOIAnalyzer()
-
-    # First call: no history -> returns current_oi (not 0)
-    prev = fa._get_prev_oi("TEST", "2026-02-26", 1_000_000)
-    assert prev == 1_000_000, f"First scan should return current_oi to avoid false signals, got {prev}"
-
-    # Store one snapshot
-    fa._store_oi("TEST", "2026-02-26", 1_000_000, 100.0)
-    # Still only 1 entry -> returns current_oi
-    prev2 = fa._get_prev_oi("TEST", "2026-02-26", 1_050_000)
-    assert prev2 == 1_050_000, f"Needs >=2 snapshots, got {prev2}"
-
-    # Store second
-    fa._store_oi("TEST", "2026-02-26", 1_050_000, 102.0)
-    # Now 2 entries -> returns 2nd-to-last
-    prev3 = fa._get_prev_oi("TEST", "2026-02-26", 1_100_000)
-    assert prev3 == 1_000_000, f"Should return first snapshot OI, got {prev3}"
-
-    # Verify max 50 entries
-    for i in range(60):
-        fa._store_oi("HEAVY", "2026-02-26", i * 1000, 100.0)
-    key = "HEAVY:2026-02-26"
-    assert len(fa._historical_oi[key]) == 50
-
-    print("  _get_prev_oi (first-scan fix): OK")
+    today = datetime.now().date()
+    prior_day = today - timedelta(days=1)
+    candle = MagicMock(oi=850_000, timestamp=f"{prior_day.isoformat()} 15:30:00")
+    current_day_candle = MagicMock(oi=1_000_000, timestamp=f"{today.isoformat()} 15:30:00")
+    client = MagicMock()
+    client.get_historical_data = AsyncMock(return_value=[candle, current_day_candle])
+    inst = {
+        "name": "TEST", "expiry": (today + timedelta(days=7)).isoformat(),
+        "instrument_token": 101,
+    }
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(fa._load_previous_session_oi(client, [inst]))
+    assert fa._previous_session_oi[f"TEST:{inst['expiry']}"] == (850_000, prior_day.isoformat())
+    client.get_historical_data.assert_awaited_once()
+    assert client.get_historical_data.await_args.kwargs["oi"] is True
+    assert FuturesOIAnalyzer._classify_buildup(1.0, None) == ("NEUTRAL", "NEUTRAL")
+    print("  Previous-session OI baseline: prior completed candle selected -- OK")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -576,21 +571,20 @@ def test_model_serialization():
 def test_futures_analyze_mock():
     fa = FuturesOIAnalyzer()
 
-    # Pre-store prev OI baselines
-    fa._store_oi("NIFTY", "2026-02-26", 9_000_000, 24000)
-    fa._store_oi("NIFTY", "2026-02-26", 9_500_000, 24050)
-    fa._store_oi("RELIANCE", "2026-02-26", 4_000_000, 2450)
-    fa._store_oi("RELIANCE", "2026-02-26", 4_500_000, 2480)
+    today = date.today()
+    previous_session = today - timedelta(days=1)
+    current_expiry = (today + timedelta(days=7)).isoformat()
+    next_expiry = (today + timedelta(days=35)).isoformat()
 
     mock_instruments = [
         {"name": "NIFTY", "instrument_token": 1, "instrument_type": "FUT",
-         "expiry": "2026-02-26", "lot_size": 25, "exchange": "NFO",
+         "expiry": current_expiry, "lot_size": 25, "exchange": "NFO",
          "tradingsymbol": "NIFTY26FEBFUT"},
         {"name": "RELIANCE", "instrument_token": 2, "instrument_type": "FUT",
-         "expiry": "2026-02-26", "lot_size": 250, "exchange": "NFO",
+         "expiry": current_expiry, "lot_size": 250, "exchange": "NFO",
          "tradingsymbol": "RELIANCE26FEBFUT"},
         {"name": "RELIANCE", "instrument_token": 3, "instrument_type": "FUT",
-         "expiry": "2026-03-26", "lot_size": 250, "exchange": "NFO",
+         "expiry": next_expiry, "lot_size": 250, "exchange": "NFO",
          "tradingsymbol": "RELIANCE26MARFUT"},
     ]
 
@@ -616,6 +610,14 @@ def test_futures_analyze_mock():
     client.get_instruments = AsyncMock(return_value=mock_instruments)
     client.get_quote = AsyncMock(return_value=mock_quotes)
 
+    async def historical_oi(instrument_token, **kwargs):
+        oi_by_token = {1: 9_000_000, 2: 4_000_000}
+        if instrument_token not in oi_by_token:
+            return []
+        return [MagicMock(timestamp=f"{previous_session.isoformat()} 15:30:00", oi=oi_by_token[instrument_token])]
+
+    client.get_historical_data = AsyncMock(side_effect=historical_oi)
+
     report = asyncio.get_event_loop().run_until_complete(fa.analyze(client))
 
     assert isinstance(report, FuturesOIReport)
@@ -623,6 +625,12 @@ def test_futures_analyze_mock():
     assert len(report.index_futures) >= 1, "Should have NIFTY index future"
     rel_entries = [e for e in report.stock_futures if e.symbol == 'RELIANCE']
     assert len(rel_entries) >= 1, "Should have RELIANCE stock future"
+    nearest_rel = rel_entries[0]
+    assert nearest_rel.oi_baseline_available is True
+    assert nearest_rel.oi_baseline_date == previous_session.isoformat()
+    assert nearest_rel.prev_oi == 4_000_000
+    assert nearest_rel.oi_change == 1_000_000
+    assert nearest_rel.buildup == 'LONG_BUILDUP'
 
     rel_roll = [r for r in report.rollover_data if r.symbol == 'RELIANCE']
     assert len(rel_roll) == 1, "Should have RELIANCE rollover"
@@ -936,6 +944,7 @@ def test_backend_js_field_parity():
 
     fe_d = fd['stock_futures'][0]
     fe_js_fields = ['symbol', 'sector', 'expiry', 'ltp', 'change_pct', 'oi',
+                    'prev_oi', 'oi_baseline_available', 'oi_baseline_date',
                     'oi_change', 'oi_change_pct', 'volume', 'value_lakhs', 'buildup']
     for f in fe_js_fields:
         assert f in fe_d, f"stock_futures entry missing field '{f}' used by JS"
@@ -1040,7 +1049,7 @@ if __name__ == '__main__':
         ("TEST  8: Buildup signal detection", test_buildup_signal_detection),
         ("TEST  9: Bias computation", test_bias_computation),
         ("TEST 10: History tracking", test_history_tracking),
-        ("TEST 11: _get_prev_oi (first-scan fix)", test_prev_oi_first_scan),
+        ("TEST 11: Previous-session futures OI baseline", test_previous_session_oi_baseline),
         ("TEST 12: Model serialization", test_model_serialization),
         ("TEST 13: Futures analyze (mock client)", test_futures_analyze_mock),
         ("TEST 14: Options analyze (mock client)", test_options_analyze_mock),

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kite Trading Agent</title>
+    <title>VerquoAI | Trading Workspace</title>
     <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -11,7 +11,7 @@
 <body>
     <header class="header">
         <div class="header-left">
-            <span class="logo">Kite Trading Agent</span>
+            <a class="logo" href="/" aria-label="VerquoAI home">VerquoAI™</a>
             <span id="status-badge" class="status-badge status-offline">OFFLINE</span>
             {% if zerodha_id %}<span id="t-zid" class="status-badge" style="color:var(--t-a)">{{ zerodha_id }}</span>{% endif %}
         </div>
@@ -90,6 +90,7 @@
                         <div id="positions-count" class="metric-label">0 positions</div>
                     </div>
                 </div>
+
                 <div class="grid grid-2">
                     <div class="card">
                         <div class="card-title">Positions</div>
@@ -446,6 +447,11 @@
                     <button class="btn btn-primary btn-sm" onclick="runFuturesOIScan()">Scan Futures OI</button>
                     <span id="fut-oi-status" style="font-size:12px;color:var(--text-muted)">No data yet</span>
                 </div>
+                <p style="font-size:11px;color:var(--text-muted);margin:0 0 12px">
+                    Price change is futures LTP vs the quote's previous close. OI change compares current OI to the last completed daily OI candle for the nearest expiry. Buildup uses the same neutral bands as Market Flow: 0.05% price and 0.1% OI.
+                    Select any symbol to inspect its contract data and baseline.
+                </p>
+                <div id="fut-oi-baseline-note" style="font-size:11px;color:var(--text-muted);margin:0 0 12px"></div>
                 <!-- Market Sentiment -->
                 <div class="card" style="margin-bottom:16px" id="fut-sentiment-card">
                     <div class="card-title">Market Futures Sentiment</div>
@@ -812,6 +818,10 @@
                 </div>
             </div>
             <div class="mf-banner" id="mf-banner" hidden></div>
+            <p class="mf-dim" style="margin:8px 12px;font-size:11px">
+                Buildup compares cash price with its previous close and nearest-futures OI with the previous completed session.
+                Moves under 0.05% in price or 0.1% in OI are neutral; above those bands, price/OI direction determines buildup, covering, or unwinding.
+            </p>
             <div class="mf-main">
                 <div class="mf-stage" id="mf-stage" style="position:relative;height:640px;background:#05080c">
                     <canvas id="mf-canvas"></canvas>
@@ -1239,16 +1249,6 @@
                 </div>
             </div>
 
-            <!-- Deep Profile Modal -->
-            <div id="deep-profile-modal" class="modal-overlay" style="display:none">
-                <div class="modal-content" style="max-width:800px;max-height:90vh;overflow-y:auto">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-                        <h3 id="deep-profile-title" style="margin:0;color:var(--primary)">Stock Profile</h3>
-                        <button class="btn btn-outline btn-sm" onclick="closeDeepProfile()">&times; Close</button>
-                    </div>
-                    <div id="deep-profile-body"></div>
-                </div>
-            </div>
         </div>
 
         <!-- Charts Tab -->
@@ -2526,6 +2526,16 @@
                 <button class="btn btn-outline" onclick="hideModal('modal-add-strategy')">Cancel</button>
                 <button class="btn btn-primary" onclick="addStrategy()">Add Strategy</button>
             </div>
+        </div>
+    </div>
+
+    <div id="modal-futures-oi-detail" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-futures-oi-detail')">
+        <div class="modal" style="max-width:620px;width:calc(100% - 32px)">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
+                <h2 id="fut-oi-detail-title" style="margin:0">Futures OI detail</h2>
+                <button class="btn btn-outline btn-sm" onclick="hideModal('modal-futures-oi-detail')">Close</button>
+            </div>
+            <div id="fut-oi-detail-body"></div>
         </div>
     </div>
 

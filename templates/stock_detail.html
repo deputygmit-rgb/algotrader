@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ symbol }} — VerquoAI Stock Research</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
+    <link rel="stylesheet" href="/static/css/stock_detail.css?v={{ css_version }}">
+    <script src="/static/js/stock_detail.js?v={{ js_version }}" defer></script>
+</head>
+<body class="stock-detail-page" data-symbol="{{ symbol }}">
+    <header class="header">
+        <div class="header-left">
+            <a class="logo" href="/app">VerquoAI™</a>
+            <span class="status-badge status-connected">STOCK RESEARCH</span>
+        </div>
+        <div class="header-right">
+            <a class="btn btn-outline btn-sm" href="/app">Back to workspace</a>
+        </div>
+    </header>
+
+    <main class="stock-detail-main">
+        <section class="stock-detail-hero">
+            <div>
+                <div class="stock-detail-kicker">EQUITY DEEP DIVE · NSE</div>
+                <h1 id="stock-title">{{ symbol }}</h1>
+                <p id="stock-subtitle">Loading market context, fundamentals, filings and company updates…</p>
+            </div>
+            <div class="stock-source-actions">
+                <a id="screener-link" class="btn btn-outline btn-sm" target="_blank" rel="noopener noreferrer">Open Screener</a>
+                <a id="nse-company-link" class="btn btn-outline btn-sm" target="_blank" rel="noopener noreferrer">NSE company page</a>
+                <a class="btn btn-outline btn-sm" href="https://www.nseindia.com/companies-listing/corporate-filings-shareholding-pattern" target="_blank" rel="noopener noreferrer">NSE Shareholding</a>
+                <a class="btn btn-outline btn-sm" href="https://www.nseindia.com/companies-listing/corporate-filings-announcements" target="_blank" rel="noopener noreferrer">NSE Announcements</a>
+            </div>
+        </section>
+
+        <div id="stock-load-status" class="stock-load-status" role="status">Loading stock analysis…</div>
+
+        <section class="stock-terminal">
+            <div class="stock-terminal-head">
+                <div>
+                    <div class="stock-terminal-label">PRICE ACTION · TECHNICAL STRUCTURE</div>
+                    <div class="stock-terminal-title">Market chart</div>
+                </div>
+                <div class="stock-chart-ranges" role="group" aria-label="Chart time range">
+                    <button class="stock-range-btn" data-days="30">1M</button>
+                    <button class="stock-range-btn" data-days="90">3M</button>
+                    <button class="stock-range-btn active" data-days="180">6M</button>
+                    <button class="stock-range-btn" data-days="365">1Y</button>
+                </div>
+            </div>
+            <div class="stock-chart-legend">
+                <span><i class="legend-price"></i> PRICE</span>
+                <span><i class="legend-sma"></i> SMA 20</span>
+                <span><i class="legend-sma50"></i> SMA 50</span>
+                <span><i class="legend-sma200"></i> SMA 200</span>
+                <span><i class="legend-ema"></i> EMA 9</span>
+                <span><i class="legend-volume"></i> VOLUME</span>
+                <span><i class="legend-rsi"></i> RSI 14</span>
+                <span class="stock-chart-source">OHLC history · Zerodha market data</span>
+            </div>
+            <div class="stock-chart-shell">
+                <canvas id="stock-price-chart" aria-label="Historical candlestick chart with moving averages, volume and RSI"></canvas>
+                <div id="stock-chart-empty" class="stock-chart-empty">Loading historical candles…</div>
+            </div>
+            <div class="stock-chart-foot">
+                <span id="stock-chart-range-label">6 month view</span>
+                <span>Hover / tap chart for candle values</span>
+            </div>
+        </section>
+
+        <section class="card stock-detail-section stock-technical-card">
+            <div class="card-title">Technical dashboard</div>
+            <div id="technical-summary" class="stock-section-loading">Loading technical analysis…</div>
+        </section>
+
+        <section class="card stock-detail-section">
+            <div class="card-title">Fundamentals &amp; ratios</div>
+            <p class="stock-section-note">Ratios and financial highlights are shown as reported by Screener.in. Values and periods depend on source availability.</p>
+            <div id="fundamentals-summary" class="stock-section-loading">Loading available ratios…</div>
+            <div class="stock-subheading">Detailed reported metrics</div>
+            <div id="fundamental-ratios" class="stock-section-loading">Loading financial highlights…</div>
+        </section>
+
+        <section class="stock-detail-grid stock-statements">
+            <article class="card">
+                <div class="card-title">Quarterly results · EPS &amp; earnings trend</div>
+                <div id="quarterly-results" class="stock-section-loading">Loading quarterly results…</div>
+            </article>
+            <article class="card">
+                <div class="card-title">Profit &amp; loss</div>
+                <div id="profit-loss" class="stock-section-loading">Loading annual results…</div>
+            </article>
+            <article class="card">
+                <div class="card-title">Balance sheet</div>
+                <div id="balance-sheet" class="stock-section-loading">Loading balance-sheet data…</div>
+            </article>
+            <article class="card">
+                <div class="card-title">Cash flow</div>
+                <div id="cash-flow" class="stock-section-loading">Loading cash-flow data…</div>
+            </article>
+        </section>
+
+        <section class="card stock-detail-section">
+            <div class="card-title">Shareholding pattern</div>
+            <p class="stock-section-note">Promoter, FII, DII and public holdings when reported in the source data.</p>
+            <div id="shareholding-pattern" class="stock-section-loading">Loading shareholding data…</div>
+        </section>
+
+        <section class="card stock-detail-section">
+            <div class="card-title">Peer comparison</div>
+            <p class="stock-section-note">Peer data is provided by Screener.in. Compare valuation and operating metrics in context; sector peers may not be directly comparable.</p>
+            <div id="peers" class="stock-section-loading">Loading peer data…</div>
+        </section>
+
+        <section class="stock-detail-grid">
+            <article class="card">
+                <div class="card-title">Latest news &amp; NSE announcements</div>
+                <div id="company-news" class="stock-section-loading">Loading news and announcements…</div>
+            </article>
+            <article class="card">
+                <div class="card-title">Annual reports &amp; filings</div>
+                <div id="company-reports" class="stock-section-loading">Loading reports…</div>
+            </article>
+        </section>
+
+        <footer class="stock-detail-footer">
+            <span id="stock-data-attribution">Source attribution and update times will appear here.</span>
+            <span>Research information only; verify filings and source periods before making decisions.</span>
+        </footer>
+    </main>
+</body>
+</html>

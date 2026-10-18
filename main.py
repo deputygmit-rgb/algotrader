@@ -11,7 +11,7 @@ from src.utils.logger import setup_logging
 def main() -> None:
     setup_logging()
 
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5001))
     host = "0.0.0.0"
 
     uvicorn.run(

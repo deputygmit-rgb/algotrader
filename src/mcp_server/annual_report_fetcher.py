@@ -182,35 +182,70 @@ async def _fetch_screener_financials(symbol: str) -> dict[str, Any]:
                 # Try standalone
                 resp = await client.get(f"https://www.screener.in/company/{symbol}/")
                 if resp.status_code != 200:
-                    return financials
+                    return {"error": f"Screener.in returned HTTP {resp.status_code}"}
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+            financials = _extract_screener_financials(resp.text)
+            if not financials.keys() - {"company_name"}:
+                return {"error": "Screener.in returned no financial data; the page may require sign-in or the symbol may be unavailable"}
+            return financials
+        except Exception as e:
+            return {"error": f"Unable to fetch Screener.in financials: {e}"}
 
-            # Extract key ratios from the top section
-            ratios_section = soup.select("#top-ratios li")
-            for li in ratios_section:
-                name_el = li.select_one(".name")
-                value_el = li.select_one(".value, .number")
-                if name_el and value_el:
-                    name = name_el.get_text(strip=True)
-                    value = value_el.get_text(strip=True)
-                    financials[name] = value
+    return {"error": "Unable to fetch Screener.in financials"}
 
-            # Extract pros/cons
-            pros = [li.get_text(strip=True) for li in soup.select(".pros li")]
-            cons = [li.get_text(strip=True) for li in soup.select(".cons li")]
-            if pros:
-                financials["pros"] = pros
-            if cons:
-                financials["cons"] = cons
 
-            # Company name
-            title_el = soup.select_one("h1")
-            if title_el:
-                financials["company_name"] = title_el.get_text(strip=True)
+def _extract_screener_financials(page_html: str) -> dict[str, Any]:
+    """Extract available top ratios, statements, shareholding and peers from Screener HTML."""
+    soup = BeautifulSoup(page_html, "html.parser")
+    financials: dict[str, Any] = {}
 
-        except Exception:
-            pass
+    for li in soup.select("#top-ratios li"):
+        name_el = li.select_one(".name")
+        value_el = li.select_one(".value, .number")
+        if name_el and value_el:
+            financials[name_el.get_text(" ", strip=True)] = value_el.get_text(" ", strip=True)
+
+    pros = [li.get_text(" ", strip=True) for li in soup.select(".pros li")]
+    cons = [li.get_text(" ", strip=True) for li in soup.select(".cons li")]
+    if pros:
+        financials["pros"] = pros
+    if cons:
+        financials["cons"] = cons
+
+    title_el = soup.select_one("h1")
+    if title_el:
+        financials["company_name"] = title_el.get_text(" ", strip=True)
+
+    sections = {
+        "quarterly_results": ("quarters", "Quarterly Results"),
+        "profit_loss": ("profit-loss", "Profit & Loss"),
+        "balance_sheet": ("balance-sheet", "Balance Sheet"),
+        "cash_flow": ("cash-flow", "Cash Flow"),
+        "shareholding_pattern": ("shareholding", "Shareholding Pattern"),
+        "peers": ("peers", "Peers"),
+    }
+    for key, (section_id, label) in sections.items():
+        section = soup.select_one(f"#{section_id}")
+        table = section.select_one("table") if section else None
+        if not table:
+            continue
+
+        headers = [cell.get_text(" ", strip=True) for cell in table.select("thead tr th")]
+        rows: list[dict[str, Any]] = []
+        for row in table.select("tbody tr"):
+            cells = row.find_all(["th", "td"], recursive=False)
+            if len(cells) < 2:
+                continue
+            metric = cells[0].get_text(" ", strip=True)
+            values = [cell.get_text(" ", strip=True) for cell in cells[1:]]
+            if metric and any(values):
+                rows.append({"metric": metric, "values": values})
+        if rows:
+            financials[key] = {
+                "label": label,
+                "periods": headers[1:] if len(headers) > 1 else [],
+                "rows": rows,
+            }
 
     return financials
 
@@ -305,7 +340,15 @@ async def fetch_annual_reports(symbol: str, limit: int = 10) -> dict[str, Any]:
         elif not url:
             unique_reports.append(r)
 
-    financial_highlights = screener if isinstance(screener, dict) else {}
+    financial_highlights = (
+        screener if isinstance(screener, dict) and not screener.get("error") else {}
+    )
+    financial_highlights_error = (
+        screener.get("error") if isinstance(screener, dict) else
+        f"Unable to fetch Screener.in financials: {screener}"
+        if isinstance(screener, Exception) else
+        "Screener.in financial highlights were unavailable"
+    )
 
     return {
         "symbol": symbol,
@@ -314,5 +357,6 @@ async def fetch_annual_reports(symbol: str, limit: int = 10) -> dict[str, Any]:
         "total_reports": len(unique_reports),
         "reports": unique_reports[:limit],
         "financial_highlights": financial_highlights,
+        "financial_highlights_error": financial_highlights_error if not financial_highlights else "",
         "sources_queried": ["BSE India", "NSE India", "Google Search", "TrendLyne", "Screener.in"],
     }

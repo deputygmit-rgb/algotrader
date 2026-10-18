@@ -48,7 +48,10 @@ body {
     font-weight: 700;
     color: var(--accent-blue);
     letter-spacing: -0.5px;
+    text-decoration: none;
 }
+
+.logo:hover { color: var(--accent-green); }
 
 .status-badge {
     padding: 4px 12px;

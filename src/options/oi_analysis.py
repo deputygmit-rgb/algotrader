@@ -26,6 +26,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from src.analysis.fno_flow import FLAT_THRESHOLD_PCT, OI_NEUTRAL_PCT
+from src.data.models import Interval
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -87,6 +89,8 @@ class FuturesOIEntry(BaseModel):
     change_pct: float = 0.0
     oi: int = 0
     prev_oi: int = 0
+    oi_baseline_available: bool = False
+    oi_baseline_date: str = ""
     oi_change: int = 0
     oi_change_pct: float = 0.0
     volume: int = 0
@@ -212,7 +216,8 @@ class FuturesOIAnalyzer:
     def __init__(self) -> None:
         self._instruments: dict[str, list[dict[str, Any]]] = {}   # symbol → list of FUT instruments (per expiry)
         self._last_report: Optional[FuturesOIReport] = None
-        self._historical_oi: dict[str, list[dict[str, Any]]] = {}  # symbol → time-series
+        self._previous_session_oi: dict[str, tuple[int, str]] = {}
+        self._oi_baseline_day = ""
 
     # ── Public API ────────────────────────────────────────────
 
@@ -226,10 +231,13 @@ class FuturesOIAnalyzer:
         if not instruments:
             return FuturesOIReport(timestamp=datetime.now().isoformat())
 
-        # 2 – Batch quote fetch (Kite allows 500 instruments per call)
+        # 2 – Load the last completed daily OI candle for each nearest contract.
+        await self._load_previous_session_oi(client, instruments)
+
+        # 3 – Batch quote fetch (Kite allows 500 instruments per call)
         quotes = await self._fetch_quotes(client, instruments)
 
-        # 3 – Build entries per symbol
+        # 4 – Build entries per symbol
         entries: list[FuturesOIEntry] = []
         rollover_map: dict[str, list[FuturesOIEntry]] = defaultdict(list)
 
@@ -244,18 +252,19 @@ class FuturesOIAnalyzer:
             ltp = q.get("last_price", 0.0)
             volume = q.get("volume", 0)
             oi = q.get("oi", 0)
-            oi_high = q.get("oi_day_high", 0)
-            oi_low = q.get("oi_day_low", 0)
             ohlc = q.get("ohlc", {})
             prev_close = ohlc.get("close", ltp) if isinstance(ohlc, dict) else ltp
 
-            # Previous day OI from historical cache or approximate from oi_day_low
-            prev_oi = self._get_prev_oi(sym, expiry, oi)
-            oi_change = oi - prev_oi
-            oi_change_pct = (oi_change / prev_oi * 100) if prev_oi > 0 else 0.0
+            baseline = self._previous_session_oi.get(f"{sym}:{expiry}")
+            prev_oi, baseline_date = baseline if baseline else (0, "")
+            oi_baseline_available = baseline is not None and prev_oi > 0
+            oi_change = oi - prev_oi if oi_baseline_available else 0
+            oi_change_pct = (oi_change / prev_oi * 100) if oi_baseline_available else 0.0
             price_change_pct = ((ltp - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
 
-            buildup, sentiment = self._classify_buildup(price_change_pct, oi_change)
+            buildup, sentiment = self._classify_buildup(
+                price_change_pct, oi_change_pct if oi_baseline_available else None
+            )
 
             entry = FuturesOIEntry(
                 symbol=sym,
@@ -265,6 +274,8 @@ class FuturesOIAnalyzer:
                 change_pct=round(price_change_pct, 2),
                 oi=oi,
                 prev_oi=prev_oi,
+                oi_baseline_available=oi_baseline_available,
+                oi_baseline_date=baseline_date,
                 oi_change=oi_change,
                 oi_change_pct=round(oi_change_pct, 2),
                 volume=volume,
@@ -276,9 +287,6 @@ class FuturesOIAnalyzer:
             )
             entries.append(entry)
             rollover_map[sym].append(entry)
-
-            # Cache OI for next run
-            self._store_oi(sym, expiry, oi, ltp)
 
         # 4 – Separate index vs stock
         index_syms = {"NIFTY", "BANKNIFTY", "NIFTY 50", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}
@@ -378,43 +386,80 @@ class FuturesOIAnalyzer:
                 logger.error("futures_quote_error", batch_start=i, error=str(e))
         return quotes
 
-    def _get_prev_oi(self, symbol: str, expiry: str, current_oi: int) -> int:
-        """Get previous OI from cache. Returns current_oi if unavailable (no false signals on first scan)."""
-        key = f"{symbol}:{expiry}"
-        history = self._historical_oi.get(key, [])
-        if len(history) >= 2:
-            return history[-2].get("oi", 0)
-        # First scan: return current_oi so oi_change=0, preventing false buildup signals
-        return current_oi
+    async def _load_previous_session_oi(
+        self, client: Any, instruments: list[dict[str, Any]]
+    ) -> None:
+        """Load the previous completed-session OI baseline for nearest expiries."""
+        today = date.today()
+        today_key = today.isoformat()
+        if self._oi_baseline_day != today_key:
+            self._previous_session_oi.clear()
+            self._oi_baseline_day = today_key
 
-    def _store_oi(self, symbol: str, expiry: str, oi: int, ltp: float) -> None:
-        key = f"{symbol}:{expiry}"
-        if key not in self._historical_oi:
-            self._historical_oi[key] = []
-        self._historical_oi[key].append({
-            "timestamp": datetime.now().isoformat(),
-            "oi": oi, "ltp": ltp,
-        })
-        # Keep last 50 snapshots
-        if len(self._historical_oi[key]) > 50:
-            self._historical_oi[key] = self._historical_oi[key][-50:]
+        nearest: dict[str, dict[str, Any]] = {}
+        for inst in instruments:
+            expiry = str(inst.get("expiry") or "")[:10]
+            if not expiry or expiry < today_key:
+                continue
+            symbol = str(inst.get("name") or "").upper()
+            if symbol not in nearest or expiry < str(nearest[symbol].get("expiry") or "")[:10]:
+                nearest[symbol] = inst
+
+        pending = [
+            inst for symbol, inst in nearest.items()
+            if f"{symbol}:{str(inst.get('expiry') or '')[:10]}" not in self._previous_session_oi
+        ]
+        from_date = (today - timedelta(days=14)).isoformat()
+
+        async def load(inst: dict[str, Any]) -> None:
+            symbol = str(inst.get("name") or "").upper()
+            expiry = str(inst.get("expiry") or "")[:10]
+            key = f"{symbol}:{expiry}"
+            try:
+                candles = await client.get_historical_data(
+                    instrument_token=inst["instrument_token"],
+                    interval=Interval.DAY,
+                    from_date=from_date,
+                    to_date=today_key,
+                    oi=True,
+                )
+            except Exception as e:
+                logger.warning("futures_oi_baseline_failed", symbol=symbol, expiry=expiry, error=str(e))
+                return
+
+            prior = [
+                candle for candle in (candles or [])
+                if candle.oi is not None and str(candle.timestamp)[:10] < today_key
+            ]
+            if prior:
+                candle = max(prior, key=lambda item: str(item.timestamp))
+                self._previous_session_oi[key] = (int(candle.oi or 0), str(candle.timestamp)[:10])
+
+        for start in range(0, len(pending), 6):
+            await asyncio.gather(*(load(inst) for inst in pending[start:start + 6]))
 
     @staticmethod
-    def _classify_buildup(price_change_pct: float, oi_change: int) -> tuple[str, str]:
+    def _classify_buildup(
+        price_change_pct: float, oi_change_pct: Optional[float]
+    ) -> tuple[str, str]:
         """
-        Classify OI + Price movement into one of 4 buildup types.
+        Classify price and OI percent changes using Market Flow's neutral bands.
         Price ↑ + OI ↑ = Long Buildup     (BULLISH)
         Price ↓ + OI ↑ = Short Buildup    (BEARISH)
         Price ↓ + OI ↓ = Long Unwinding   (BEARISH)
         Price ↑ + OI ↓ = Short Covering   (BULLISH)
         """
-        if oi_change > 0 and price_change_pct > 0:
+        if oi_change_pct is None:
+            return "NEUTRAL", "NEUTRAL"
+        if abs(price_change_pct) < FLAT_THRESHOLD_PCT or abs(oi_change_pct) < OI_NEUTRAL_PCT:
+            return "NEUTRAL", "NEUTRAL"
+        if oi_change_pct > 0 and price_change_pct > 0:
             return "LONG_BUILDUP", "BULLISH"
-        elif oi_change > 0 and price_change_pct < 0:
+        elif oi_change_pct > 0 and price_change_pct < 0:
             return "SHORT_BUILDUP", "BEARISH"
-        elif oi_change < 0 and price_change_pct < 0:
+        elif oi_change_pct < 0 and price_change_pct < 0:
             return "LONG_UNWINDING", "BEARISH"
-        elif oi_change < 0 and price_change_pct > 0:
+        elif oi_change_pct < 0 and price_change_pct > 0:
             return "SHORT_COVERING", "BULLISH"
         return "NEUTRAL", "NEUTRAL"
 
