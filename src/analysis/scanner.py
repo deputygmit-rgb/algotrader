@@ -305,6 +305,8 @@ class StockScanner:
                     result = _sanitize_numpy(result)
 
                     results[symbol] = result
+                    # commit immediately: a scan cancelled part-way keeps what it analysed
+                    self._analysis_cache[symbol] = result
                     auth_failures = 0
                     if on_progress:
                         await on_progress(i, total_symbols, symbol)
@@ -392,56 +394,51 @@ class StockScanner:
     # On-Demand Single Stock Analysis (for any NSE symbol)
     # ────────────────────────────────────────────────────────────
 
-    async def analyze_stock_on_demand(self, client: Any, symbol: str) -> dict[str, Any]:
+    def is_fresh(self, symbol: str) -> bool:
+        """Analysed today (each scan or refresh restamps ``analyzed_at``)."""
+        stamp = str((self._analysis_cache.get(symbol) or {}).get("analyzed_at") or "")
+        return stamp[:10] == datetime.now().strftime("%Y-%m-%d") and symbol in self._cache
+
+    async def analyze_stock_on_demand(self, client: Any, symbol: str, force: bool = False) -> dict[str, Any]:
         """
-        Fetch historical data and run full analysis for any NSE symbol,
-        even if it wasn't part of the last scan. Result is cached for
-        subsequent deep profile calls.
+        Deep profile for any NSE symbol, served from cache when it was analysed
+        today (background scans and the portfolio warm-up keep it current), or
+        refreshed now otherwise. A refresh reuses today's daily history when it
+        is already loaded, so it costs one quote call instead of a history
+        download. ``force`` re-analyses even a fresh entry.
         """
         symbol = symbol.upper().strip()
 
-        # If already in cache from a recent scan, return deep profile directly
-        if symbol in self._analysis_cache and symbol in self._cache:
-            return self.get_deep_profile(symbol)
+        if not force and self.is_fresh(symbol):
+            return {**self.get_deep_profile(symbol), "cache": "hit"}
 
         # Resolve token
         global _ALL_NSE_TOKENS
         token = _ALL_NSE_TOKENS.get(symbol)
         if not token:
-            # Need to fetch full instrument list
-            try:
-                instruments = await client.get_instruments("NSE")
-                for inst in instruments:
-                    if inst.instrument_type in ("EQ", ""):
-                        _ALL_NSE_TOKENS[inst.tradingsymbol] = inst.instrument_token
-                token = _ALL_NSE_TOKENS.get(symbol)
-            except Exception as e:
-                return {"error": f"Failed to resolve token for {symbol}: {e}"}
-
+            token = (await self._resolve_tokens(client, [symbol])).get(symbol)
         if not token:
+            if symbol in self._analysis_cache and symbol in self._cache:
+                return {**self.get_deep_profile(symbol), "cache": "stale"}
             return {"error": f"Symbol '{symbol}' not found on NSE"}
 
-        # Fetch historical data
         to_date = datetime.now().strftime("%Y-%m-%d")
         from_date = (datetime.now() - timedelta(days=HISTORY_CALENDAR_DAYS)).strftime("%Y-%m-%d")
 
         try:
-            candles = await client.get_historical_data(
-                instrument_token=token,
-                interval=self._get_interval("day"),
-                from_date=from_date,
-                to_date=to_date,
-            )
-            if not candles or len(candles) < 10:
+            live_quotes = {}
+            if self._history_day.get(symbol) == to_date or self._history_day.get(BENCHMARK_QUOTE_KEY) == to_date:
+                live_quotes = await self._fetch_quotes(client, [f"NSE:{symbol}", BENCHMARK_QUOTE_KEY])
+            df = await self._daily_history(client, symbol, token, from_date, to_date, live_quotes)
+            if df is None or len(df) < 10:
                 return {"error": f"Insufficient historical data for {symbol}"}
 
-            df = self._candles_to_df(candles)
-            self._cache[symbol] = df
-
-            # Fetch the benchmark if missing or older than today's data
+            # Benchmark: once per day from history, then kept current from the quote
             bench = self._benchmark_data
-            if bench is None or bench.empty or str(bench["timestamp"].iloc[-1])[:10] < to_date:
-                try:
+            try:
+                if self._history_day.get(BENCHMARK_QUOTE_KEY) == to_date and bench is not None:
+                    self._benchmark_data = with_live_daily_bar(bench, live_quotes.get(BENCHMARK_QUOTE_KEY), to_date)
+                else:
                     bench_candles = await client.get_historical_data(
                         instrument_token=256265,
                         interval=self._get_interval("day"),
@@ -450,8 +447,9 @@ class StockScanner:
                     )
                     if bench_candles:
                         self._benchmark_data = self._candles_to_df(bench_candles)
-                except Exception:
-                    pass
+                        self._history_day[BENCHMARK_QUOTE_KEY] = to_date
+            except Exception:
+                pass
 
             # Run full analysis
             indicators = compute_all_indicators(df, self._benchmark_data)
@@ -472,18 +470,100 @@ class StockScanner:
             }
             result = _sanitize_numpy(result)
             self._analysis_cache[symbol] = result
-
-            # Return deep profile
-            return self.get_deep_profile(symbol)
+            return {**self.get_deep_profile(symbol), "cache": "refreshed"}
 
         except Exception as e:
             err = str(e)
+            if symbol in self._analysis_cache and symbol in self._cache:
+                # serve the older analysis rather than nothing; the page shows its date
+                return {**self.get_deep_profile(symbol), "cache": "stale", "refresh_error": err}
             if "insufficient permission" in err.lower():
                 return {
                     "error": "Historical Data API not enabled. Subscribe to the Historical Data add-on in Kite Connect.",
                     "permission_error": True,
                 }
             return {"error": f"Analysis failed for {symbol}: {err}"}
+
+    # ────────────────────────────────────────────────────────────
+    # Disk snapshot (survives restarts)
+    # ────────────────────────────────────────────────────────────
+
+    SNAPSHOT_VERSION = 1
+
+    def snapshot(self) -> dict[str, Any]:
+        """Everything needed to serve analysis instantly after a restart."""
+        def frame(df: Optional[pd.DataFrame]) -> Optional[dict[str, Any]]:
+            if df is None or df.empty:
+                return None
+            out = df.copy()
+            for col in out.columns:
+                if pd.api.types.is_datetime64_any_dtype(out[col]):
+                    out[col] = out[col].astype(str)
+            return {"columns": list(out.columns), "rows": out.to_numpy().tolist()}
+
+        return {
+            "version": self.SNAPSHOT_VERSION,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "analysis": self._analysis_cache,
+            "history": {s: frame(df) for s, df in self._cache.items()},
+            "history_day": self._history_day,
+            "benchmark": frame(self._benchmark_data),
+            "universe_reports": self._universe_reports,
+            "universe_results": {u: list(r) for u, r in self._universe_results.items()},
+            "last_scan_time": self.last_scan_time,
+        }
+
+    def save_snapshot(self, path: str) -> None:
+        import gzip
+        import json
+        import os
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
+            json.dump(self.snapshot(), f, default=str)
+        os.replace(tmp, path)   # atomic: a crash mid-write never leaves a corrupt snapshot
+
+    def load_snapshot(self, path: str) -> bool:
+        import gzip
+        import json
+        import os
+
+        if not os.path.exists(path):
+            return False
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as f:
+                snap = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("scanner_snapshot_unreadable", path=path, error=str(e))
+            return False
+        if snap.get("version") != self.SNAPSHOT_VERSION:
+            return False
+
+        def frame(blob: Optional[dict[str, Any]]) -> Optional[pd.DataFrame]:
+            if not blob:
+                return None
+            df = pd.DataFrame(blob["rows"], columns=blob["columns"])
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
+            return df
+
+        self._analysis_cache.update(snap.get("analysis") or {})
+        for sym, blob in (snap.get("history") or {}).items():
+            df = frame(blob)
+            if df is not None:
+                self._cache[sym] = df
+        self._history_day.update(snap.get("history_day") or {})
+        bench = frame(snap.get("benchmark"))
+        if bench is not None:
+            self._benchmark_data = bench
+        self._universe_reports.update(snap.get("universe_reports") or {})
+        for u, syms in (snap.get("universe_results") or {}).items():
+            self._universe_results[u] = {s: self._analysis_cache[s] for s in syms if s in self._analysis_cache}
+        if snap.get("last_scan_time"):
+            self._last_scan_time = datetime.fromisoformat(snap["last_scan_time"])
+        logger.info("scanner_snapshot_loaded", stocks=len(self._analysis_cache), saved_at=snap.get("saved_at"))
+        return True
 
     # ────────────────────────────────────────────────────────────
     # Deep Single-Stock Profile

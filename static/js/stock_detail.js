@@ -874,7 +874,7 @@
             const message = profile?.error || 'Technical analysis data was not returned.';
             document.getElementById('technical-summary').innerHTML = `
                 <div class="stock-empty">${esc(message)}</div>
-                <p class="stock-section-note"><a href="/app">Return to workspace to check market data access.</a></p>`;
+                <p class="stock-section-note"><a href="/app" onclick="if (history.length > 1) { history.back(); return false; }">Return to workspace to check market data access.</a></p>`;
             return;
         }
         const verdict = profile.verdict || {};
@@ -1238,7 +1238,13 @@
             const status = document.getElementById('strategy-test-status');
             button.disabled = true;
             status.className = 'stock-test-status';
-            status.textContent = 'Downloading history and backtesting — the first run for a stock can take a few minutes…';
+            const startedAt = Date.now();
+            const showElapsed = () => {
+                const s = Math.round((Date.now() - startedAt) / 1000);
+                status.textContent = `Downloading history and backtesting — ${s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'} elapsed (the first run for a stock can take a minute or two)…`;
+            };
+            showElapsed();
+            const ticker = setInterval(showElapsed, 1000);
             document.getElementById('strategy-test-results').innerHTML = '';
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 10 * 60 * 1000);
@@ -1262,41 +1268,90 @@
                 status.textContent = error.name === 'AbortError' ? 'The test took longer than 10 minutes and was stopped.' : `Test failed: ${error.message}`;
             } finally {
                 clearTimeout(timer);
+                clearInterval(ticker);
                 button.disabled = false;
             }
         });
     }
 
     async function load() {
+        bindBack();
         bindChart();
         bindKeyboard();
         bindStrategyTest();
         loadStrategyCatalog();
         startQuotePolling();
         const chartPromise = loadChart();
-        const [researchResult, technicalResult] = await Promise.allSettled([
-            getJson(`/api/research/stock/${encodedSymbol}`),
-            getJson(`/api/analysis/deep/${encodedSymbol}`),
-        ]);
+        // Each section renders as soon as its own data arrives: technical analysis
+        // (usually cached) must not wait for the research sources (external news
+        // and filings sites that can take many seconds).
         const failures = [];
-        if (researchResult.status === 'fulfilled') {
-            renderResearch(researchResult.value);
-        } else {
-            failures.push(`Research: ${researchResult.reason.message}`);
-            renderResearchFailure(researchResult.reason.message);
-        }
-        if (technicalResult.status === 'fulfilled') {
-            renderTechnical(technicalResult.value);
-        } else {
-            failures.push(`Technical analysis: ${technicalResult.reason.message}`);
-            sectionError('technical-summary', technicalResult.reason.message, false);
-        }
         const status = document.getElementById('stock-load-status');
-        status.textContent = failures.length
-            ? `Some data sources could not be loaded: ${failures.join(' · ')}`
-            : 'Analysis loaded. Check source dates and reporting periods before interpreting financial metrics.';
-        status.classList.toggle('stock-load-error', failures.length > 0);
+        const updateStatus = (done) => {
+            status.textContent = failures.length
+                ? `Some data sources could not be loaded: ${failures.join(' · ')}`
+                : done ? 'Analysis loaded. Check source dates and reporting periods before interpreting financial metrics.'
+                    : 'Technical analysis loaded · fetching news, filings and financials…';
+            status.classList.toggle('stock-load-error', failures.length > 0);
+        };
+        const technical = loadTechnical().catch(error => {
+            failures.push(`Technical analysis: ${error.message}`);
+            sectionError('technical-summary', error.message, false);
+        }).finally(() => updateStatus(false));
+        const research = getJson(`/api/research/stock/${encodedSymbol}`).then(renderResearch).catch(error => {
+            failures.push(`Research: ${error.message}`);
+            renderResearchFailure(error.message);
+        });
+        await Promise.allSettled([technical, research]);
+        updateStatus(true);
         await chartPromise;
+    }
+
+    // Technical analysis is served from the analysis cache; a profile from
+    // earlier today comes back at once marked "refreshing" and is re-fetched
+    // a few seconds later so the page updates in place.
+    async function loadTechnical(attempt = 0) {
+        const profile = await getJson(`/api/analysis/deep/${encodedSymbol}`);
+        renderTechnical(profile);
+        showFreshness(profile);
+        if (profile && profile.refreshing && attempt < 3) {
+            setTimeout(() => loadTechnical(attempt + 1).catch(() => {}), 5000);
+        }
+    }
+
+    function showFreshness(profile) {
+        const host = document.getElementById('technical-summary');
+        if (!host || !profile || profile.error) return;
+        const asOf = profile.as_of ? new Date(profile.as_of) : null;
+        const when = asOf && !isNaN(asOf) ? asOf.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : null;
+        const label = profile.refreshing ? `cached ${when ? 'as of ' + when : ''} · refreshing…`
+            : profile.cache === 'hit' ? `cached ${when ? 'as of ' + when : ''}`
+                : profile.cache === 'stale' ? `last analysed ${when ? 'at ' + when : 'earlier'}${profile.refresh_error ? ' (refresh failed)' : ''}`
+                    : `analysed ${when ? 'at ' + when : 'just now'}`;
+        let badge = document.getElementById('technical-freshness');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.id = 'technical-freshness';
+            badge.className = 'stock-freshness';
+            host.prepend(badge);
+        }
+        badge.textContent = label;
+        badge.classList.toggle('refreshing', !!profile.refreshing);
+    }
+
+    // Back returns to the screen the user came from (dashboard tab, sub-view and
+    // scroll are restored there); a direct visit falls back to the workspace.
+    function bindBack() {
+        const back = document.getElementById('stock-back');
+        if (!back) return;
+        back.addEventListener('click', event => {
+            let sameApp = false;
+            try { sameApp = new URL(document.referrer).origin === location.origin; } catch (e) { /* no referrer */ }
+            if (sameApp && history.length > 1) {
+                event.preventDefault();
+                history.back();
+            }
+        });
     }
 
     document.addEventListener('DOMContentLoaded', load);

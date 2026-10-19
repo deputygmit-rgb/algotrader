@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import numpy as np
 import pandas as pd
 
 from src.analysis.intraday_setups import (
@@ -54,28 +55,52 @@ def _daily_context(prior: pd.DataFrame, days: pd.Series) -> dict[str, Any]:
     }
 
 
+def _day_keys(timestamps: pd.Series) -> np.ndarray:
+    """Calendar day of each bar (local wall-clock date, as ``str(ts)[:10]`` gives).
+
+    Datetime columns are converted in one vectorised numpy cast: formatting the
+    whole history as text on every bar made 5-minute backtests quadratic
+    (~2.5 min for 100 days of bars).
+    """
+    if pd.api.types.is_datetime64_any_dtype(timestamps):
+        if getattr(timestamps.dt, "tz", None) is not None:
+            timestamps = timestamps.dt.tz_localize(None)   # keep the local date, not UTC
+        return timestamps.to_numpy().astype("datetime64[D]")
+    return timestamps.astype(str).str[:10].to_numpy()
+
+
 def session_inputs(data: pd.DataFrame, cache: Optional[dict] = None) -> Optional[dict[str, Any]]:
     """Latest session's bars plus daily ATR and previous-day high/low from earlier sessions.
 
-    ``cache`` (keyed by session date and prior-bar count) avoids regrouping the
-    earlier sessions on every bar of a backtest.
+    Bars must be in time order: the latest session is the trailing run of bars
+    sharing the last bar's date. ``cache`` (keyed by session date and prior-bar
+    count) avoids regrouping the earlier sessions on every bar of a backtest.
     """
     if data is None or data.empty or "timestamp" not in data.columns:
         return None
-    days = data["timestamp"].astype(str).str[:10]
-    today = days.iloc[-1]
-    in_session = days == today
-    session = data[in_session]
-    prior_mask = days < today
-    if len(session) < 2 or days[prior_mask].nunique() < MIN_HISTORY_SESSIONS:
+    days = _day_keys(data["timestamp"])
+    today = days[-1]
+    start = len(days) - 1
+    while start > 0 and days[start - 1] == today:
+        start -= 1
+    if len(days) - start < 2:
         return None
-    key = (today, int(prior_mask.sum()))
-    context = cache.get(key) if cache is not None else None
-    if context is None:
-        context = _daily_context(data[prior_mask], days[prior_mask])
+    key = (str(today), start)
+    entry = cache.get(key) if cache is not None else None
+    if entry is None:
+        prior_days = days[:start]
+        context = None
+        if len(np.unique(prior_days)) >= MIN_HISTORY_SESSIONS:
+            day_labels = pd.Series(prior_days.astype(str), index=data.index[:start])
+            context = _daily_context(data.iloc[:start], day_labels)
+        entry = {"context": context}
         if cache is not None:
             cache.clear()
-            cache[key] = context
+            cache[key] = entry
+    context = entry["context"]
+    if context is None:
+        return None
+    session = data.iloc[start:]
     return {
         "bars": [
             {"t": str(r.timestamp), "o": float(r.open), "h": float(r.high), "l": float(r.low),
@@ -137,43 +162,59 @@ class DayTradeSetupsStrategy(BaseStrategy):
 
         tmap = self.params.get("tradingsymbol_map") or {}
         symbol = tmap.get(instrument_token) or tmap.get(str(instrument_token)) or f"TOKEN_{instrument_token}"
-        risk = abs(s["entry"] - s["stop"])
-        return Signal(
-            tradingsymbol=symbol,
-            exchange=Exchange(self.params["exchange"]),
-            transaction_type=TransactionType.BUY if s["side"] == "LONG" else TransactionType.SELL,
-            quantity=int(self.params["quantity"]),
-            price=inputs["bars"][-1]["c"],
-            order_type=OrderType.MARKET,
-            product=ProductType(self.params["product"]),
-            stop_loss=round(risk, 2),
-            target=round(abs(s["target2"] - s["entry"]), 2),
-            strategy_name=self.name,
-            confidence=s["quality"],
-            metadata={
-                "setup": s["setup"],
-                "signal_id": s["id"],
-                "trigger": s["trigger"],
-                "signal_time": s["time"],
-                "exec": {
-                    "fill": "next_open",
-                    "trail": False,
-                    "scale_out_at": round(abs(s["target1"] - s["entry"]), 2),
-                    "scale_out_fraction": 0.5,
-                    "breakeven_after_scale": True,
-                    "max_hold_bars": MAX_HOLD_BARS,
-                    "exit_by": LAST_EXIT_TIME,
-                    "bar_minutes": BAR_MINUTES,
-                    # levels are rebuilt from the actual fill, as in the panel
-                    "natural_stop": s["natural_stop"],
-                    "atr": inputs["atr"],
-                    "min_risk_atr": MIN_RISK_ATR,
-                    "max_risk_atr": MAX_RISK_ATR,
-                    "t1_r": TARGET1_R,
-                    "t2_r": TARGET2_R,
-                },
-            },
+        return build_order_signal(
+            s, symbol=symbol, atr=inputs["atr"], last_close=inputs["bars"][-1]["c"],
+            quantity=int(self.params["quantity"]), exchange=self.params["exchange"],
+            product=self.params["product"], strategy_name=self.name,
         )
+
+
+def build_order_signal(
+    s: dict[str, Any], *, symbol: str, atr: float, last_close: float, quantity: int,
+    exchange: str = "NSE", product: str = "MIS", strategy_name: str = "day_trade_setups",
+) -> Signal:
+    """The order signal for one ``analyze_session`` setup: a market entry at the
+    next bar's open with the setup's own stop, scale-out at T1, breakeven
+    after it, T2 and the 15:15 time exit. Shared by the live strategy and the
+    Day Trade board's opt-in auto-trade, so both send exactly the same plan.
+    """
+    risk = abs(s["entry"] - s["stop"])
+    return Signal(
+        tradingsymbol=symbol,
+        exchange=Exchange(exchange),
+        transaction_type=TransactionType.BUY if s["side"] == "LONG" else TransactionType.SELL,
+        quantity=int(quantity),
+        price=last_close,
+        order_type=OrderType.MARKET,
+        product=ProductType(product),
+        stop_loss=round(risk, 2),
+        target=round(abs(s["target2"] - s["entry"]), 2),
+        strategy_name=strategy_name,
+        confidence=s["quality"],
+        metadata={
+            "setup": s["setup"],
+            "signal_id": s["id"],
+            "trigger": s["trigger"],
+            "signal_time": s["time"],
+            "exec": {
+                "fill": "next_open",
+                "trail": False,
+                "scale_out_at": round(abs(s["target1"] - s["entry"]), 2),
+                "scale_out_fraction": 0.5,
+                "breakeven_after_scale": True,
+                "max_hold_bars": MAX_HOLD_BARS,
+                "exit_by": LAST_EXIT_TIME,
+                "bar_minutes": BAR_MINUTES,
+                # levels are rebuilt from the actual fill, as in the panel
+                "natural_stop": s["natural_stop"],
+                "atr": atr,
+                "min_risk_atr": MIN_RISK_ATR,
+                "max_risk_atr": MAX_RISK_ATR,
+                "t1_r": TARGET1_R,
+                "t2_r": TARGET2_R,
+            },
+        },
+    )
 
 
 def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESSIONS) -> dict[str, Any]:

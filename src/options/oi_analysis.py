@@ -638,6 +638,7 @@ class OptionsOIAnalyzer:
     """
 
     def __init__(self) -> None:
+        self._instrument_cache: dict[str, tuple[str, list[Any]]] = {}   # exchange -> (day, instruments)
         self._pcr_history: dict[str, list[dict[str, Any]]] = {"NIFTY": [], "SENSEX": []}
         self._straddle_history: dict[str, list[dict[str, Any]]] = {"NIFTY": [], "SENSEX": []}
         self._last_reports: dict[str, OptionsOIReport] = {}
@@ -884,20 +885,28 @@ class OptionsOIAnalyzer:
         self, client: Any, underlying: str, expiry_filter: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """Fetch NFO instruments and filter options for the given underlying."""
-        try:
-            exchange = "BFO" if underlying == "SENSEX" else "NFO"
-            all_inst = await client.get_instruments(exchange)
-        except Exception as e:
-            logger.error("options_oi_instruments_error", error=str(e))
-            return []
+        exchange = "BFO" if underlying == "SENSEX" else "NFO"
+        today = datetime.now().strftime("%Y-%m-%d")
+        cached = self._instrument_cache.get(exchange)
+        if cached and cached[0] == today:
+            all_inst = cached[1]
+        else:
+            try:
+                # the instrument dump is several MB; fetch it once per day per exchange
+                all_inst = await client.get_instruments(exchange)
+                self._instrument_cache[exchange] = (today, all_inst)
+            except Exception as e:
+                logger.error("options_oi_instruments_error", error=str(e))
+                return []
 
         result: list[dict[str, Any]] = []
         for inst in all_inst:
             d = inst.model_dump() if hasattr(inst, "model_dump") else inst
             if d.get("instrument_type") not in ("CE", "PE"):
                 continue
-            name = d.get("name", "").upper()
-            if name != underlying.upper() and underlying.upper() not in name:
+            # exact match: a substring test would also take FINNIFTY / MIDCPNIFTY /
+            # NIFTYNXT50 options for NIFTY (FINNIFTY strikes overlap NIFTY's ATM range)
+            if d.get("name", "").upper() != underlying.upper():
                 continue
             if expiry_filter and d.get("expiry") != expiry_filter:
                 continue

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import time
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from src.analysis.nifty_contribution import compute_nifty_contribution, nifty_qu
 from src.analysis.fno_flow import FlowHistory, build_universe, compute_fno_flow, quote_keys
 from src.api.day_trade import DayTradeTracker, market_open
 from src.analysis.nifty500 import NIFTY_500_SYMBOLS, get_sector
+from src.agent.telemetry import Telemetry
 from src.api.client import KiteClient
 from src.api.market_data import MarketDataProvider, PortfolioReporter, _resolve_holding_quantity
 from src.api.ticker import KiteTicker
@@ -124,6 +126,15 @@ class TradingService:
         self._oi_strategy = OIStrategyEngine()
         self._oi_fno_bridge = OIFnOBridge()
         self._scanner = StockScanner()
+        # Analysis survives restarts: reload the last snapshot (stocks analysed
+        # today are served instantly; older ones refresh on first use).
+        self._snapshot_saved_mono = 0.0
+        self._snapshot_dirty = False
+        self._refresh_tasks: dict[str, asyncio.Task] = {}   # background re-analysis, one per symbol
+        try:
+            self._scanner.load_snapshot(self._analysis_snapshot_path())
+        except Exception as e:
+            logger.warning("scanner_snapshot_load_failed", error=str(e))
         self._strategies: list[BaseStrategy] = []
         # Live strategies run on completed bars built from ticks, each on its own
         # timeframe (see live_interval) so live matches the bars it was tested on.
@@ -149,6 +160,9 @@ class TradingService:
         self._last_quote_persist: dict[int, float] = {}
         self._quote_persist_interval_s = 2.0  # throttle per-token quote_snapshots writes
         self._oi_snapshot_task: Optional[asyncio.Task] = None
+        # Workload events for the agents' logs (strategy evaluations, signals,
+        # orders, scan progress). See src/agent/telemetry.py.
+        self.telemetry = Telemetry()
         self._replay_task: Optional[asyncio.Task] = None
         self._replay_state: dict[str, Any] = {"status": "idle", "running": False}
         self._nifty_contrib_cache: tuple[float, dict[str, Any]] | None = None
@@ -163,6 +177,20 @@ class TradingService:
         self._day_trade = DayTradeTracker(self._fetch_day_bars)
         self._day_trade_task: Optional[asyncio.Task] = None
         self._day_trade_last_request = 0.0
+        # board persistence, signal journal and opt-in auto-trade (src/api/board_trader.py)
+        from src.api.board_trader import BoardTrader
+
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self._board = BoardTrader(self._emit, os.path.join(base, "data", "day_trade", self._zerodha_id or "default"))
+        self._board_preflight: Any = None
+        # per-minute OI-bias history (own analyser so manual scans aren't disturbed)
+        self._oi_bias_analyzer = OptionsOIAnalyzer()
+        self._oi_bias_task: Optional[asyncio.Task] = None
+        self.last_oi_bias: dict[str, dict[str, Any]] = {}
+        try:
+            self._day_trade.load_state(self._board.load(datetime.now()), datetime.now())
+        except Exception as e:
+            logger.warning("board_restore_failed", error=str(e))
 
     @staticmethod
     def _task_exception_handler(task: asyncio.Task) -> None:
@@ -1050,6 +1078,8 @@ class TradingService:
         await self._seed_bar_data(tokens)
         await self._ticker.subscribe(tokens, TickMode(mode))
 
+        if self._board.settings.get("enabled"):
+            self._ensure_day_trade_loop()   # board auto-trade runs alongside live trading
         for coro in [
             self._ticker.connect(),
             self._bar_flush_loop(),
@@ -1483,7 +1513,9 @@ class TradingService:
                     strategy=tf_strategy, initial_capital=100_000.0,
                     position_sizing="risk_based", risk_per_trade=self.TEST_RISK_PER_TRADE,
                 )
-                raw = engine.run(df, instrument_token=token, tradingsymbol=symbol, timeframe=interval)
+                # Backtests are CPU-bound (minutes for 5-minute bars); run them in a worker
+                # thread so the event loop keeps serving requests, agents and the live feed.
+                raw = await asyncio.to_thread(engine.run, df, instrument_token=token, tradingsymbol=symbol, timeframe=interval)
                 if "error" in raw:
                     timeframe_results[interval] = {"passed": False, "error": raw["error"]}
                     continue
@@ -1670,6 +1702,7 @@ class TradingService:
         self._last_tick_at = time.time()
         completed_bars: list[tuple[str, int, Any]] = []
         self._tick_count += len(ticks)
+        self._emit("feed.ticks", count=len(ticks))
         quote_rows: list[dict[str, Any]] = []
         now_mono = time.monotonic()
         for tick in ticks:
@@ -1743,15 +1776,33 @@ class TradingService:
                 continue
             try:
                 signals = await strategy.on_tick(ticks)
+                self._emit("strategy.tick_eval", strategy=strategy.name, ticks=len(ticks), signals=len(signals))
                 for sig in signals:
                     await self._process_signal(sig)
             except Exception as e:
                 logger.error("strategy_tick_error", strategy=strategy.name, error=str(e))
+                self._emit("strategy.error", strategy=strategy.name, interval="tick", error=str(e))
 
         await self._broadcast_ws({
             "type": "ticks",
             "data": self._live_ticks,
         })
+
+    def _emit(self, topic: str, **data: Any) -> None:
+        """Publish workload telemetry for the agents; a no-op when no bus is
+        attached (e.g. services built without __init__ in tests). Never raises."""
+        bus = self.__dict__.get("telemetry")
+        if bus is not None:
+            bus.emit(topic, **data)
+
+    def _symbol_for(self, token: int, strategy: Any = None) -> str:
+        """Tradingsymbol for a token, from the strategies' symbol maps (for logs)."""
+        for s in ([strategy] if strategy is not None else []) + list(self._strategies):
+            tmap = (getattr(s, "params", None) or {}).get("tradingsymbol_map") or {}
+            name = tmap.get(token) or tmap.get(str(token))
+            if name:
+                return name
+        return str(token)
 
     async def _on_bar_close(self, interval: str, token: int, bar: Any) -> None:
         """Append a completed bar to that timeframe's bars and let the strategies
@@ -1765,17 +1816,27 @@ class TradingService:
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True).tail(self.MAX_LIVE_BARS).reset_index(drop=True)
         self._live_bars[(interval, token)] = df
         series = df.iloc[-1]
+        self._emit("bar.close", interval=interval, symbol=self._symbol_for(token), close=row.get("close"))
         for strategy in self._strategies:
             if self.live_interval(strategy) != interval:
                 continue
             strategy.update_bar_data(token, df)
             if not strategy.is_active:
                 continue
+            symbol = self._symbol_for(token, strategy)
+            started = time.perf_counter()
             try:
-                for sig in await strategy.on_bar(token, series):
+                signals = await strategy.on_bar(token, series)
+                self._emit(
+                    "strategy.eval", strategy=strategy.name, symbol=symbol, interval=interval,
+                    close=row.get("close"), signals=len(signals),
+                    ms=round((time.perf_counter() - started) * 1000, 1),
+                )
+                for sig in signals:
                     await self._process_signal(sig)
             except Exception as e:
                 logger.error("strategy_bar_error", strategy=strategy.name, token=token, error=str(e))
+                self._emit("strategy.error", strategy=strategy.name, symbol=symbol, interval=interval, error=str(e))
 
     BAR_FLUSH_GRACE_S = 2.0   # ticks stamped inside a bar can arrive just after it ends
 
@@ -2010,7 +2071,9 @@ class TradingService:
                 else:
                     logger.warning("oi_position_close_sync_failed", position_id=position_id, reason="already closed or not found")
 
-    async def _process_signal(self, signal: Signal) -> None:
+    async def _process_signal(self, signal: Signal) -> Optional[str]:
+        """Route one strategy signal to the execution engine. Returns the order id
+        when an order was placed (None when ignored, blocked or failed)."""
         # Same rules as backtest / paper (src/data/exit_plan.py): the timeframe
         # sets the product (intraday MIS, daily CNC long-only), an opposite
         # signal closes the strategy's open position (reversing where allowed),
@@ -2022,13 +2085,25 @@ class TradingService:
         side = 1 if signal.transaction_type == TransactionType.BUY else -1
         is_exit = signal.metadata.get("action") == "exit"
         can_open = not is_exit and (side > 0 or allows_short(timeframe))
+        sig_info = {
+            "strategy": signal.strategy_name, "symbol": signal.tradingsymbol,
+            "side": signal.transaction_type.value, "quantity": signal.quantity,
+            "price": signal.price, "timeframe": timeframe, "confidence": signal.confidence,
+        }
+        self._emit("signal.received", **sig_info, exit=is_exit)
         open_pos = self._execution.open_position_for(signal.tradingsymbol, signal.strategy_name)
         if open_pos is not None:
-            if open_pos.is_long == (side > 0) or getattr(strategy, "uses_exit_plans", False):
+            # a signal carrying its own exit plan (metadata["exec"]) is managed by that plan
+            plan_managed = getattr(strategy, "uses_exit_plans", False) or bool(signal.metadata.get("exec"))
+            if open_pos.is_long == (side > 0) or plan_managed:
                 logger.info("signal_ignored_position_open", strategy=signal.strategy_name, symbol=signal.tradingsymbol)
+                self._emit("signal.ignored", **sig_info, reason="position already open in that direction")
                 return
             await self._execution.close_position(open_pos.order_id, reason="signal_exit")
+            self._emit("order.close", **sig_info, order_id=open_pos.order_id, reason="opposite signal")
         if not can_open:
+            if not is_exit:
+                self._emit("signal.ignored", **sig_info, reason=f"shorting not allowed on {timeframe} (delivery)")
             return
 
         signal_data = {
@@ -2047,6 +2122,10 @@ class TradingService:
         try:
             order_id = await self._execution.execute_signal(signal)
             if order_id:
+                self._emit("order.placed", **sig_info, order_id=order_id)
+            else:
+                self._emit("order.failed", **sig_info, error="execution engine returned no order id")
+            if order_id:
                 self._journal.record_trade(
                     strategy=signal.strategy_name,
                     tradingsymbol=signal.tradingsymbol,
@@ -2060,12 +2139,17 @@ class TradingService:
                 )
         except KillSwitchError:
             logger.critical("kill_switch_triggered")
+            self._emit("risk.kill_switch", **sig_info)
             for s in self._strategies:
                 s.deactivate()
         except RiskLimitError as e:
             logger.warning("risk_limit_hit", error=str(e))
+            self._emit("risk.blocked", **sig_info, error=str(e))
         except Exception as e:
             logger.error("signal_processing_error", error=str(e))
+            self._emit("order.failed", **sig_info, error=str(e))
+            return None
+        return order_id or None
 
     # ────────────────────────────────────────────────────────────
     # Paper Trading
@@ -2114,7 +2198,7 @@ class TradingService:
             strategy=strategy,
             initial_capital=capital,
         )
-        result = engine.run(
+        result = await asyncio.to_thread(engine.run,
             data=df,
             instrument_token=instrument_token,
             tradingsymbol=tradingsymbol,
@@ -2192,7 +2276,7 @@ class TradingService:
         })
 
         engine = PaperTradingEngine(strategy=strategy, initial_capital=capital)
-        result = engine.run(df, instrument_token=0, tradingsymbol=tradingsymbol, timeframe="5min")
+        result = await asyncio.to_thread(engine.run, df, instrument_token=0, tradingsymbol=tradingsymbol, timeframe="5min")
         result_dict = result.to_dict_safe()
         result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[strategy_name] = result_dict
@@ -2303,14 +2387,20 @@ class TradingService:
     async def run_analysis_scan(self, symbols: Optional[list[str]] = None,
                                 universe: str = "nifty50") -> dict[str, Any]:
         async def _on_progress(scanned: int, total: int, symbol: str) -> None:
+            self._emit("scan.progress", universe=universe, scanned=scanned, total=total, symbol=symbol)
             await self._broadcast_ws({
                 "type": "scan_progress",
                 "data": {"scanned": scanned, "total": total, "symbol": symbol},
             })
 
-        return await self._scanner.run_scan(
+        self._emit("scan.started", universe=universe)
+        result = await self._scanner.run_scan(
             self._client, symbols, universe=universe, on_progress=_on_progress
         )
+        self._emit("scan.completed", universe=universe, report=result)
+        self._snapshot_dirty = True
+        await self.persist_analysis(force=True)
+        return result
 
     def get_analysis_results(self, universe: str = "nifty50") -> dict[str, Any]:
         return self._scanner.get_cached_results(universe)
@@ -2326,9 +2416,85 @@ class TradingService:
         """Get deep analysis profile for a single stock."""
         return self._scanner.get_deep_profile(symbol)
 
-    async def analyze_stock_on_demand(self, symbol: str) -> dict[str, Any]:
-        """Fetch data & run full analysis for any NSE stock on-demand."""
-        return await self._scanner.analyze_stock_on_demand(self._client, symbol)
+    async def analyze_stock_on_demand(self, symbol: str, force: bool = False) -> dict[str, Any]:
+        """Deep profile for any NSE stock: cached if analysed today, else refreshed now."""
+        result = await self._scanner.analyze_stock_on_demand(self._client, symbol, force=force)
+        if result.get("cache") == "refreshed":
+            self._snapshot_dirty = True
+            await self.persist_analysis()
+        return result
+
+    # ── analysis cache persistence & warm-up ──────────────────────────
+
+    def refresh_analysis_in_background(self, symbol: str) -> None:
+        """Re-analyse ``symbol`` without blocking the caller (one task per symbol)."""
+        tasks = self._refresh_tasks
+        if symbol in tasks and not tasks[symbol].done():
+            return
+        task = asyncio.create_task(self.analyze_stock_on_demand(symbol, force=True), name=f"refresh_{symbol}")
+        task.add_done_callback(self._task_exception_handler)
+        task.add_done_callback(lambda t: tasks.pop(symbol, None))
+        tasks[symbol] = task
+
+    def _analysis_snapshot_path(self) -> str:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return os.path.join(base, "data", "scanner_cache", f"{self._zerodha_id or 'default'}.json.gz")
+
+    async def persist_analysis(self, min_interval_s: float = 60.0, force: bool = False) -> bool:
+        """Write the analysis snapshot in a worker thread, at most every ``min_interval_s``."""
+        if not (force or self._snapshot_dirty):
+            return False
+        if not force and time.monotonic() - self._snapshot_saved_mono < min_interval_s:
+            return False
+        self._snapshot_saved_mono = time.monotonic()
+        self._snapshot_dirty = False
+        try:
+            await asyncio.to_thread(self._scanner.save_snapshot, self._analysis_snapshot_path())
+            return True
+        except Exception as e:
+            self._snapshot_dirty = True
+            logger.warning("scanner_snapshot_save_failed", error=str(e))
+            return False
+
+    _DERIVATIVE_RE = re.compile(
+        r"^(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)|\d{2}[1-9OND]\d{2})(?:\d+(?:\.\d+)?(?:CE|PE)|FUT)$"
+    )
+    _INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "SENSEX", "BANKEX"}
+
+    async def portfolio_symbols(self) -> list[str]:
+        """Stocks the user holds or has positions in (derivatives mapped to their underlying)."""
+        symbols: list[str] = []
+        try:
+            for h in await self.get_holdings():
+                symbols.append(str(h.get("tradingsymbol") or ""))
+        except Exception as e:
+            logger.warning("portfolio_symbols_holdings_failed", error=str(e))
+        try:
+            for p in (await self.get_positions()).get("net", []):
+                sym = str(p.get("tradingsymbol") or "")
+                m = self._DERIVATIVE_RE.match(sym)
+                symbols.append(m.group(1) if m else sym)
+        except Exception as e:
+            logger.warning("portfolio_symbols_positions_failed", error=str(e))
+        out = []
+        for s in symbols:
+            s = re.sub(r"-(EQ|BE|BZ|SM|ST)$", "", s.upper().strip())
+            if s and s not in self._INDEX_UNDERLYINGS and s not in out:
+                out.append(s)
+        return out
+
+    async def warm_portfolio_analysis(self) -> dict[str, Any]:
+        """Analyse held / traded stocks that aren't fresh in the cache (one at a time)."""
+        symbols = await self.portfolio_symbols()
+        stale = [s for s in symbols if not self._scanner.is_fresh(s)]
+        refreshed, failed = [], []
+        for sym in stale:
+            res = await self._scanner.analyze_stock_on_demand(self._client, sym)
+            (failed if res.get("error") else refreshed).append(sym)
+        if refreshed:
+            self._snapshot_dirty = True
+            await self.persist_analysis(force=True)
+        return {"symbols": symbols, "refreshed": refreshed, "failed": failed}
 
     def get_sector_analysis(self, universe: str | None = None) -> dict[str, Any]:
         """Get sector-level analysis from cached scan data."""
@@ -2485,16 +2651,24 @@ class TradingService:
             contract.cash_token, Interval.MINUTE_5,
             (today - timedelta(days=HISTORY_CALENDAR_DAYS)).isoformat(), today.isoformat(),
         )
-        return [
+        bars = [
             {"t": str(k.timestamp), "o": k.open, "h": k.high, "l": k.low, "c": k.close, "v": k.volume}
             for k in candles
         ]
+        try:   # keep the bars, so board sessions (and filter / exit changes) can be replayed later
+            self._market_store.store_candles(contract.cash_token, "5minute", [
+                {"ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"], "volume": b["v"]} for b in bars
+            ])
+        except Exception as e:
+            logger.warning("day_trade_bars_store_failed", symbol=symbol, error=str(e))
+        return bars
 
     async def _day_trade_loop(self) -> None:
         """Keep the tracked list and its bars current through the session."""
         while self.is_authenticated:
             now = datetime.now()
             idle = time.monotonic() - self._day_trade_last_request > self.DAY_TRADE_IDLE_S
+            # runs all session while the market is open (journal + opt-in auto-trade need no viewer)
             if idle and not market_open(now):
                 break
             try:
@@ -2502,6 +2676,11 @@ class TradingService:
                 if not flow.get("error"):
                     self._day_trade.update_selection(flow, now)
                     await self._day_trade.refresh(now)
+                    # journal every signal / status change and (if opted in) act on new ones,
+                    # whether or not anyone has the board open
+                    snap = self._day_trade.snapshot(flow, now)
+                    await self._board.process(snap, now, send=self._send_board_signal)
+                    self._board.save(self._day_trade.to_state(), now)
             except Exception as e:
                 logger.warning("day_trade_refresh_failed", error=str(e))
             await asyncio.sleep(self.DAY_TRADE_POLL_S)
@@ -2520,7 +2699,113 @@ class TradingService:
             return {"error": flow["error"]}
         now = datetime.now()
         self._day_trade.update_selection(flow, now)
-        return self._day_trade.snapshot(flow, now)
+        snap = self._day_trade.snapshot(flow, now)
+        await self._board.process(snap, now)          # journal only; orders are sent by the loop
+        self._board.save(self._day_trade.to_state(), now)
+        snap = self._board.annotate(snap)
+        snap["autotrade"]["live_trading"] = self._running and bool(getattr(self._execution, "_running", False))
+        return snap
+
+    # ── OI-bias history ────────────────────────────────────────────────
+    OI_BIAS_UNDERLYINGS = ("NIFTY", "SENSEX")
+
+    def ensure_oi_bias_recorder(self) -> None:
+        """Start the per-minute OI-bias recorder (idempotent; needs a running loop)."""
+        if self._oi_bias_task is None or self._oi_bias_task.done():
+            self._oi_bias_task = asyncio.create_task(self._oi_bias_loop(), name="oi_bias_recorder")
+            self._oi_bias_task.add_done_callback(self._task_exception_handler)
+
+    async def record_oi_bias(self, underlying: str) -> dict[str, Any]:
+        """Analyse ``underlying``'s near-ATM option chain once and store the bias row."""
+        report = await asyncio.wait_for(self._oi_bias_analyzer.analyze(underlying, self._client), timeout=45)
+        if not report.spot_price or not report.strikes:
+            raise RuntimeError(f"no {underlying} option-chain data")
+        sentiments = [s.get("sentiment") for s in report.buildup_signals or []]
+        row = {
+            "underlying": underlying,
+            "ts": datetime.now().replace(second=0, microsecond=0).isoformat(),
+            "spot_price": report.spot_price, "atm_strike": report.atm_strike, "expiry": report.expiry,
+            "bias": report.bias, "pcr_oi": report.pcr_oi, "pcr_volume": report.pcr_volume,
+            "total_ce_oi": report.total_ce_oi, "total_pe_oi": report.total_pe_oi, "max_pain": report.max_pain,
+            "max_ce_oi_strike": report.max_ce_oi_strike, "max_pe_oi_strike": report.max_pe_oi_strike,
+            "iv_skew": report.iv_skew, "straddle_premium": report.atm_straddle_premium,
+            "bullish_signals": sentiments.count("BULLISH"), "bearish_signals": sentiments.count("BEARISH"),
+            "reasons": report.bias_reasons,
+        }
+        self._market_store.store_oi_bias(row)
+        previous = self.last_oi_bias.get(underlying, {}).get("bias")
+        self.last_oi_bias[underlying] = row
+        self._emit("oi.bias", **row, previous=previous)
+        return row
+
+    async def _oi_bias_loop(self) -> None:
+        """While the market is open: one bias reading per underlying per minute."""
+        from src.agent.market_hours import is_market_open
+
+        while True:
+            if self.is_authenticated and is_market_open():
+                for underlying in self.OI_BIAS_UNDERLYINGS:
+                    try:
+                        await self.record_oi_bias(underlying)
+                    except Exception as e:
+                        logger.warning("oi_bias_record_failed", underlying=underlying, error=str(e))
+                        self._emit("oi.bias_error", underlying=underlying, error=str(e))
+                await asyncio.sleep(60 - datetime.now().second + 1)   # next minute boundary
+            else:
+                await asyncio.sleep(30)
+
+    def get_oi_bias_history(self, underlying: str = "NIFTY", days: int = 1) -> dict[str, Any]:
+        since = (datetime.now() - timedelta(days=max(1, min(days, 120)))).isoformat()
+        rows = self._market_store.get_oi_bias(underlying.upper(), since)
+        return {"underlying": underlying.upper(), "count": len(rows), "rows": rows}
+
+    # ── board auto-trade ───────────────────────────────────────────────
+
+    def get_board_autotrade(self) -> dict[str, Any]:
+        return {**self._board.settings, "orders_today": self._board.orders_today(),
+                "live_trading": self._running and bool(getattr(self._execution, "_running", False))}
+
+    def update_board_autotrade(self, patch: dict[str, Any]) -> dict[str, Any]:
+        settings = self._board.update_settings(patch, datetime.now())
+        if settings["enabled"]:
+            self._ensure_day_trade_loop()
+        return self.get_board_autotrade()
+
+    async def _send_board_signal(self, s: dict[str, Any], quantity: int, board: Any) -> dict[str, Any]:
+        """Send one board signal as a real order through the live-trading path.
+
+        Same order as the live ``day_trade_setups`` strategy would send
+        (``build_order_signal``), the Verifier's preflight checklist run on that
+        actual order, then ``_process_signal``: signal log, position rules, risk
+        manager, kill switch, execution engine with the exit plan, journal.
+        """
+        from src.risk.preflight import PreflightChecker, TradingMode
+        from src.strategy.day_trade_setups import build_order_signal
+
+        now = datetime.now()
+        if not (self._running and getattr(self._execution, "_running", False)):
+            return {"decision": "blocked", "reason": "live trading is off — start live trading to auto-trade the board"}
+        if not market_open(now):
+            return {"decision": "blocked", "reason": "market is closed"}
+        for name in ("day_trade_board", "day_trade_setups"):
+            if self._execution.open_position_for(s["symbol"], name) is not None:
+                return {"decision": "blocked", "reason": f"a {name} position in {s['symbol']} is already open"}
+        signal = build_order_signal(
+            s, symbol=s["symbol"], atr=float(s["atr"]), last_close=float(s["bar_close"]),
+            quantity=quantity, strategy_name="day_trade_board",
+        )
+        signal.metadata = {**signal.metadata, "timeframe": "5minute", "source": "day_trade_board"}
+        if board.settings.get("require_preflight", True):
+            if self._board_preflight is None:
+                self._board_preflight = PreflightChecker(client=self._client, ticker=self._ticker, risk_manager=self._risk)
+            report = await asyncio.wait_for(self._board_preflight.run_all_checks(signal=signal, mode=TradingMode.LIVE),
+                                            timeout=20)
+            if not report.passed:
+                return {"decision": "blocked", "reason": "preflight: " + "; ".join(report.blocked_reasons)}
+        order_id = await self._process_signal(signal)
+        if order_id:
+            return {"decision": "sent", "order_id": order_id}
+        return {"decision": "failed", "reason": "not placed by the live path (risk limit, kill switch or broker error — see the Executor log)"}
 
     async def replay_day_trade_setups(self, symbols: list[str], days: int = 30) -> dict[str, Any]:
         """Run the 5-minute setups over the last ``days`` sessions for each symbol.
@@ -2954,7 +3239,7 @@ class TradingService:
             is_intraday=is_intraday,
         )
 
-        result = engine.run(df, instrument_token, tradingsymbol)
+        result = await asyncio.to_thread(engine.run, df, instrument_token, tradingsymbol)
         result["generated_at"] = datetime.now().isoformat()
         if fetch_days != days:
             result["warmup_note"] = (
@@ -3049,7 +3334,7 @@ class TradingService:
             risk_per_trade=risk_per_trade, capital_fraction=capital_fraction,
             use_indian_costs=use_indian_costs, is_intraday=is_intraday,
         )
-        result = engine.run(df, tradingsymbol="SAMPLE")
+        result = await asyncio.to_thread(engine.run, df, tradingsymbol="SAMPLE")
         result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
@@ -3223,7 +3508,7 @@ class TradingService:
             use_regime_filter=use_regime_filter,
         )
 
-        result = engine.run(df, tradingsymbol=underlying)
+        result = await asyncio.to_thread(engine.run, df, tradingsymbol=underlying)
         result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
@@ -3284,7 +3569,7 @@ class TradingService:
             stop_loss_pct=stop_loss_pct,
             delta_target=delta_target,
         )
-        result = engine.run(df, tradingsymbol=underlying)
+        result = await asyncio.to_thread(engine.run, df, tradingsymbol=underlying)
         result["generated_at"] = datetime.now().isoformat()
         self._backtest_results = result
 
@@ -3348,7 +3633,7 @@ class TradingService:
             delta_target=delta_target,
             slippage_model=slippage_model,
         )
-        result = engine.run(df, tradingsymbol=underlying, timeframe=interval)
+        result = await asyncio.to_thread(engine.run, df, tradingsymbol=underlying, timeframe=interval)
         result_dict = result.to_dict_safe()
         result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[f"fno_{strategy_name}"] = result_dict
@@ -3409,7 +3694,7 @@ class TradingService:
             stop_loss_pct=stop_loss_pct,
             delta_target=delta_target,
         )
-        result = engine.run(df, tradingsymbol=underlying, timeframe="day")
+        result = await asyncio.to_thread(engine.run, df, tradingsymbol=underlying, timeframe="day")
         result_dict = result.to_dict_safe()
         result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[f"fno_{strategy_name}"] = result_dict

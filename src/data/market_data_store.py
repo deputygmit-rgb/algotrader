@@ -193,6 +193,31 @@ CREATE TABLE IF NOT EXISTS oi_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_oi_snapshots_underlying_ts
     ON oi_snapshots(underlying, ts);
+
+-- One row per underlying per minute while the market is open: the options-OI
+-- bias (BULLISH / BEARISH / NEUTRAL) and every input it was computed from,
+-- so an OI-direction filter can be back-tested against real history.
+CREATE TABLE IF NOT EXISTS oi_bias_history (
+    underlying       TEXT    NOT NULL,
+    ts               TEXT    NOT NULL,
+    spot_price       REAL    NOT NULL DEFAULT 0,
+    atm_strike       REAL    NOT NULL DEFAULT 0,
+    expiry           TEXT    NOT NULL DEFAULT '',
+    bias             TEXT    NOT NULL DEFAULT '',
+    pcr_oi           REAL    NOT NULL DEFAULT 0,
+    pcr_volume       REAL    NOT NULL DEFAULT 0,
+    total_ce_oi      INTEGER NOT NULL DEFAULT 0,
+    total_pe_oi      INTEGER NOT NULL DEFAULT 0,
+    max_pain         REAL    NOT NULL DEFAULT 0,
+    max_ce_oi_strike REAL    NOT NULL DEFAULT 0,
+    max_pe_oi_strike REAL    NOT NULL DEFAULT 0,
+    iv_skew          REAL    NOT NULL DEFAULT 0,
+    straddle_premium REAL    NOT NULL DEFAULT 0,
+    bullish_signals  INTEGER NOT NULL DEFAULT 0,
+    bearish_signals  INTEGER NOT NULL DEFAULT 0,
+    reasons          TEXT    NOT NULL DEFAULT '[]',
+    PRIMARY KEY (underlying, ts)
+) WITHOUT ROWID;
 """
 
 
@@ -672,6 +697,36 @@ class MarketDataStore:
         return [dict(r) for r in rows]
 
     # ─── OI Snapshots ───────────────────────────────────────────
+
+    def store_oi_bias(self, row: dict[str, Any]) -> None:
+        """Record one options-OI bias reading (see the oi_bias_history table)."""
+        import json as _json
+
+        cols = ("underlying", "ts", "spot_price", "atm_strike", "expiry", "bias", "pcr_oi", "pcr_volume",
+                "total_ce_oi", "total_pe_oi", "max_pain", "max_ce_oi_strike", "max_pe_oi_strike", "iv_skew",
+                "straddle_premium", "bullish_signals", "bearish_signals", "reasons")
+        text_cols = {"underlying", "ts", "expiry", "bias"}
+        values = [_json.dumps(row.get("reasons") or []) if c == "reasons"
+                  else row.get(c, "" if c in text_cols else 0)
+                  for c in cols]
+        conn = self._get_conn()
+        conn.execute(f"INSERT OR REPLACE INTO oi_bias_history ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", values)
+        conn.commit()
+
+    def get_oi_bias(self, underlying: str, from_ts: str = "", to_ts: str = "9999") -> list[dict[str, Any]]:
+        import json as _json
+
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM oi_bias_history WHERE underlying = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+            (underlying, from_ts, to_ts),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["reasons"] = _json.loads(d.get("reasons") or "[]")
+            out.append(d)
+        return out
 
     def store_oi_snapshots(self, snapshots: list[dict[str, Any]]) -> int:
         """Store a batch of OI tracker snapshots (upsert by underlying+token+ts)."""

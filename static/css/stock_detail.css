@@ -1173,3 +1173,10 @@
 .stock-test-badge.pass { color: #04130b; background: var(--t-g); }
 .stock-test-badge.fail { color: #1a0307; background: var(--t-r); }
 .stock-test-reasons td { color: var(--t-mute); font-size: 10px; text-align: left; }
+
+/* technical-analysis freshness (served from the analysis cache) */
+.stock-freshness { display: inline-block; font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--t-dim, #6b7f8c);
+    border: 1px solid var(--t-line-2, #243843); border-radius: 3px; padding: 2px 8px; margin-bottom: 10px; }
+.stock-freshness::before { content: '● '; color: var(--t-g, #5be3a0); }
+.stock-freshness.refreshing::before { color: var(--t-a, #ffd166); animation: stock-blink 1s steps(1) infinite; }
+@keyframes stock-blink { 50% { opacity: 0; } }

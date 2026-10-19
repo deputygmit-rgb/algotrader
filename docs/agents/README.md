@@ -21,6 +21,38 @@ FastAPI lifespan
          └─ TrackerAgent
 ```
 
+## Workload logs (telemetry)
+
+`TradingService` publishes what it does on an in-process bus (`src/agent/telemetry.py`). Agents subscribe and journal it:
+
+| Topic | Emitted when | Logged by |
+|---|---|---|
+| `feed.ticks`, `bar.close` | tick batch arrives / a bar closes | Executor (counts, per-cycle summary) |
+| `strategy.eval`, `strategy.tick_eval`, `strategy.error` | a strategy evaluates a closed bar / ticks, or raises | Executor (one trace line per evaluation) |
+| `signal.received`, `signal.ignored` | `_process_signal` gets a signal / drops it (and why) | Executor |
+| `order.placed`, `order.close`, `order.failed`, `risk.blocked`, `risk.kill_switch` | execution outcome | Executor |
+| `scan.started`, `scan.progress`, `scan.completed` | any analysis scan (agent or user) | Scanner (each stock, list changes between scans) |
+| `board.track`, `board.signal`, `board.status`, `board.order`, `board.autotrade` | Day Trade board (Market Flow): symbol tracked / untracked, new signal, status change, auto-trade decision, settings change | Executor |
+| `oi.bias`, `oi.bias_error` | every minute in market hours: NIFTY / SENSEX options-OI bias with its inputs (also stored in `oi_bias_history`) | Verifier (event when the direction changes) |
+
+**Day Trade board auto-trade** (`src/api/board_trader.py`) is opt-in and off by default. A signal is sent only when all of these hold:
+
+- it is new, on the latest closed bar, within one bar of its close and before 14:45;
+- it isn't a replay from before tracking and wasn't skipped by the board's limit;
+- it passes the side and setup filters and the daily order cap;
+- live trading is running and there's no open board or day-trade position in that stock.
+
+Quantity is `risk_per_trade / |entry − stop|`, capped by `max_order_value`. The order is the live strategy's own `build_order_signal`. The Verifier's preflight checklist runs on that exact order, then it goes through `_process_signal` like any live strategy signal.
+
+Each signal gets one recorded decision, never retried. Decisions and the board's state are saved in `data/day_trade/<user>/`.
+
+The Verifier traces every audit and failing check. The Tracker journals broker-side changes between syncs: positions opened, closed or resized; orders new or changing status, with the rejection reason.
+
+Each agent writes `logs/agents/<zerodha_id>/<agent>-YYYY-MM-DD.jsonl` (60-day retention) and reloads today's file on restart.
+
+- **In the UI:** the Agents tab console streams `GET /api/agents/log?cursor=…`.
+- **Download:** `GET /api/agents/log/download?agent=<name>&day=YYYY-MM-DD` returns the raw file.
+
 ## Shared design
 
 All four use the same pattern:

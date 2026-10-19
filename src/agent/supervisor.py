@@ -15,6 +15,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.agent.activity import default_log_dir
 from src.agent.executor_agent import ExecutorAgent
 from src.agent.market_hours import is_market_open
 from src.agent.scanner_agent import ScannerAgent
@@ -50,6 +51,13 @@ class TradingServiceAgent:
         self.verifier = VerifierAgent(zerodha_id, service)
         self.executor = ExecutorAgent(zerodha_id, service)
         self.tracker = TrackerAgent(zerodha_id, service)
+        for agent in self.agents.values():
+            agent.activity.enable_persistence(default_log_dir())
+
+    @property
+    def agents(self) -> dict[str, Any]:
+        return {"scanner": self.scanner, "verifier": self.verifier,
+                "executor": self.executor, "tracker": self.tracker}
 
     def start_supervision(self) -> None:
         if self._heartbeat_task is not None:
@@ -62,6 +70,9 @@ class TradingServiceAgent:
             return
         self._heartbeat_task = loop.create_task(self._heartbeat())
         self._heartbeat_task.add_done_callback(self._on_heartbeat_done)
+        start_recorder = getattr(self.service, "ensure_oi_bias_recorder", None)
+        if start_recorder is not None:
+            start_recorder()          # per-minute OI-bias history (market hours only)
         self.scanner.start()
         self.verifier.start()
         self.executor.start()

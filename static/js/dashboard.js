@@ -112,6 +112,52 @@ function showToast(msg, type = 'info') {
     }, 3000);
 }
 
+// ── Remember where the user is ─────────────────────────────────────
+// The active tab and Analysis sub-view live in the URL hash
+// (/app#tab=analysis&view=sectors) and the scroll position in sessionStorage,
+// so Back from a stock page (or a reload) returns to the same screen.
+function currentView() {
+    const tab = document.querySelector('.tab.active')?.dataset.tab || 'overview';
+    const view = tab === 'analysis' ? document.querySelector('.analysis-view-btn.active')?.dataset.view : null;
+    return { tab, view };
+}
+
+function persistView() {
+    const { tab, view } = currentView();
+    const hash = `#tab=${tab}${view ? '&view=' + view : ''}`;
+    if (location.hash !== hash) history.replaceState(history.state, '', location.pathname + location.search + hash);
+}
+
+function saveScroll() {
+    try {
+        sessionStorage.setItem('dash.scroll', JSON.stringify({ ...currentView(), y: window.scrollY }));
+    } catch (e) { /* storage unavailable: just don't restore */ }
+}
+
+function restoreView() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const tab = params.get('tab');
+    const view = params.get('view');
+    const button = tab && document.querySelector(`.tabs .tab[data-tab="${CSS.escape(tab)}"]`);
+    if (!button || tab === 'overview') return;
+    button.click();                      // runs the tab's own loaders (onclick)
+    if (view && typeof switchAnalysisView === 'function') switchAnalysisView(view);
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem('dash.scroll') || 'null'); } catch (e) { saved = null; }
+    if (!saved || saved.tab !== tab || !saved.y) return;
+    // content loads asynchronously: retry until the page is tall enough, unless the user scrolls first
+    let userScrolled = false;
+    const mark = () => { userScrolled = true; };
+    window.addEventListener('wheel', mark, { once: true, passive: true });
+    window.addEventListener('touchmove', mark, { once: true, passive: true });
+    [150, 600, 1500, 3000].forEach(ms => setTimeout(() => {
+        if (!userScrolled && Math.abs(window.scrollY - saved.y) > 4) window.scrollTo(0, saved.y);
+    }, ms));
+}
+
+window.addEventListener('pagehide', saveScroll);
+document.addEventListener('click', e => { if (e.target.closest('[data-stock], a[href^="/app/stock/"]')) saveScroll(); }, true);
+
 function switchTab(tabName) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -125,6 +171,7 @@ function switchTab(tabName) {
         const tokenEl = document.getElementById('paper-token');
         if (tokenEl && !tokenEl.value) resolveToken('paper');
     }
+    persistView();
 }
 
 function formatNum(n, decimals = 2) {
@@ -1973,6 +2020,7 @@ function switchAnalysisView(view) {
     if (btn) btn.classList.add('active');
     // Always reload: the breakdown depends on the selected universe and the latest scan
     if (view === 'sectors') loadSectorAnalysis();
+    persistView();
 }
 
 async function loadAnalysis() {
@@ -6501,4 +6549,5 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCustomStrategiesDropdowns();
     loadFnOCustomStrategiesDropdowns();
     initAnalysisTableSorting();
+    restoreView();
 });

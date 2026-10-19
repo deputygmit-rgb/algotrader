@@ -829,3 +829,17 @@ tr:hover td { background: var(--bg-hover); }
     .mf-side { border-left: 0; border-top: 1px solid var(--mf-line); height: 420px; }
     .mf-stage { height: 520px; }
 }
+
+/* board auto-trade */
+.dt-auto-btn.on { color: var(--mf-r); border-color: var(--mf-r); box-shadow: 0 0 12px rgba(255,90,110,.25); animation: mf-blink 2s steps(1) infinite; }
+.dt-auto { margin: 0 14px 10px; padding: 10px 12px; border: 1px solid rgba(255,159,67,.45); border-radius: 4px; background: rgba(255,159,67,.05); }
+.dt-auto-hd { display: flex; flex-direction: column; gap: 3px; font-size: 11px; margin-bottom: 8px; }
+.dt-auto-hd b { color: var(--mf-o); letter-spacing: 2px; }
+.dt-auto-grid { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; font-size: 10px; letter-spacing: 1px; color: var(--mf-dim); }
+.dt-auto-grid label:not(.mf-chk) { display: flex; flex-direction: column; gap: 3px; }
+.dt-auto-grid input[type="number"] { width: 120px; padding: 4px 6px; font-size: 12px; }
+.dt-auto-toggle.danger { color: var(--mf-r); border-color: var(--mf-r); }
+.dt-auto-status { margin-top: 8px; font-size: 11px; color: var(--mf-dim); }
+.dt-ord { font-size: 10px; letter-spacing: .8px; padding: 1px 6px; border-radius: 2px; border: 1px solid currentColor; white-space: nowrap; }
+.dt-ord.sent { color: var(--mf-g); } .dt-ord.block { color: var(--mf-a); } .dt-ord.fail { color: var(--mf-r); }
+.dt-ord.skip { color: var(--mf-dim); border-style: dashed; }

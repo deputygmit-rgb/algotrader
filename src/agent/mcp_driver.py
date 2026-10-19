@@ -65,6 +65,9 @@ class MCPDriverSupervisorAgent:
     def get_agent_status(self, zerodha_id: str) -> Optional[dict[str, Any]]:
         return self._supervisor.get_status(zerodha_id)
 
+    def get_agent(self, zerodha_id: str) -> Any:
+        return self._supervisor._agents.get(zerodha_id.upper())
+
     def wake_agent(self, zerodha_id: str) -> None:
         """Trigger immediate re-check by a user's Scanner/Verifier/Executor/Tracker agents."""
         self._supervisor.wake(zerodha_id)

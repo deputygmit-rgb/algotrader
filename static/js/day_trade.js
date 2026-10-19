@@ -105,7 +105,74 @@ const DayTrade = (() => {
             <td class="num">${num(s.target1)}</td>
             <td><span class="dt-status ${STATUS_CLASS[s.status] || ''}">${s.status}${s.exit_time ? ` ${esc(s.exit_time)}` : ''}</span>${s.live_flag && s.status !== 'PENDING' ? `<span class="dt-flag" title="Live price says so; confirmed when the bar closes">${esc(s.live_flag)}</span>` : ''}</td>
             <td class="num ${rCls}" title="${esc(rTitle(s))}">${r === null ? '—' : `${sgn(r)}R`}${s.status === 'PENDING' ? '<i>est</i>' : ''}</td>
+            <td>${orderCell(s.order)}</td>
         </tr>`;
+    }
+
+    // Auto-trade decision for a signal (only signals that were candidates get one)
+    function orderCell(o) {
+        if (!o) return '<span class="mf-dim">—</span>';
+        const tip = esc(`${o.decision} at ${(o.at || '').slice(11, 19)}${o.quantity ? ` · qty ${o.quantity}` : ''}${o.reason ? ` · ${o.reason}` : ''}`);
+        if (o.decision === 'sent') return `<span class="dt-ord sent" title="${tip}">SENT #${esc(o.order_id)}</span>`;
+        if (o.decision === 'skipped') return `<span class="dt-ord skip" title="${tip}">not sent</span>`;
+        return `<span class="dt-ord ${o.decision === 'failed' ? 'fail' : 'block'}" title="${tip}">${esc(o.decision.toUpperCase())}</span>`;
+    }
+
+    // ── auto-trade control ──────────────────────────────────────────
+    let auto = null;
+    function renderAuto(a) {
+        if (!a) return;
+        auto = a;
+        const btn = $('dt-auto-btn');
+        btn.textContent = `AUTO-TRADE: ${a.enabled ? 'ON' : 'OFF'}`;
+        btn.classList.toggle('on', !!a.enabled);
+        const panel = $('dt-auto');
+        if (panel.hidden && !a.enabled) return;
+        if (document.activeElement?.closest('#dt-auto')) return;   // don't overwrite while editing
+        $('dt-auto-risk').value = a.risk_per_trade;
+        $('dt-auto-cap').value = a.max_order_value;
+        $('dt-auto-max').value = a.max_orders_per_day;
+        $('dt-auto-long').checked = (a.sides || []).includes('LONG');
+        $('dt-auto-short').checked = (a.sides || []).includes('SHORT');
+        $('dt-auto-preflight').checked = a.require_preflight !== false;
+        $('dt-auto-toggle').textContent = a.enabled ? 'DISABLE' : 'ENABLE';
+        $('dt-auto-toggle').classList.toggle('danger', !a.enabled);
+        const live = a.live_trading === undefined ? null : a.live_trading;
+        $('dt-auto-status').innerHTML = a.enabled
+            ? `<b class="mf-gt">ON</b> since ${esc((a.enabled_at || '').slice(11, 16))} · ${a.orders_today ?? 0}/${a.max_orders_per_day} orders today`
+              + (live === false ? ' · <b class="mf-rt">live trading is OFF — nothing will be sent until you Start Live</b>' : '')
+            : '<b>OFF</b> — board signals are tracked and logged only; no orders are placed';
+    }
+
+    async function saveAuto(patch) {
+        try {
+            const res = await fetch('/api/market/day-trade/autotrade', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+            });
+            const json = await res.json();
+            if (!res.ok || json.error) throw new Error(json.error || json.detail || res.statusText);
+            renderAuto(json);
+            return true;
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Auto-trade update failed: ' + e.message, 'error');
+            return false;
+        }
+    }
+
+    function autoForm() {
+        return {
+            risk_per_trade: Number($('dt-auto-risk').value), max_order_value: Number($('dt-auto-cap').value),
+            max_orders_per_day: Number($('dt-auto-max').value),
+            sides: [$('dt-auto-long').checked && 'LONG', $('dt-auto-short').checked && 'SHORT'].filter(Boolean),
+            require_preflight: $('dt-auto-preflight').checked,
+        };
+    }
+
+    async function loadAuto() {
+        try {
+            const res = await fetch('/api/market/day-trade/autotrade');
+            if (res.ok) renderAuto(await res.json());
+        } catch (e) { /* shown on the next poll */ }
     }
 
     function feedFilter(s) {
@@ -157,6 +224,7 @@ const DayTrade = (() => {
 
     function render() {
         if (!data) return;
+        if (data.autotrade) renderAuto(data.autotrade);
         // nothing tradeable yet (e.g. after hours): show the whole session, labelled hypothetical
         const replayMode = !(data.stats?.signals) && data.replay_stats?.signals;
         const st = (replayMode ? data.replay_stats : data.stats) || {};
@@ -174,7 +242,7 @@ const DayTrade = (() => {
 
         const feed = data.feed.filter(feedFilter);
         $('dt-feed').innerHTML = feed.length
-            ? `<table class="dt-table"><thead><tr><th title="Bar close time when the signal fired">SIGNAL</th><th>SYMBOL</th><th>SIDE</th><th>SETUP</th><th>Q</th><th>ENTRY</th><th>STOP</th><th>T1</th><th>STATUS</th><th>R</th></tr></thead>
+            ? `<table class="dt-table"><thead><tr><th title="Bar close time when the signal fired">SIGNAL</th><th>SYMBOL</th><th>SIDE</th><th>SETUP</th><th>Q</th><th>ENTRY</th><th>STOP</th><th>T1</th><th>STATUS</th><th>R</th><th title="Board auto-trade decision for this signal">ORDER</th></tr></thead>
                 <tbody>${feed.map(feedRow).join('')}</tbody></table>`
             : '<div class="mf-dim" style="padding:10px">No signals match this filter yet.</div>';
 
@@ -344,6 +412,23 @@ const DayTrade = (() => {
                 if (row && typeof openStock === 'function') openStock(row.dataset.sym);
             });
         }
+        $('dt-auto-btn').addEventListener('click', () => { $('dt-auto').hidden = !$('dt-auto').hidden; if (!$('dt-auto').hidden) loadAuto(); });
+        $('dt-auto-save').addEventListener('click', () => saveAuto(autoForm()));
+        $('dt-auto-toggle').addEventListener('click', async () => {
+            const enabling = !(auto && auto.enabled);
+            if (enabling) {
+                const f = autoForm();
+                const ok = window.confirm(
+                    'Turn ON board auto-trade?\n\nNew Day Trade board signals will be sent as REAL orders to Zerodha ' +
+                    `(risk ₹${f.risk_per_trade} per trade, max ₹${f.max_order_value} per order, up to ${f.max_orders_per_day} orders a day, ` +
+                    `${f.sides.join(' + ') || 'no'} side(s)${f.require_preflight ? ', preflight checklist on every order' : ', WITHOUT the preflight checklist'}).\n\n` +
+                    'Orders go through the live-trading path and are only sent while live trading is running.');
+                if (!ok) return;
+                await saveAuto({ ...f, enabled: true });
+            } else {
+                await saveAuto({ enabled: false });
+            }
+        });
         $('mf-demo')?.addEventListener('change', () => { data = null; seen = null; poll(); });
         window.addEventListener('resize', () => { if (data && isActive()) render(); });
         document.addEventListener('visibilitychange', () => { if (isActive()) poll(); });

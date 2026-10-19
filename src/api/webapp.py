@@ -775,8 +775,14 @@ async def analysis_deep_profile(request: Request, symbol: str) -> dict[str, Any]
     svc = get_user_service(request)
     sym = symbol.upper().strip()
     cached = svc.get_deep_profile(sym)
-    if not cached.get("error") and _deep_profile_is_fresh(cached):
-        return cached
+    if not cached.get("error"):
+        if _deep_profile_is_fresh(cached):
+            return {**cached, "cache": "hit"}
+        if str(cached.get("as_of") or "")[:10] == datetime.now().strftime("%Y-%m-%d"):
+            # analysed earlier today: answer now, refresh behind the scenes
+            svc.refresh_analysis_in_background(sym)
+            return {**cached, "cache": "stale", "refreshing": True}
+    # missing or from a previous day, so never 'fresh': this refreshes it now
     fresh = await svc.analyze_stock_on_demand(sym)
     if fresh.get("error") and not cached.get("error"):
         # keep showing the last good profile, clearly flagged as stale
@@ -847,6 +853,56 @@ async def agents_status(request: Request) -> dict[str, Any]:
     zerodha_id = get_session_zerodha_id(request)
     status = mcp_driver.get_agent_status(zerodha_id)
     return status or {"error": "No active agent for this session"}
+
+
+@app.get("/api/agents/log")
+async def agents_log(request: Request, cursor: str = "", agent: str = "", limit: int = 400) -> dict[str, Any]:
+    """Incremental agent log for the console.
+
+    ``cursor`` is ``scanner:120,executor:88,...`` - the last seq seen per agent;
+    only newer entries are returned, plus the new cursor.
+    """
+    zerodha_id = get_session_zerodha_id(request)
+    sup = mcp_driver.get_agent(zerodha_id)
+    if sup is None:
+        return {"error": "No active agent for this session", "entries": [], "cursor": cursor}
+    seen: dict[str, int] = {}
+    for part in cursor.split(","):
+        name, _, seq = part.partition(":")
+        if name and seq.isdigit():
+            seen[name] = int(seq)
+    limit = max(1, min(limit, 2000))
+    names = [agent] if agent in sup.agents else list(sup.agents)
+    entries: list[dict[str, Any]] = []
+    for name in names:
+        entries.extend(sup.agents[name].activity.log_since(seen.get(name, 0), limit))
+    entries.sort(key=lambda e: (e["ts"], e["agent"], e["seq"]))
+    entries = entries[-limit:]
+    for e in entries:
+        seen[e["agent"]] = max(seen.get(e["agent"], 0), e["seq"])
+    for name in names:   # agents with nothing new keep their position
+        seen.setdefault(name, sup.agents[name].activity.snapshot(limit=0)["last_seq"])
+    return {"entries": entries, "cursor": ",".join(f"{k}:{v}" for k, v in seen.items())}
+
+
+@app.get("/api/agents/log/download")
+async def agents_log_download(request: Request, agent: str, day: str = "") -> Any:
+    """Download one agent's JSONL log for a day (default today)."""
+    from datetime import date as _date
+    from fastapi.responses import FileResponse
+
+    zerodha_id = get_session_zerodha_id(request)
+    sup = mcp_driver.get_agent(zerodha_id)
+    if sup is None or agent not in sup.agents:
+        raise HTTPException(404, "Unknown agent")
+    try:
+        when = _date.fromisoformat(day) if day else _date.today()
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    path = sup.agents[agent].activity.log_path(when)
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, f"No {agent} log for {when.isoformat()}")
+    return FileResponse(path, media_type="application/x-ndjson", filename=os.path.basename(path))
 
 
 @app.get("/api/research/best-stocks")
@@ -1388,6 +1444,28 @@ async def replay_day_trade(request: Request, symbols: str = "", days: int = 30) 
     if not svc.is_authenticated:
         return {"error": "Zerodha not authenticated"}
     return await svc.replay_day_trade_setups(names, days)
+
+
+@app.get("/api/oi/bias-history")
+async def oi_bias_history(request: Request, underlying: str = "NIFTY", days: int = 1) -> dict[str, Any]:
+    """Recorded per-minute options-OI bias (and its inputs) for back-testing direction filters."""
+    return get_user_service(request).get_oi_bias_history(underlying, days)
+
+
+@app.get("/api/market/day-trade/autotrade")
+async def get_day_trade_autotrade(request: Request) -> dict[str, Any]:
+    """Board auto-trade settings (opt-in; sends board signals through the live-trading path)."""
+    return get_user_service(request).get_board_autotrade()
+
+
+@app.post("/api/market/day-trade/autotrade")
+async def set_day_trade_autotrade(request: Request) -> dict[str, Any]:
+    """Update board auto-trade. Body: any of {enabled, risk_per_trade, max_order_value,
+    max_orders_per_day, sides, setups, require_preflight}."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object expected")
+    return get_user_service(request).update_board_autotrade(body)
 
 
 @app.post("/api/market/day-trade/track")

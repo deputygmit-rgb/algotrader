@@ -103,6 +103,27 @@ class DayTradeTracker:
         self._daily_cache: dict[str, dict] = {}    # per-symbol cache for session_inputs
         self._lock = asyncio.Lock()
 
+    # ── persistence ─────────────────────────────────────────────────
+    def to_state(self) -> dict[str, Any]:
+        """Working list and first-seen signal quality, for saving across restarts
+        (bars are refetched; signals are recomputed from them)."""
+        return {"session": self._session, "tracked": self._tracked, "quality": self._quality}
+
+    def load_state(self, state: dict[str, Any], now: datetime) -> bool:
+        """Restore a saved state. Same session: everything. An older session:
+        only the manually tracked symbols, as a session roll-over keeps them."""
+        if not state:
+            return False
+        today = now.date().isoformat()
+        tracked = dict(state.get("tracked") or {})
+        self._session = today
+        if state.get("session") != today:
+            self._tracked = {s: v for s, v in tracked.items() if v.get("source") == "manual"}
+            return bool(self._tracked)
+        self._tracked = tracked
+        self._quality = {str(k): int(v) for k, v in (state.get("quality") or {}).items()}
+        return True
+
     # ── working list ────────────────────────────────────────────────
     def _roll_session(self, now: datetime) -> None:
         day = now.date().isoformat()
@@ -192,9 +213,14 @@ class DayTradeTracker:
                 prev_high=inputs["prev_high"] if inputs else None, prev_low=inputs["prev_low"] if inputs else None,
                 ltp=r.get("ltp"), direction=bias, min_quality=MIN_QUALITY,
             )
+            last_bar = bars[-1] if bars else None
             for s in result["signals"]:
                 s["symbol"] = sym
                 s["quality"] = self._quality.setdefault(s["id"], s["quality"])
+                # what an order for this signal needs (same inputs as the live strategy)
+                s["atr"] = inputs["atr"] if inputs else None
+                s["is_latest_bar"] = bool(last_bar) and s["bar_time"] == last_bar["t"]
+                s["bar_close"] = last_bar["c"] if last_bar else None
                 # compare full date + time: a previous session's signals are always replayed
                 since_at = meta.get("since_at") or f"{now.date().isoformat()}T{meta['since']}"
                 s["backfilled"] = f"{str(s['bar_time'])[:10]}T{s['time']}" < since_at

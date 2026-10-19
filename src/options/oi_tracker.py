@@ -113,9 +113,11 @@ class OITracker:
                 self._instrument_map[token] = inst
                 underlying = ""
                 name = inst.get("name", "").upper()
-                if "NIFTY" in name and "BANK" not in name:
+                # exact match: "NIFTY" in name would also catch FINNIFTY, MIDCPNIFTY,
+                # NIFTYNXT50 ... and mix their option chains into NIFTY's
+                if name == "NIFTY":
                     underlying = "NIFTY"
-                elif "SENSEX" in name:
+                elif name == "SENSEX":
                     underlying = "SENSEX"
                 if underlying:
                     inst["_underlying"] = underlying

@@ -868,6 +868,7 @@
                             <button class="mf-btn" type="submit">REPLAY</button>
                         </form>
                         <label class="mf-chk" title="Play a tone on new signals and outcome changes"><input type="checkbox" id="dt-alerts" checked> ALERTS</label>
+                        <button class="mf-btn dt-auto-btn" id="dt-auto-btn" type="button" title="Opt-in: send new board signals as real orders through the live-trading path">AUTO-TRADE: OFF</button>
                         <div class="mf-tabs" id="dt-filter" role="group" aria-label="Feed filter">
                             <button class="on" data-v="all">ALL</button>
                             <button data-v="open">OPEN</button>
@@ -875,6 +876,23 @@
                             <button data-v="SHORT">SHORT</button>
                         </div>
                     </div>
+                </div>
+                <div class="dt-auto" id="dt-auto" hidden>
+                    <div class="dt-auto-hd"><b>BOARD AUTO-TRADE</b>
+                        <span class="mf-dim">New signals on the latest closed bar are sent as real orders — the same order the live Day-Trade Setups strategy sends
+                        (next-bar market entry, setup stop, half at T1 then breakeven, T2, exit by 15:15) — after the Verifier's preflight checklist passes on that order,
+                        through the live path (risk limits, kill switch, execution engine, journal). Needs live trading running. Off by default.</span></div>
+                    <div class="dt-auto-grid">
+                        <label>RISK / TRADE ₹<input type="number" id="dt-auto-risk" min="50" step="50"></label>
+                        <label>MAX ORDER VALUE ₹<input type="number" id="dt-auto-cap" min="1000" step="1000"></label>
+                        <label>MAX ORDERS / DAY<input type="number" id="dt-auto-max" min="1" max="50" step="1"></label>
+                        <label class="mf-chk"><input type="checkbox" id="dt-auto-long"> LONG</label>
+                        <label class="mf-chk"><input type="checkbox" id="dt-auto-short"> SHORT</label>
+                        <label class="mf-chk" title="Run the Verifier's preflight checklist on each order before sending"><input type="checkbox" id="dt-auto-preflight"> PREFLIGHT</label>
+                        <button class="mf-btn" id="dt-auto-save" type="button">SAVE</button>
+                        <button class="mf-btn dt-auto-toggle" id="dt-auto-toggle" type="button">ENABLE</button>
+                    </div>
+                    <div class="dt-auto-status" id="dt-auto-status"></div>
                 </div>
                 <div class="dt-body">
                     <div class="dt-feed-wrap">
@@ -908,60 +926,44 @@
 
         <div id="tab-agents" class="tab-content">
             <div class="t-hud">
-                <div class="t-hud-l"><span class="t-hud-title">AGENTS</span><span class="t-hud-sub">SCANNER · VERIFIER · EXECUTOR · TRACKER — LIVE STATE</span></div>
-                <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
+                <div class="t-hud-l"><span class="t-hud-title">AGENT OPERATIONS</span><span class="t-hud-sub">AUTONOMOUS AGENTS · LIVE STATE · WORKLOAD · LOGS</span></div>
+                <div class="t-hud-r"><span class="ag-context" id="ag-context"></span><span data-t-session></span><span class="t-clock" data-t-clock></span></div>
             </div>
-            <div class="ag-context" id="ag-context"><span class="ag-chip idle">Loading agent status…</span></div>
-                <div class="card ag-topo-card">
-                    <div class="card-title">Agent topology <span class="ag-note">each agent works independently against the trading service — they do not hand data to each other (see docs/agents)</span></div>
-                    <svg id="ag-topo" viewBox="0 0 900 300" preserveAspectRatio="xMidYMid meet">
-                        <path class="ag-link" data-link="kite" d="M450 128 L450 60"/>
-                        <path class="ag-link" data-link="scanner" d="M222 70 C330 70 340 150 360 150"/>
-                        <path class="ag-link" data-link="executor" d="M222 230 C330 230 340 150 360 150"/>
-                        <path class="ag-link" data-link="verifier" d="M678 70 C570 70 560 150 540 150"/>
-                        <path class="ag-link" data-link="tracker" d="M678 230 C570 230 560 150 540 150"/>
-                        <g class="ag-node ag-ext" transform="translate(450,36)">
-                            <rect x="-92" y="-22" width="184" height="44" rx="4"/>
-                            <text class="ag-node-name" y="5">ZERODHA KITE API</text>
-                        </g>
-                        <g class="ag-node ag-hub" data-node="service" transform="translate(450,150)">
-                            <rect x="-90" y="-26" width="180" height="52" rx="4"/>
-                            <text class="ag-node-name" y="-4">TRADING SERVICE</text>
-                            <text class="ag-node-state" y="14">—</text>
-                        </g>
-                        <g class="ag-node" data-node="scanner" transform="translate(130,70)">
-                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
-                            <text class="ag-node-name" y="-6">⌖ SCANNER</text>
-                            <text class="ag-node-state" y="14">—</text>
-                        </g>
-                        <g class="ag-node" data-node="executor" transform="translate(130,230)">
-                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
-                            <text class="ag-node-name" y="-6">⚡ EXECUTOR</text>
-                            <text class="ag-node-state" y="14">—</text>
-                        </g>
-                        <g class="ag-node" data-node="verifier" transform="translate(770,70)">
-                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
-                            <text class="ag-node-name" y="-6">⛨ VERIFIER</text>
-                            <text class="ag-node-state" y="14">—</text>
-                        </g>
-                        <g class="ag-node" data-node="tracker" transform="translate(770,230)">
-                            <rect x="-92" y="-30" width="184" height="60" rx="4"/>
-                            <text class="ag-node-name" y="-6">◎ TRACKER</text>
-                            <text class="ag-node-state" y="14">—</text>
-                        </g>
-                    </svg>
-                </div>
+            <div class="ag-kpis" id="ag-kpis"><div class="ag-kpi"><span>AGENTS</span><b>…</b><em>loading</em></div></div>
+            <div class="card ag-topo-card">
+                <div class="card-title">Agent topology <span class="ag-note">each agent works independently against the trading service — they do not hand data to each other</span></div>
+                <svg id="ag-topo" viewBox="0 0 900 230" preserveAspectRatio="xMidYMid meet">
+                    <path class="ag-link" data-link="kite" d="M450 98 L450 52"/>
+                    <path class="ag-link" data-link="scanner" d="M222 58 C330 58 340 120 360 120"/>
+                    <path class="ag-link" data-link="executor" d="M222 182 C330 182 340 120 360 120"/>
+                    <path class="ag-link" data-link="verifier" d="M678 58 C570 58 560 120 540 120"/>
+                    <path class="ag-link" data-link="tracker" d="M678 182 C570 182 560 120 540 120"/>
+                    <g class="ag-node ag-ext" transform="translate(450,30)"><rect x="-92" y="-20" width="184" height="40" rx="4"/><text class="ag-node-name" y="5">ZERODHA KITE API</text></g>
+                    <g class="ag-node ag-hub" data-node="service" transform="translate(450,120)"><rect x="-90" y="-24" width="180" height="48" rx="4"/><text class="ag-node-name" y="-4">TRADING SERVICE</text><text class="ag-node-state" y="13">—</text></g>
+                    <g class="ag-node" data-node="scanner" transform="translate(130,58)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⌖ SCANNER</text><text class="ag-node-state" y="13">—</text></g>
+                    <g class="ag-node" data-node="executor" transform="translate(130,182)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⚡ EXECUTOR</text><text class="ag-node-state" y="13">—</text></g>
+                    <g class="ag-node" data-node="verifier" transform="translate(770,58)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⛨ VERIFIER</text><text class="ag-node-state" y="13">—</text></g>
+                    <g class="ag-node" data-node="tracker" transform="translate(770,182)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">◎ TRACKER</text><text class="ag-node-state" y="13">—</text></g>
+                </svg>
+            </div>
             <div class="ag-cards" id="ag-cards"></div>
             <div class="ag-detail card" id="ag-detail" hidden></div>
-            <div class="card">
-                <div class="card-title">Activity timeline
-                    <span class="mf-tabs ag-filter" id="ag-filter" style="float:right">
-                        <button class="on" data-f="all">ALL</button><button data-f="issues">ISSUES</button>
-                        <button data-f="scanner">SCANNER</button><button data-f="verifier">VERIFIER</button>
-                        <button data-f="executor">EXECUTOR</button><button data-f="tracker">TRACKER</button>
-                    </span>
+            <div class="card ag-console-card" id="ag-console-card">
+                <div class="ag-console-hd">
+                    <div class="card-title" style="margin:0">Agent console <span class="ag-note" id="ag-console-count"></span></div>
+                    <div class="ag-console-tools">
+                        <span class="mf-tabs" id="ag-c-agent"><button class="on" data-v="all">ALL</button><button data-v="scanner">SCANNER</button><button data-v="verifier">VERIFIER</button><button data-v="executor">EXECUTOR</button><button data-v="tracker">TRACKER</button></span>
+                        <span class="mf-tabs" id="ag-c-stream"><button class="on" data-v="all">FULL TRACE</button><button data-v="events">EVENTS</button></span>
+                        <span class="mf-tabs" id="ag-c-level"><button class="on" data-v="all">ALL</button><button data-v="info">INFO+</button><button data-v="warning">WARN+</button></span>
+                        <input id="ag-c-search" type="search" placeholder="filter… e.g. RELIANCE, rejected" autocomplete="off">
+                        <button class="mf-btn" id="ag-c-pause">❚❚ PAUSE</button>
+                        <select id="ag-c-download" class="mf-btn" title="Download today's log"><option value="">⤓ LOG</option><option value="scanner">Scanner</option><option value="verifier">Verifier</option><option value="executor">Executor</option><option value="tracker">Tracker</option></select>
+                    </div>
                 </div>
-                <div class="ag-timeline" id="ag-timeline"></div>
+                <div class="ag-console-wrap">
+                    <div class="ag-console" id="ag-console"></div>
+                    <button class="ag-jump" id="ag-jump" hidden>↓ LATEST</button>
+                </div>
             </div>
         </div>
 

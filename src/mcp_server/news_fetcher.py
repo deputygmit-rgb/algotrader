@@ -234,7 +234,7 @@ _COMPANY_NAMES: dict[str, str] = {
 
 # News moves faster than filings; a short cache still spares the sources
 # from being re-scraped on every page view.
-_NEWS_TTL_SECONDS = 10 * 60
+_NEWS_TTL_SECONDS = 30 * 60   # the scanner agent pre-fetches held stocks every 25 min
 _news_cache: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 
 
