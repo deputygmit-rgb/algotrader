@@ -7,6 +7,8 @@ import ipaddress
 import json
 import os
 import re
+import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Optional
@@ -17,6 +19,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.routing import Match
 
 from src.agent.mcp_driver import MCPDriverSupervisorAgent
 from src.analysis.nifty_contribution import DemoQuoteSimulator, compute_nifty_contribution
@@ -26,6 +29,8 @@ from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth
 from src.auth.user_config import UserConfigService
+from src.metrics.store import device_of, metrics
+from src.utils.mailer import send_mail
 from src.demo.sessions import (
     PUBLIC_SESSION_SECONDS,
     demo_sessions,
@@ -57,10 +62,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await mcp_driver.startup()
     demo_sessions.purge_orphans()
     reaper = asyncio.create_task(demo_sessions.run_reaper())
+    flusher = asyncio.create_task(metrics.run_flusher())
     try:
         yield
     finally:
         reaper.cancel()
+        flusher.cancel()
+        await asyncio.to_thread(metrics.flush)
         await mcp_driver.shutdown()
 
 
@@ -75,12 +83,12 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 SESSION_COOKIE = "kta_session"
 
 PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-otp", "/auth/callback",
-                "/api/auth/callback", "/api/auth/postback"}
+                "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact"}
 
 
 def _real_service(zerodha_id: str) -> TradingService:
     if is_public_demo_id(zerodha_id):
-        raise HTTPException(403, "Demo sessions cannot connect to Zerodha - log in with your own account")
+        raise HTTPException(403, "Demo sessions cannot link a trading account - sign in with your own account")
     user_cfg = UserConfigService.get_instance().get_user(zerodha_id)
     if not user_cfg:
         raise HTTPException(403, "User not configured")
@@ -245,12 +253,179 @@ async def auth_middleware(request: Request, call_next):
     return _apply_security_headers(response, request)
 
 
+VISITOR_COOKIE = "vq_vid"
+_VISITOR_ID = re.compile(r"^[a-f0-9]{32}$")
+_UNTRACKED_PATHS = ("/static/", "/favicon.ico", "/metrics/events")
+
+
+def _session_identity(request: Any) -> tuple[str, str]:
+    """(user id, kind) behind the session cookie: kind is user / demo / anon."""
+    zerodha_id = otp_auth.get_session_user(request.cookies.get(SESSION_COOKIE, "")) or ""
+    if not zerodha_id:
+        return "", "anon"
+    return zerodha_id, "demo" if is_public_demo_id(zerodha_id) else "user"
+
+
+def _route_template(request: Request) -> str:
+    """Route pattern for a request (``/app/stock/{symbol}``), also for requests the
+    auth middleware answered before routing; unknown paths share one bucket so
+    scanners probing random URLs cannot flood the table."""
+    route = request.scope.get("route")
+    if route is not None:
+        return route.path
+    scope = {"type": "http", "path": request.url.path, "method": request.method, "root_path": ""}
+    for candidate in app.router.routes:
+        if candidate.matches(scope)[0] != Match.NONE:
+            return getattr(candidate, "path", "(unmatched)")
+    return "(unmatched)"
+
+
+def _track(request: Any, event: str, **detail: Any) -> None:
+    """Record a business event; never lets metrics break the request."""
+    try:
+        user_id, kind = _session_identity(request)
+        if detail.get("user_id"):
+            user_id, kind = str(detail.pop("user_id")), detail.pop("kind", kind)
+        state = getattr(request, "state", None)
+        metrics.record_event(
+            event, visitor_id=getattr(state, "visitor_id", "") if state else "", user_id=user_id, kind=kind,
+            page=request.url.path if hasattr(request, "url") else "", detail=detail, ip=_client_ip(request),
+            device=device_of(request.headers.get("user-agent", "")),
+        )
+    except Exception:
+        pass
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Counts feature usage per user and route, and gives visitors an anonymous id."""
+    path = request.url.path
+    if path.startswith(_UNTRACKED_PATHS[:2]):
+        return await call_next(request)
+    visitor = request.cookies.get(VISITOR_COOKIE, "")
+    new_visitor = not _VISITOR_ID.match(visitor)
+    if new_visitor:
+        visitor = secrets.token_hex(16)
+    request.state.visitor_id = visitor
+    started = time.perf_counter()
+    response = await call_next(request)
+    if path not in _UNTRACKED_PATHS:
+        try:
+            route = _route_template(request)
+            user_id, kind = _session_identity(request)
+            if device_of(request.headers.get("user-agent", "")) == "bot":
+                kind = "bot"
+            metrics.record_request(user_id or f"v:{visitor}", kind, route, request.method, response.status_code,
+                                   (time.perf_counter() - started) * 1000)
+        except Exception:
+            pass
+    if new_visitor:
+        response.set_cookie(VISITOR_COOKIE, visitor, max_age=365 * 86400, httponly=True, samesite="lax",
+                            secure=_is_secure_request(request), path="/")
+    return response
+
+
+@app.post("/metrics/events")
+async def metrics_events(request: Request) -> Any:
+    """Browser activity (page views, clicks, tab switches) from static/js/metrics.js."""
+    ip = _client_ip(request)
+    if not otp_auth.check_ip_rate_limit("metrics", ip, max_requests=600, window_seconds=3600):
+        return JSONResponse({"ok": False}, status_code=429)
+    raw = await request.body()
+    if len(raw) > 32 * 1024:
+        return JSONResponse({"ok": False}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"ok": False}, status_code=400)
+    events = body.get("events") if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        return JSONResponse({"ok": False}, status_code=400)
+    user_id, kind = _session_identity(request)
+    device = device_of(request.headers.get("user-agent", ""))
+    visitor = getattr(request.state, "visitor_id", "")
+    for e in events[:50]:
+        if isinstance(e, dict):
+            metrics.record_event(
+                str(e.get("event", "")), visitor_id=visitor, user_id=user_id, kind=kind, page=e.get("page", ""),
+                target=e.get("target", ""), detail=e.get("detail") if isinstance(e.get("detail"), dict) else None,
+                ip=ip, device=device,
+            )
+    return {"ok": True}
+
+
+_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _clean(value: Any, limit: int, multiline: bool = False) -> str:
+    text = _CONTROL.sub("", str(value or ""))
+    if not multiline:
+        text = text.replace("\n", " ")
+    return text.strip()[:limit]
+
+
+@app.post("/contact")
+async def contact(request: Request) -> Any:
+    """Access requests from prospective customers (landing page and demo)."""
+    ip = _client_ip(request)
+    if not otp_auth.check_ip_rate_limit("contact", ip, max_requests=5, window_seconds=3600):
+        return JSONResponse({"success": False, "message": "Too many requests. Please try again later."}, status_code=429)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "Invalid request"}, status_code=400)
+    thanks = {"success": True, "message": "Thanks! We'll get back to you by email."}
+    if body.get("website"):  # hidden field only bots fill in
+        return thanks
+    name = _clean(body.get("name"), 80)
+    email = _clean(body.get("email"), 120).lower()
+    phone = _clean(body.get("phone"), 20)
+    trading_id = _clean(body.get("trading_id"), 10).upper()
+    message = _clean(body.get("message"), 1000, multiline=True)
+    source = body.get("source") if body.get("source") in ("landing", "login", "demo") else "landing"
+    if not name:
+        return JSONResponse({"success": False, "message": "Please tell us your name."}, status_code=400)
+    if not _EMAIL.match(email):
+        return JSONResponse({"success": False, "message": "Please enter a valid email address."}, status_code=400)
+    if phone and not re.fullmatch(r"[0-9+\-() ]{6,20}", phone):
+        return JSONResponse({"success": False, "message": "Please enter a valid phone number."}, status_code=400)
+    if trading_id and not re.fullmatch(r"[A-Z0-9]{4,10}", trading_id):
+        return JSONResponse({"success": False, "message": "Trading ID should be 4-10 letters or digits."}, status_code=400)
+
+    user_id, kind = _session_identity(request)
+    visitor = getattr(request.state, "visitor_id", "")
+    contact_id = await asyncio.to_thread(
+        metrics.add_contact, name=name, email=email, phone=phone, trading_id=trading_id, message=message,
+        source=source, visitor_id=visitor, user_id=user_id, ip=ip,
+    )
+    _track(request, "contact_submitted", source=source)
+    logger.info("contact_request_received", contact_id=contact_id, source=source)
+
+    admin = os.environ.get("ADMIN_EMAIL", "").strip()
+    if admin:
+        text = (
+            f"New access request #{contact_id} from the {source}{' (demo session)' if kind == 'demo' else ''}.\n\n"
+            f"Name:       {name}\nEmail:      {email}\nPhone:      {phone or '-'}\nTrading ID: {trading_id or '-'}\n\n"
+            f"Message:\n{message or '-'}\n\n"
+            "To give them access, run on the server:\n"
+            f"  sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add {trading_id or '<TRADING_ID>'} {email}\n"
+            "  sudo systemctl restart verquoai\n"
+        )
+        if await asyncio.to_thread(send_mail, admin, f"VerquoAI access request: {name}", text, email):
+            await asyncio.to_thread(metrics.mark_emailed, contact_id)
+    return thanks
+
+
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
-    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True})
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True,
+                                                                "contact_email": os.environ.get("ADMIN_EMAIL", "")})
 
 
 @app.post("/auth/send-otp")
@@ -265,7 +440,7 @@ async def send_otp(request: Request) -> dict[str, Any]:
     if not email:
         return {"success": False, "message": "Email is required"}
     if not zerodha_id:
-        return {"success": False, "message": "Zerodha ID is required"}
+        return {"success": False, "message": "Trading ID is required"}
 
     user_cfg_svc = UserConfigService.get_instance()
     user = user_cfg_svc.get_user(zerodha_id)
@@ -295,6 +470,7 @@ async def send_otp(request: Request) -> dict[str, Any]:
             "success": False,
             "message": "Unable to deliver OTP. Check email configuration and try again.",
         }
+    _track(request, "otp_sent", user_id=zerodha_id, kind="user")
     return {"success": True, "message": "OTP sent to your registered email"}
 
 
@@ -310,7 +486,7 @@ async def verify_otp(request: Request) -> Any:
     if not otp:
         return {"success": False, "message": "OTP is required"}
     if not zerodha_id:
-        return {"success": False, "message": "Zerodha ID is required"}
+        return {"success": False, "message": "Trading ID is required"}
 
     session_token = otp_auth.verify_otp(otp, zerodha_id)
     if session_token:
@@ -324,8 +500,10 @@ async def verify_otp(request: Request) -> Any:
             secure=_is_secure_request(request),
             path="/",
         )
+        _track(request, "login_success", user_id=zerodha_id, kind="user")
         return response
     else:
+        _track(request, "login_failed", user_id=zerodha_id, kind="user")
         return {"success": False, "message": "Invalid or expired OTP"}
 
 
@@ -344,6 +522,7 @@ async def demo_start(request: Request) -> Any:
     token = otp_auth.create_demo_session(demo_id, PUBLIC_SESSION_SECONDS)
     demo_sessions.touch(demo_id)
     logger.info("demo_session_started", demo_id=demo_id)
+    _track(request, "demo_start", user_id=demo_id, kind="demo")
     response = JSONResponse({"success": True, "redirect": "/app"})
     response.set_cookie(SESSION_COOKIE, token, max_age=PUBLIC_SESSION_SECONDS, httponly=True, samesite="lax",
                         secure=_is_secure_request(request), path="/")
@@ -354,6 +533,7 @@ async def demo_start(request: Request) -> Any:
 async def logout(request: Request) -> Any:
     token = request.cookies.get(SESSION_COOKIE, "")
     zerodha_id = otp_auth.get_session_user(token) or ""
+    _track(request, "demo_exit" if is_public_demo_id(zerodha_id) else "logout")
     if is_public_demo_id(zerodha_id):
         await demo_sessions.end(zerodha_id)
     otp_auth.logout(token)
@@ -410,6 +590,7 @@ async def step_up_verify(request: Request) -> dict[str, Any]:
     body = await request.json()
     otp = str(body.get("otp", "")).strip()
     if otp and otp_auth.verify_step_up(request.cookies.get(SESSION_COOKIE, ""), otp):
+        _track(request, "step_up_verified")
         return {"success": True}
     return {"success": False, "message": "Invalid or expired code"}
 
@@ -423,7 +604,8 @@ def _static_version(rel_path: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False})
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
+                                                                "contact_email": os.environ.get("ADMIN_EMAIL", "")})
 
 
 @app.get("/app", response_class=HTMLResponse)
@@ -441,6 +623,7 @@ async def dashboard(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
         "demo_kind": demo_kind(svc),
+        "contact_email": os.environ.get("ADMIN_EMAIL", ""),
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
@@ -453,6 +636,8 @@ async def dashboard(request: Request) -> HTMLResponse:
         "collapsible_js_version": _static_version("js/collapsible.js"),
         "terminal_js_version": _static_version("js/terminal.js"),
         "agents_js_version": _static_version("js/agents.js"),
+        "contact_js_version": _static_version("js/contact.js"),
+        "metrics_js_version": _static_version("js/metrics.js"),
     })
 
 
@@ -472,6 +657,7 @@ async def stock_detail_page(request: Request, symbol: str) -> HTMLResponse:
         "terminal_css_version": _static_version("css/terminal.css"),
         "collapsible_js_version": _static_version("js/collapsible.js"),
         "js_version": _static_version("js/stock_detail.js"),
+        "metrics_js_version": _static_version("js/metrics.js"),
     })
 
 
@@ -537,6 +723,7 @@ async def auth_callback(request: Request):
         svc = get_real_user_service(request)
         await svc.authenticate(request_token)
         await demo_sessions.end(user_demo_id(svc.zerodha_id))
+        _track(request, "account_linked")
         mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/app?auth=success")
     except HTTPException:
@@ -557,6 +744,7 @@ async def auth_callback_bare(request: Request):
         svc = get_real_user_service(request)
         await svc.authenticate(request_token)
         await demo_sessions.end(user_demo_id(svc.zerodha_id))
+        _track(request, "account_linked")
         mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/app?auth=success")
     except HTTPException:
@@ -618,6 +806,7 @@ async def authenticate(request: Request) -> dict[str, Any]:
     svc = get_real_user_service(request)
     result = await svc.authenticate(token)
     await demo_sessions.end(user_demo_id(svc.zerodha_id))
+    _track(request, "account_linked")
     mcp_driver.wake_agent(svc.zerodha_id)
     return result
 
@@ -1563,7 +1752,7 @@ async def get_nifty_contribution(request: Request) -> dict[str, Any]:
         return result
     svc = get_user_service(request)
     if not svc.is_authenticated:
-        return {"error": "Zerodha not authenticated"}
+        return {"error": "Trading account not linked"}
     return await svc.get_nifty_contribution()
 
 
@@ -1584,7 +1773,7 @@ async def get_fno_flow(request: Request) -> dict[str, Any]:
         return {**result, "demo": True, "baseline_loading": False}
     svc = get_user_service(request)
     if not svc.is_authenticated:
-        return {"error": "Zerodha not authenticated"}
+        return {"error": "Trading account not linked"}
     return await svc.get_fno_flow()
 
 
@@ -1631,7 +1820,7 @@ async def get_day_trade(request: Request) -> dict[str, Any]:
         return await _demo_day_trade_snapshot()
     svc = get_user_service(request)
     if not svc.is_authenticated:
-        return {"error": "Zerodha not authenticated"}
+        return {"error": "Trading account not linked"}
     return await svc.get_day_trade()
 
 
@@ -1643,10 +1832,10 @@ async def replay_day_trade(request: Request, symbols: str = "", days: int = 30) 
     if not names or not all(re.fullmatch(r"[A-Za-z0-9&.-]{1,32}", n.strip()) for n in names):
         raise HTTPException(400, "symbols required, e.g. ?symbols=INFY,TCS")
     if request.query_params.get("demo") == "1":
-        return {"error": "Replay needs real historical 5-minute data - turn DEMO off and log in to Zerodha."}
+        return {"error": "Replay needs real historical 5-minute data - turn DEMO off and link your trading account."}
     svc = get_user_service(request)
     if not svc.is_authenticated:
-        return {"error": "Zerodha not authenticated"}
+        return {"error": "Trading account not linked"}
     return await svc.replay_day_trade_setups(names, days)
 
 
@@ -1689,7 +1878,7 @@ async def track_day_trade(request: Request) -> dict[str, Any]:
         return {"error": result["error"]} if result.get("error") else {"success": True}
     svc = get_user_service(request)
     if not svc.is_authenticated:
-        return {"error": "Zerodha not authenticated"}
+        return {"error": "Trading account not linked"}
     return await svc.track_day_trade_symbol(symbol, action)
 
 

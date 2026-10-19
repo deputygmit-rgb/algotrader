@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#080d18">
     <meta name="description" content="VerquoAI brings market flow, research, strategy tools, risk controls, and trade journaling into one trading workspace.">
     <title>VerquoAI™ — A clearer view of the market</title>
@@ -307,6 +308,26 @@
         .agent i { width: 7px; height: 7px; border-radius: 50%; font-style: normal; transition: background .4s ease, box-shadow .4s ease; }
         .agent em { margin-left: auto; color: #6f7d92; font-size: 8px; font-style: normal; }
 
+        /* contact */
+        .contact-card { display: grid; grid-template-columns: .9fr 1.1fr; gap: 48px; padding: 34px; border: 1px solid rgba(155, 180, 220, .14); border-radius: 14px; background: radial-gradient(ellipse at 0% 0%, rgba(140, 240, 205, .07), transparent 55%), linear-gradient(145deg, rgba(17, 27, 43, .86), rgba(10, 16, 28, .92)); }
+        .contact-card h2 { margin: 12px 0; font: 600 clamp(28px, 4vw, 40px)/1.15 "Space Grotesk", sans-serif; letter-spacing: -1.5px; }
+        .contact-card p { color: var(--muted); font-size: 14px; }
+        .contact-points { display: grid; gap: 10px; margin: 22px 0 0; padding: 0; list-style: none; color: #aab6c9; font-size: 13px; }
+        .contact-points li::before { content: "→"; margin-right: 9px; color: var(--mint); }
+        .contact-mail { margin-top: 22px; font-size: 13px; color: var(--muted); }
+        .contact-mail a { color: var(--mint); font-weight: 600; }
+        .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+        .field em { color: #6f7d92; font-style: normal; font-weight: 400; }
+        .field textarea { width: 100%; padding: 12px 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; outline: none; background: rgba(4, 8, 15, .7); color: var(--text); font: 500 14px "DM Sans", sans-serif; resize: vertical; }
+        .field textarea:focus { border-color: rgba(140, 240, 205, .6); box-shadow: 0 0 0 3px rgba(140, 240, 205, .12); }
+        .contact-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+        .contact-status { min-height: 20px; margin-top: 12px; font-size: 13px; }
+        .contact-status.error { color: #ff9aac; }
+        .contact-status.success { color: var(--mint); }
+        .contact-status.info { color: var(--blue); }
+        .login-request { margin-top: 14px; color: var(--muted); font-size: 12px; }
+        .login-request a { color: #9fdbc9; font-weight: 600; }
+
         /* scroll reveal */
         .reveal { opacity: 0; transform: translateY(14px); transition: opacity .7s ease, transform .7s ease; }
         .reveal.shown { opacity: 1; transform: none; }
@@ -345,6 +366,7 @@
             .hero-intro { grid-template-columns: 1fr; gap: 8px; margin-bottom: 25px; }
             h1 { letter-spacing: -2px; }
             .feature-grid { grid-template-columns: repeat(2, 1fr); }
+            .contact-card { grid-template-columns: 1fr; gap: 20px; padding: 24px; }
             .flow-section { grid-template-columns: 1fr; gap: 28px; }
             .platform-intro { display: block; }
             .platform-intro p { margin-top: 18px; }
@@ -358,6 +380,8 @@
             .nav-right { gap: 8px; }
             .nav-right .button { min-height: 38px; padding: 0 11px; font-size: 11px; }
             .feature-grid { grid-template-columns: 1fr; }
+            .contact-grid { grid-template-columns: 1fr; }
+            .contact-card { padding: 20px 16px; }
             .section { padding: 61px 0; }
             .platform-intro h2, .flow-intro .section-heading h2 { font-size: 35px; }
             .sim-topbar, .sim-controls, .sim-bottom { padding-right: 9px; padding-left: 9px; }
@@ -395,7 +419,7 @@
         .sim-terminal.paused .flow-dot { display: none; }
     </style>
 </head>
-<body data-open-login="{{ 'true' if open_login else 'false' }}">
+<body data-login-on-load="{{ 'true' if open_login else 'false' }}">
     <header class="shell nav">
         <a class="brand" href="/" aria-label="VerquoAI home">
             <span class="brand-mark" aria-hidden="true">V</span>
@@ -404,6 +428,7 @@
         <nav class="nav-right" aria-label="Main navigation">
             <a class="nav-link" href="#platform">Platform</a>
             <a class="nav-link" href="#market-flow">Market Flow</a>
+            <a class="nav-link" href="#contact">Contact</a>
             <a class="button button-quiet" href="/login" data-open-login>Sign in</a>
             <button class="button" type="button" data-start-demo>Try the demo <span aria-hidden="true">&nbsp;↗</span></button>
         </nav>
@@ -426,7 +451,7 @@
                 </div>
                 <div>
                     <p class="hero-copy">Research, market activity, strategy tools, risk controls, and trade review—brought together in one focused workspace for your trading process.</p>
-                    <p class="subnote">The demo opens the full workspace on a simulated market and broker. No account, no Zerodha connection, nothing real at stake.</p>
+                    <p class="subnote">The demo opens the full workspace on a simulated market and broker. No account, no broker connection, nothing real at stake.</p>
                 </div>
             </div>
             <section class="sim-terminal" id="market-simulation" aria-label="Simulated market flow preview. All displayed market values are illustrative, not live data.">
@@ -570,26 +595,55 @@
             </div>
         </section>
 
+        <section class="shell section reveal" id="contact">
+            <div class="contact-card">
+                <div>
+                    <div class="eyebrow">Get your workspace</div>
+                    <h2>Request access</h2>
+                    <p>VerquoAI workspaces are set up by our team. Tell us a little about you and we'll reply by email with the next steps.</p>
+                    <ul class="contact-points">
+                        <li>Your own private workspace and trading account link</li>
+                        <li>Help getting your broker API connected</li>
+                        <li>Try everything first in the demo, no account needed</li>
+                    </ul>
+                    {% if contact_email %}<p class="contact-mail">Prefer email? Write to <a href="mailto:{{ contact_email }}?subject=VerquoAI%20access%20request">{{ contact_email }}</a></p>{% endif %}
+                </div>
+                <form data-contact-form="landing" novalidate>
+                <div class="contact-grid">
+                    <label class="field"><span>Name</span><input name="name" type="text" maxlength="80" autocomplete="name" required></label>
+                    <label class="field"><span>Email</span><input name="email" type="email" maxlength="120" autocomplete="email" required></label>
+                    <label class="field"><span>Phone <em>(optional)</em></span><input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
+                    <label class="field"><span>Trading ID <em>(optional)</em></span><input name="trading_id" type="text" maxlength="10" style="text-transform:uppercase"></label>
+                </div>
+                <label class="field"><span>How do you trade? <em>(optional)</em></span><textarea name="message" rows="3" maxlength="1000"></textarea></label>
+                <label class="contact-trap" aria-hidden="true">Website<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
+                    <button class="button" type="submit">Request access</button>
+                    <div class="contact-status" data-contact-status role="status"></div>
+                </form>
+            </div>
+        </section>
+
         <section class="shell section">
             <div class="disclaimer"><b>Important:</b> VerquoAI provides analytical and workflow tools, not investment advice or a promise of returns. Market data may be delayed or unavailable. Trading involves substantial risk, including possible loss of capital. Verify information independently and make your own decisions.</div>
         </section>
     </main>
 
     <div class="login-backdrop" data-close-login></div>
-    <aside class="login-panel" id="login-panel" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-hidden="true">
+    <aside class="login-panel" id="login-panel" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-hidden="true" inert>
         <div class="login-head">
             <span class="brand"><span class="brand-mark" aria-hidden="true">V</span><span>VerquoAI</span><sup>™</sup></span>
             <button class="login-close" type="button" data-close-login aria-label="Close sign-in">×</button>
         </div>
         <div class="eyebrow"><span class="pulse"></span> Secure sign-in</div>
         <h2 id="login-title">Open your workspace</h2>
-        <p class="lead">We email a one-time code to the address saved for your Zerodha ID.</p>
+        <p class="lead">We email a one-time code to the address saved for your Trading ID.</p>
 
         <div class="login-step" id="step-email">
-            <label class="field"><span>Zerodha ID</span><input type="text" id="zerodha-id-input" placeholder="e.g. AB1234" autocomplete="username" style="text-transform:uppercase"></label>
+            <label class="field"><span>Trading ID</span><input type="text" id="zerodha-id-input" placeholder="e.g. AB1234" autocomplete="username" style="text-transform:uppercase"></label>
             <label class="field"><span>Email address</span><input type="email" id="email-input" placeholder="you@example.com" autocomplete="email"></label>
             <button class="button" type="button" id="btn-send-otp">Send code</button>
             <div class="login-msg" id="msg-email" role="status"></div>
+            <p class="login-request">Don't have a Trading ID set up with us? <a href="#contact" data-close-login>Request access</a></p>
         </div>
 
         <div class="login-step" id="step-otp" hidden>
@@ -608,7 +662,7 @@
 
     <footer class="shell">
         <span>© <span id="year"></span> VerquoAI™</span>
-        <span>Market analysis and trading workflow tools. Trading involves risk.</span>
+        <span>Market analysis and trading workflow tools. Trading involves risk. We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</span>
     </footer>
     <script>
         (() => {
@@ -896,6 +950,7 @@
             };
             const open = () => {
                 lastFocus = document.activeElement;
+                panel.inert = false;  // closed, it is off-screen but would still take keyboard focus
                 document.body.classList.add('login-open');
                 panel.setAttribute('aria-hidden', 'false');
                 if (location.pathname !== '/login') history.replaceState(null, '', '/login');
@@ -904,6 +959,7 @@
             const close = () => {
                 document.body.classList.remove('login-open');
                 panel.setAttribute('aria-hidden', 'true');
+                panel.inert = true;
                 if (location.pathname === '/login') history.replaceState(null, '', '/');
                 lastFocus?.focus?.();
             };
@@ -935,7 +991,7 @@
             async function sendOTP() {
                 const zerodhaId = $('zerodha-id-input').value.trim().toUpperCase();
                 const email = $('email-input').value.trim();
-                if (!zerodhaId) return message('msg-email', 'error', 'Please enter your Zerodha ID');
+                if (!zerodhaId) return message('msg-email', 'error', 'Please enter your Trading ID');
                 if (!email) return message('msg-email', 'error', 'Please enter your email address');
                 currentZerodhaId = zerodhaId;
                 const btn = $('btn-send-otp');
@@ -996,8 +1052,10 @@
             $('email-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendOTP(); });
             $('zerodha-id-input').addEventListener('keydown', e => { if (e.key === 'Enter') $('email-input').focus(); });
             $('otp-input').addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTP(); });
-            if (document.body.dataset.openLogin === 'true') open();
+            if (document.body.dataset.loginOnLoad === 'true') open();
         })();
     </script>
+    <script src="/static/js/contact.js" defer></script>
+    <script src="/static/js/metrics.js" defer></script>
 </body>
 </html>

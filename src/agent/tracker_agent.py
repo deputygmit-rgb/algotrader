@@ -83,7 +83,7 @@ class TrackerAgent(BaseAgent):
             if self.service.is_running and self.service.is_authenticated:
                 self._set_state("syncing")
                 self.activity.cycle_start()
-                self.activity.set_task("Fetching positions and orders from Zerodha", "observe")
+                self.activity.set_task("Fetching positions and orders from the broker", "observe")
                 try:
                     try:
                         positions, orders = await asyncio.wait_for(

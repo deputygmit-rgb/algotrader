@@ -184,7 +184,7 @@ class OTPAuth:
             <html>
             <body style="font-family: Arial, sans-serif; background: #0d1821; color: #e0e6ed; padding: 30px;">
                 <div style="max-width: 400px; margin: 0 auto; background: #1a2332; border-radius: 12px; padding: 30px; border: 1px solid #2a3a4a;">
-                    <h2 style="color: #00d4aa; margin-top: 0;">Kite Trading Agent</h2>
+                    <h2 style="color: #00d4aa; margin-top: 0;">VerquoAI</h2>
                     <p>Your one-time login code is:</p>
                     <div style="font-size: 36px; font-weight: bold; color: #00d4aa; text-align: center; padding: 20px; background: #0d1821; border-radius: 8px; letter-spacing: 8px; margin: 20px 0;">
                         {otp}

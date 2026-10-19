@@ -213,7 +213,7 @@ class StockScanner:
             _ = client._auth.access_token
         except Exception:
             return {
-                "error": "Not authenticated. Please complete Zerodha login first.",
+                "error": "Not authenticated. Please link your trading account first.",
                 "scanned": False,
                 "auth_error": True,
             }
@@ -329,12 +329,12 @@ class StockScanner:
                             logger.error("scan_aborted", consecutive_failures=auth_failures, last_error=err_str)
                             if is_permission_error:
                                 return {
-                                    "error": "Historical Data API not enabled on your Kite Connect app. Please subscribe to the Historical Data add-on in your Kite Connect developer console.",
+                                    "error": "Historical data is not enabled on your broker API subscription. Please enable the historical data add-on with your broker.",
                                     "scanned": False,
                                     "permission_error": True,
                                 }
                             return {
-                                "error": err_str if err_str else "Kite session expired. Please re-login to Zerodha.",
+                                "error": err_str if err_str else "Broker session expired. Please link your trading account again.",
                                 "scanned": False,
                                 "auth_error": True,
                             }
@@ -475,7 +475,7 @@ class StockScanner:
                 return {**self.get_deep_profile(symbol), "cache": "stale", "refresh_error": err}
             if "insufficient permission" in err.lower():
                 return {
-                    "error": "Historical Data API not enabled. Subscribe to the Historical Data add-on in Kite Connect.",
+                    "error": "Historical data is not enabled. Enable the historical data add-on with your broker.",
                     "permission_error": True,
                 }
             return {"error": f"Analysis failed for {symbol}: {err}"}

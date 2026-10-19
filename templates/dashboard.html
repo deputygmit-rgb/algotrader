@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>VerquoAI | Trading Workspace</title>
     <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
@@ -21,7 +22,7 @@
             <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
             <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and financial reports (Alt+P)">MASK: ON</button>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
-            <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Login to Zerodha</button>
+            <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
             <button id="btn-stop" class="btn btn-danger btn-sm" style="display:none" onclick="stopLive()">Stop Live</button>
             <button class="btn btn-primary btn-sm" onclick="showModal('modal-add-strategy')">+ Strategy</button>
@@ -37,14 +38,15 @@
     <div class="t-demo-banner" id="demo-banner" data-demo="{{ demo_kind }}" role="status">
         <span class="t-demo-tag">DEMO</span>
         {% if demo_kind == 'public' %}
-        <span class="t-demo-text">Simulated market and broker. Prices, fills and P&amp;L are not real, and nothing reaches Zerodha. Every tab works &mdash; try a scan, a backtest or Start Live.</span>
+        <span class="t-demo-text">Simulated market and broker. Prices, fills and P&amp;L are not real, and nothing reaches a broker. Every tab works &mdash; try a scan, a backtest or Start Live.</span>
         <span class="t-demo-actions">
+            <button class="btn btn-success btn-sm" onclick="showModal('modal-contact')" data-track="demo-request-access">Request access</button>
             <a class="btn btn-primary btn-sm" href="/login" onclick="event.preventDefault(); exitDemoTo('/login')">Log in</a>
         </span>
         {% else %}
-        <span class="t-demo-text">You're exploring with a simulated broker until you connect Zerodha. Orders fill in a private sandbox with &#8377;10 lakh of demo cash.</span>
+        <span class="t-demo-text">You're exploring with a simulated broker until you link your trading account. Orders fill in a private sandbox with &#8377;10 lakh of demo cash.</span>
         <span class="t-demo-actions">
-            <button class="btn btn-primary btn-sm" onclick="loginKite()">Connect Zerodha</button>
+            <button class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
         </span>
         {% endif %}
     </div>
@@ -52,13 +54,13 @@
     <div class="t-tape" id="t-tape" hidden><div class="t-tape-track" id="t-tape-track"></div></div>
 
     <div id="login-url-display" style="display:none;background:#1a2332;border:1px solid #00d4aa;padding:12px 20px;text-align:center;margin:0">
-        <a id="login-url-link" href="#" target="_blank" rel="noopener" style="color:#00d4aa;font-weight:600;font-size:15px;text-decoration:underline">Click here to open Zerodha login</a>
+        <a id="login-url-link" href="#" target="_blank" rel="noopener" style="color:#00d4aa;font-weight:600;font-size:15px;text-decoration:underline">Click here to open your broker login</a>
         <span style="color:#8899aa;margin-left:12px;font-size:13px">(Opens in new tab. After login, copy the request_token from the URL and paste below)</span>
         <div style="margin-top:10px;display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap">
             <input id="manual-request-token" type="text" placeholder="Paste request_token from redirect URL here" style="padding:8px 12px;border:1px solid #2a3a4a;background:#0d1821;color:#e0e6ed;border-radius:6px;width:400px;font-size:13px">
             <button class="btn btn-success btn-sm" onclick="manualAuthenticate()">Connect</button>
         </div>
-        <p style="color:#667788;font-size:11px;margin-top:6px">After Zerodha login, the URL will look like: ...?request_token=<b>XXXXXX</b>&status=success. Copy the token value.</p>
+        <p style="color:#667788;font-size:11px;margin-top:6px">After you log in at your broker, the URL will look like: ...?request_token=<b>XXXXXX</b>&status=success. Copy the token value.</p>
     </div>
 
     <main class="main">
@@ -153,7 +155,7 @@
                 <div class="card">
                     <div class="card-title">Trades Today</div>
                     <div id="total-trades" class="metric-value">0</div>
-                    <div id="total-trades-label" class="metric-label">Executed today (Zerodha)</div>
+                    <div id="total-trades-label" class="metric-label">Executed today (broker)</div>
                 </div>
                 <div class="card">
                     <div class="card-title">Exposure</div>
@@ -959,7 +961,7 @@
                     <path class="ag-link" data-link="executor" d="M222 182 C330 182 340 120 360 120"/>
                     <path class="ag-link" data-link="verifier" d="M678 58 C570 58 560 120 540 120"/>
                     <path class="ag-link" data-link="tracker" d="M678 182 C570 182 560 120 540 120"/>
-                    <g class="ag-node ag-ext" transform="translate(450,30)"><rect x="-92" y="-20" width="184" height="40" rx="4"/><text class="ag-node-name" y="5">ZERODHA KITE API</text></g>
+                    <g class="ag-node ag-ext" transform="translate(450,30)"><rect x="-92" y="-20" width="184" height="40" rx="4"/><text class="ag-node-name" y="5">BROKER API</text></g>
                     <g class="ag-node ag-hub" data-node="service" transform="translate(450,120)"><rect x="-90" y="-24" width="180" height="48" rx="4"/><text class="ag-node-name" y="-4">TRADING SERVICE</text><text class="ag-node-state" y="13">—</text></g>
                     <g class="ag-node" data-node="scanner" transform="translate(130,58)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⌖ SCANNER</text><text class="ag-node-state" y="13">—</text></g>
                     <g class="ag-node" data-node="executor" transform="translate(130,182)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⚡ EXECUTOR</text><text class="ag-node-state" y="13">—</text></g>
@@ -1459,7 +1461,7 @@
                     <div class="form-group">
                         <label>Data Source</label>
                         <select id="bt-source" onchange="toggleBTSource()">
-                            <option value="live">Live Zerodha Data</option>
+                            <option value="live">Live Market Data</option>
                             <option value="sample">Sample Data</option>
                         </select>
                     </div>
@@ -1514,7 +1516,7 @@
                         <div class="form-group">
                             <label style="display:flex;align-items:center;gap:6px"><input id="bt-regime-filter" type="checkbox" checked> Use Regime Filter</label>
                         </div>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="importFnOHistoricalData('bt')" title="Fetch &amp; cache underlying historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="importFnOHistoricalData('bt')" title="Fetch &amp; cache underlying historical candles from your broker (incremental)">⬇ Import Historical Data</button>
                         <div id="bt-fno-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                     </div>
                     <div class="grid grid-2" style="margin-bottom:0">
@@ -1526,7 +1528,7 @@
                     <div style="display:flex;gap:8px;margin-top:12px">
                         <button class="btn btn-primary" onclick="runBacktest()" id="btn-run-bt">Run Backtest</button>
                         <button class="btn btn-outline" onclick="runBacktestSample()">Quick Sample Test</button>
-                        <button class="btn btn-outline" onclick="importHistoricalData('bt')" title="Fetch &amp; cache historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <button class="btn btn-outline" onclick="importHistoricalData('bt')" title="Fetch &amp; cache historical candles from your broker (incremental)">⬇ Import Historical Data</button>
                     </div>
                     <div id="bt-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                 </div>
@@ -1781,7 +1783,7 @@
                             <div class="form-group"><label>Profit Target %</label><input id="paper-profit-target" type="number" value="50" min="10" max="100"></div>
                             <div class="form-group"><label>Stop Loss %</label><input id="paper-stop-loss" type="number" value="100" min="25" max="300"></div>
                         </div>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="importFnOHistoricalData('paper')" title="Fetch &amp; cache underlying historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="importFnOHistoricalData('paper')" title="Fetch &amp; cache underlying historical candles from your broker (incremental)">⬇ Import Historical Data</button>
                         <div id="paper-fno-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                     </div>
                     <div class="grid grid-2">
@@ -1797,7 +1799,7 @@
                     <div style="display:flex;gap:8px;margin-top:8px">
                         <button id="btn-run-paper" class="btn btn-primary" onclick="runPaperTrade()">Run Paper Trade</button>
                         <button class="btn btn-outline" onclick="runPaperTradeSample()">Quick Test (Sample Data)</button>
-                        <button class="btn btn-outline" onclick="importHistoricalData('paper')" title="Fetch &amp; cache historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <button class="btn btn-outline" onclick="importHistoricalData('paper')" title="Fetch &amp; cache historical candles from your broker (incremental)">⬇ Import Historical Data</button>
                     </div>
                     <div id="paper-loading" style="display:none;margin-top:12px;color:var(--accent-green);font-size:13px">Running simulation...</div>
                     <div id="paper-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
@@ -1934,7 +1936,7 @@
                     <div style="display:flex;gap:8px;margin-top:8px">
                         <button id="btn-start-replay" class="btn btn-primary" onclick="startReplay()">▶ Start Replay</button>
                         <button id="btn-stop-replay" class="btn btn-outline" onclick="stopReplay()" disabled>■ Stop</button>
-                        <button class="btn btn-outline" onclick="importHistoricalData('replay')" title="Fetch &amp; cache historical candles from Zerodha (incremental)">⬇ Import Historical Data</button>
+                        <button class="btn btn-outline" onclick="importHistoricalData('replay')" title="Fetch &amp; cache historical candles from your broker (incremental)">⬇ Import Historical Data</button>
                     </div>
                     <div id="replay-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
                     <div id="replay-status-line" style="display:none;margin-top:12px;color:var(--accent-green);font-size:13px"></div>
@@ -2556,6 +2558,25 @@
     </main>
 
     <!-- Add Strategy Modal -->
+    <div id="modal-contact" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-contact')">
+        <div class="modal" style="max-width:560px;width:calc(100% - 32px)">
+            <div class="modal-title">Request access <button class="btn btn-outline btn-sm" style="float:right" onclick="hideModal('modal-contact')" aria-label="Close">×</button></div>
+            <p class="t-contact-lead">Like what you see? Tell us about you and we'll set up your own workspace and reply by email.{% if contact_email %} Or write to <a href="mailto:{{ contact_email }}?subject=VerquoAI%20access%20request">{{ contact_email }}</a>.{% endif %}</p>
+            <form class="t-contact" data-contact-form="demo" novalidate>
+                <div class="t-contact-grid">
+                    <label>Name<input name="name" type="text" maxlength="80" autocomplete="name" required></label>
+                    <label>Email<input name="email" type="email" maxlength="120" autocomplete="email" required></label>
+                    <label>Phone (optional)<input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
+                    <label>Trading ID (optional)<input name="trading_id" type="text" maxlength="10" style="text-transform:uppercase"></label>
+                </div>
+                <label>How do you trade? (optional)<textarea name="message" rows="3" maxlength="1000"></textarea></label>
+                <label class="t-contact-trap" aria-hidden="true">Website<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
+                <button class="btn btn-primary" type="submit">Send request</button>
+                <div class="contact-status" data-contact-status role="status"></div>
+            </form>
+        </div>
+    </div>
+
     <div id="modal-add-strategy" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-add-strategy')">
         <div class="modal">
             <div class="modal-title">Add Strategy</div>
@@ -2821,6 +2842,8 @@
     <script src="/static/js/day_trade.js?v={{ day_trade_js_version }}"></script>
     <script src="/static/js/terminal.js?v={{ terminal_js_version }}"></script>
     <script src="/static/js/agents.js?v={{ agents_js_version }}"></script>
+    <script src="/static/js/contact.js?v={{ contact_js_version }}"></script>
+    <script src="/static/js/metrics.js?v={{ metrics_js_version }}"></script>
     <div class="t-pal-overlay" id="t-pal">
         <div class="t-pal">
             <input id="t-pal-input" type="text" placeholder="Jump to…  (↑↓ to move, Enter to open, Esc to close)" autocomplete="off">

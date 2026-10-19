@@ -419,7 +419,7 @@ const DayTrade = (() => {
             if (enabling) {
                 const f = autoForm();
                 const ok = window.confirm(
-                    'Turn ON board auto-trade?\n\nNew Day Trade board signals will be sent as REAL orders to Zerodha ' +
+                    'Turn ON board auto-trade?\n\nNew Day Trade board signals will be sent as REAL orders to your broker ' +
                     `(risk ₹${f.risk_per_trade} per trade, max ₹${f.max_order_value} per order, up to ${f.max_orders_per_day} orders a day, ` +
                     `${f.sides.join(' + ') || 'no'} side(s)${f.require_preflight ? ', preflight checklist on every order' : ', WITHOUT the preflight checklist'}).\n\n` +
                     'Orders go through the live-trading path and are only sent while live trading is running.');

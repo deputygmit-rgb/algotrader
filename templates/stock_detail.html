@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>{{ symbol }} — VerquoAI Stock Research</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/dashboard.css">
@@ -10,6 +11,7 @@
     <link rel="stylesheet" href="/static/css/stock_detail.css?v={{ css_version }}">
     <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
     <script src="/static/js/stock_detail.js?v={{ js_version }}" defer></script>
+    <script src="/static/js/metrics.js?v={{ metrics_js_version }}" defer></script>
 </head>
 <body class="stock-detail-page" data-symbol="{{ symbol }}" data-csrf="{{ csrf_token }}">
     <header class="header">
@@ -77,7 +79,7 @@
                 <button class="stock-series-btn" data-series="compare" aria-pressed="false" title="Compare with NIFTY 50 (key N)"><i class="legend-compare"></i> vs NIFTY</button>
                 <span><i class="legend-volume"></i> VOLUME</span>
                 <span><i class="legend-rsi"></i> RSI 14</span>
-                <span class="stock-chart-source">OHLC history · Zerodha market data</span>
+                <span class="stock-chart-source">OHLC history · broker market data</span>
             </div>
             <div class="stock-chart-shell">
                 <canvas id="stock-price-chart" role="img" aria-label="Historical candlestick chart with moving averages, volume and RSI. A data table follows the chart."></canvas>

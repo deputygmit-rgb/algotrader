@@ -12,7 +12,7 @@ const AgentsView = (() => {
     const ORDER = ['scanner', 'verifier', 'executor', 'tracker'];
     const STATE_TEXT = {
         idle: 'Idle', stopped: 'Stopped', crashed: 'Crashed',
-        waiting_market_open: 'Waiting · market closed', waiting_zerodha_auth: 'Waiting · Zerodha login',
+        waiting_market_open: 'Waiting · market closed', waiting_zerodha_auth: 'Waiting · trading account login',
         waiting_live_trading: 'Standby · live trading off', waiting_next_cycle: 'On duty · between cycles',
         scanning: 'Scanning', checking: 'Auditing', monitoring: 'Monitoring', syncing: 'Syncing',
     };
@@ -142,7 +142,7 @@ const AgentsView = (() => {
         ].join('');
         const chip = (label, val, cls) => `<span class="ag-chip ${cls}"><b>${label}</b> ${val}</span>`;
         $('ag-context').innerHTML = [
-            chip('ZERODHA', data.authenticated ? 'AUTHENTICATED' : 'NOT LOGGED IN', data.authenticated ? 'ok' : 'warn'),
+            chip('BROKER', data.authenticated ? 'LINKED' : 'NOT LINKED', data.authenticated ? 'ok' : 'warn'),
             chip('LIVE TRADING', data.is_running ? 'ON' : 'OFF', data.is_running ? 'ok' : 'idle'),
             chip('MARKET', data.market_open ? 'OPEN' : 'CLOSED', data.market_open ? 'ok' : 'idle'),
         ].join('');

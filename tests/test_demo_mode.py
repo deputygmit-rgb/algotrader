@@ -137,8 +137,8 @@ def test_login_page_is_landing_with_panel_open():
         async with _client() as c:
             return await c.get("/login"), await c.get("/")
     login, landing = asyncio.run(go())
-    assert 'data-open-login="true"' in login.text and 'id="login-panel"' in login.text
-    assert 'data-open-login="false"' in landing.text and "data-start-demo" in landing.text
+    assert 'data-login-on-load="true"' in login.text and 'id="login-panel"' in login.text
+    assert 'data-login-on-load="false"' in landing.text and "data-start-demo" in landing.text
 
 
 # --- simulated broker ------------------------------------------------------------------

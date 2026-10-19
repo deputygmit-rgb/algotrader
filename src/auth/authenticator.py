@@ -88,8 +88,8 @@ class KiteAuthenticator:
                 received=kite_user_id,
             )
             raise AuthenticationError(
-                "The Zerodha account you logged in with does not match your VerquoAI user. "
-                "Log in to Zerodha with the same ID."
+                "The broker account you logged in with does not match your VerquoAI user. "
+                "Log in at your broker with the same Trading ID."
             )
 
         self._session_data = SessionData(**result["data"])

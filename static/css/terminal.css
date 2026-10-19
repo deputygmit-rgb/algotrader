@@ -103,6 +103,23 @@ button, input, select, textarea { font-family: inherit; }
 .t-demo-text { flex: 1 1 320px; color: var(--t-dim); line-height: 1.5; }
 .t-demo-actions { display: flex; gap: 8px; }
 @media (max-width: 640px) { .t-demo-banner { padding: 8px 16px; } }
+
+.t-contact-lead { color: var(--t-dim); font-size: 12px; line-height: 1.6; margin: 4px 0 14px; }
+.t-contact-lead a { color: var(--t-c); }
+.t-contact { display: grid; gap: 10px; }
+.t-contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.t-contact label { display: grid; gap: 5px; color: var(--t-dim); font-size: 11px; letter-spacing: .04em; }
+.t-contact input, .t-contact textarea {
+    padding: 8px 10px; border: 1px solid var(--t-line-2); background: var(--t-bg); color: var(--t-txt);
+    font-family: var(--t-font); font-size: 12px; resize: vertical;
+}
+.t-contact input:focus, .t-contact textarea:focus { outline: none; border-color: var(--t-c); }
+.t-contact-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+.contact-status { min-height: 18px; font-size: 12px; }
+.contact-status.error { color: var(--t-r); }
+.contact-status.success { color: var(--t-g); }
+.contact-status.info { color: var(--t-c); }
+@media (max-width: 560px) { .t-contact-grid { grid-template-columns: 1fr; } }
 .t-head-meta { display: inline-flex; align-items: center; gap: 14px; font-size: 11px; color: var(--t-dim); letter-spacing: 1px; }
 
 /* ── ticker tape ────────────────────────────────────────────────── */

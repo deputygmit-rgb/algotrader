@@ -185,7 +185,7 @@ const MarketFlow = (() => {
                     : '');
             } catch (e) {
                 setLive('err', 'OFFLINE');
-                banner(`Live data unavailable (${e.message}). Log in to Zerodha, or tick DEMO to preview with simulated data.`);
+                banner(`Live data unavailable (${e.message}). Link your trading account, or tick DEMO to preview with simulated data.`);
             } finally {
                 inFlight = false;
             }

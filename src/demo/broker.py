@@ -62,7 +62,7 @@ class DemoAuthenticator:
         return ""
 
     async def generate_session(self, request_token: str) -> Any:
-        raise AuthenticationError("Demo sessions cannot connect to Zerodha")
+        raise AuthenticationError("Demo sessions cannot link a trading account")
 
     def is_token_expired(self, max_age_hours: float = 8.0) -> bool:
         return False

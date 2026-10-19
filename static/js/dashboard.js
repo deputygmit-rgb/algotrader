@@ -69,7 +69,7 @@ async function loginKite() {
             }
             document.getElementById('login-url-display').style.display = 'block';
             document.getElementById('login-url-link').href = data.url;
-            document.getElementById('login-url-link').textContent = 'Click here to open Zerodha login';
+            document.getElementById('login-url-link').textContent = 'Click here to open your broker login';
         } else {
             showToast('Could not get login URL. Check API key configuration.', 'error');
         }
@@ -90,7 +90,7 @@ async function manualAuthenticate() {
             showToast('Authentication failed: ' + res.error, 'error');
             return;
         }
-        showToast('Logged in to Zerodha successfully!', 'success');
+        showToast('Trading account linked successfully!', 'success');
         document.getElementById('login-url-display').style.display = 'none';
         loadStatus();
     } catch (e) {
@@ -102,7 +102,7 @@ async function manualAuthenticate() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('auth') === 'success') {
         window.history.replaceState({}, '', '/');
-        setTimeout(() => showToast('Logged in to Zerodha successfully!', 'success'), 500);
+        setTimeout(() => showToast('Trading account linked successfully!', 'success'), 500);
     }
     const authError = params.get('auth_error');
     if (authError) {
@@ -307,7 +307,7 @@ function updateStatusBadge(data) {
     const btnStart = document.getElementById('btn-start');
     const btnStop = document.getElementById('btn-stop');
     if (data.demo) {
-        // Simulated broker: always "connected"; a logged-in user can still connect Zerodha.
+        // Simulated broker: always "connected"; a logged-in user can still link a trading account.
         statusBadge.textContent = data.running ? 'DEMO · LIVE' : 'DEMO';
         statusBadge.className = 'status-badge status-demo';
         btnLogin.style.display = data.demo === 'user' ? '' : 'none';
@@ -422,7 +422,7 @@ function updatePortfolioSection(data) {
     }
 }
 
-// Last Zerodha-account summary from /api/status?full=true. The light status
+// Last broker-account summary from /api/status?full=true. The light status
 // poll has no account data, so it must not overwrite these tiles.
 let lastAccount = null;
 
@@ -450,12 +450,12 @@ function updateOverviewCards(data) {
         setMetric('total-pnl', a.total_pnl);
         setLabel('total-pnl-label', `Positions ${formatNum(a.positions_pnl)} + holdings ${formatNum(a.holdings_pnl)}`);
         setMetric('total-trades', a.trades_today ?? 0, 0, false);
-        setLabel('total-trades-label', `Executed today (Zerodha) · bot journal ${j.total_trades || 0} all-time`);
+        setLabel('total-trades-label', `Executed today (broker) · bot journal ${j.total_trades || 0} all-time`);
         setMetric('exposure', a.exposure, 0, false);
         setLabel('exposure-label', `${a.open_positions} open position${a.open_positions === 1 ? '' : 's'} · margin used ${a.utilisation_pct.toFixed(1)}%`);
         setUtilisation(a.utilisation_pct);
     } else {
-        // Not connected to Zerodha: show the bot's own journal, labelled as such.
+        // Not connected to the broker: show the bot's own journal, labelled as such.
         setMetric('daily-pnl', j.daily_pnl || 0);
         setLabel('daily-pnl-label', 'Bot journal · trades closed today');
         setMetric('total-pnl', j.total_pnl || 0);
@@ -2081,13 +2081,13 @@ async function runAnalysisScan() {
     try {
         const data = await API.postTimeout('/api/analysis/scan', { universe }, 600000);
         if (data.permission_error) {
-            status.textContent = data.error || 'Historical Data API not enabled on your Kite Connect app.';
+            status.textContent = data.error || 'Historical data is not enabled on your broker API subscription.';
             status.style.color = '#ff9100';
             showToast('Historical Data API subscription required', 'error');
         } else if (data.auth_error) {
-            status.textContent = data.error || 'Kite session expired. Please re-login to Zerodha.';
+            status.textContent = data.error || 'Broker session expired. Please link your trading account again.';
             status.style.color = '#ff5252';
-            showToast('Session expired - please re-login to Zerodha', 'error');
+            showToast('Broker session expired - please link your trading account again', 'error');
         } else if (data.scanned) {
             analysisData = data;
             renderAnalysis(data);
@@ -3283,7 +3283,7 @@ async function loadCachedPaperResults() {
 }
 
 /**
- * Import (and incrementally update) cached historical candles from Zerodha
+ * Import (and incrementally update) cached historical candles from the broker
  * for the symbol/interval/days currently set in the given section's form.
  * Works for 'paper', 'bt', and 'replay' prefixes (all share the same
  * -symbol/-exchange/-interval/-days element naming convention).
