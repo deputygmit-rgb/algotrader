@@ -1,0 +1,22 @@
+[Unit]
+Description=Verquo AI trading dashboard (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=verquo
+Group=verquo
+WorkingDirectory=/opt/verquoai/app
+EnvironmentFile=/opt/verquoai/app/.env
+Environment=PYTHONUNBUFFERED=1
+# Single worker: sessions, rate limits and the Kite ticker live in process memory.
+ExecStart=/opt/verquoai/venv/bin/uvicorn src.api.webapp:app \
+    --host 127.0.0.1 --port 5001 --workers 1 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
