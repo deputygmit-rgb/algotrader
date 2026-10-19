@@ -47,7 +47,6 @@ from types import SimpleNamespace as _NS
 
 
 def test_series_suffixed_listings_resolve_to_index_symbols():
-    import src.analysis.scanner as scanner_mod
 
     class Client:
         async def get_instruments(self, exchange):
@@ -56,6 +55,5 @@ def test_series_suffixed_listings_resolve_to_index_symbols():
                     _NS(tradingsymbol="BAJAJ-AUTO", instrument_type="EQ", instrument_token=13),
                     _NS(tradingsymbol="INFY", instrument_type="EQ", instrument_token=14)]
 
-    scanner_mod._ALL_NSE_TOKENS.clear()
     tokens = asyncio.run(StockScanner()._resolve_tokens(Client(), ["HFCL", "EMBASSY", "BAJAJ-AUTO", "INFY"]))
     assert tokens == {"HFCL": 11, "EMBASSY": 12, "BAJAJ-AUTO": 13, "INFY": 14}

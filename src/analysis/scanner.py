@@ -76,9 +76,6 @@ NIFTY_50_SYMBOLS = [  # official constituents, https://niftyindices.com/IndexCon
 # Sector map now uses NIFTY 500 comprehensive mapping
 SECTOR_MAP: dict[str, str] = NIFTY_500_SECTOR_MAP
 
-NIFTY_50_TOKENS: dict[str, int] = {}
-# Broader token cache for any resolved NSE instrument
-_ALL_NSE_TOKENS: dict[str, int] = {}
 # Trade-for-trade / REIT / SME series that Kite suffixes onto the tradingsymbol
 _NON_EQ_SERIES = {"BE", "BZ", "RR", "IV", "SM", "ST", "BL", "GS", "E1"}
 
@@ -136,6 +133,10 @@ class StockScanner:
     """
 
     def __init__(self) -> None:
+        # Symbol -> token for every resolved NSE instrument. Per scanner (one per
+        # service): tokens come from that service's broker, and a demo session's
+        # simulated tokens must never be used for a real account.
+        self._tokens: dict[str, int] = {}
         self._cache: dict[str, pd.DataFrame] = {}
         # date (YYYY-MM-DD) each symbol's daily history was last fetched; later
         # scans that day only refresh today's bar from a quote
@@ -166,9 +167,9 @@ class StockScanner:
     # ────────────────────────────────────────────────────────────
 
     async def _resolve_tokens(self, client: Any, symbols: list[str]) -> dict[str, int]:
-        global NIFTY_50_TOKENS, _ALL_NSE_TOKENS
-        if _ALL_NSE_TOKENS and all(s in _ALL_NSE_TOKENS for s in symbols):
-            return {s: _ALL_NSE_TOKENS[s] for s in symbols if s in _ALL_NSE_TOKENS}
+        known = self._tokens
+        if known and all(s in known for s in symbols):
+            return {s: known[s] for s in symbols if s in known}
 
         try:
             instruments = await client.get_instruments("NSE")
@@ -176,7 +177,7 @@ class StockScanner:
             series_listed: dict[str, int] = {}
             for inst in instruments:
                 if inst.instrument_type in ("EQ", ""):
-                    _ALL_NSE_TOKENS[inst.tradingsymbol] = inst.instrument_token
+                    known[inst.tradingsymbol] = inst.instrument_token
                     if inst.tradingsymbol in symbols:
                         token_map[inst.tradingsymbol] = inst.instrument_token
                     base, _, series = inst.tradingsymbol.rpartition("-")
@@ -185,18 +186,14 @@ class StockScanner:
             # Stocks in BE / RR / ... series are listed as e.g. "HFCL-BE";
             # index files name them "HFCL". Fall back to the suffixed listing.
             for base, token in series_listed.items():
-                _ALL_NSE_TOKENS.setdefault(base, token)
+                known.setdefault(base, token)
                 if base in symbols and base not in token_map:
                     token_map[base] = token
-            # Keep backward compat
-            for s in NIFTY_50_SYMBOLS:
-                if s in _ALL_NSE_TOKENS:
-                    NIFTY_50_TOKENS[s] = _ALL_NSE_TOKENS[s]
-            logger.info("tokens_resolved", count=len(token_map), total_nse=len(_ALL_NSE_TOKENS))
+            logger.info("tokens_resolved", count=len(token_map), total_nse=len(known))
             return token_map
         except Exception as e:
             logger.error("token_resolve_failed", error=str(e))
-            return {s: _ALL_NSE_TOKENS[s] for s in symbols if s in _ALL_NSE_TOKENS}
+            return {s: known[s] for s in symbols if s in known}
 
     # ────────────────────────────────────────────────────────────
     # Main Scan Engine
@@ -413,8 +410,7 @@ class StockScanner:
             return {**self.get_deep_profile(symbol), "cache": "hit"}
 
         # Resolve token
-        global _ALL_NSE_TOKENS
-        token = _ALL_NSE_TOKENS.get(symbol)
+        token = self._tokens.get(symbol)
         if not token:
             token = (await self._resolve_tokens(client, [symbol])).get(symbol)
         if not token:

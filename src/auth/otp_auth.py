@@ -248,13 +248,17 @@ class OTPAuth:
         logger.info("otp_verified", zerodha_id=zerodha_id)
         return session_token
 
-    def _create_session(self, zerodha_id: str = "") -> str:
+    def create_demo_session(self, demo_id: str, ttl: int) -> str:
+        """Session for a public demo visitor (no account, simulated broker only)."""
+        return self._create_session(demo_id, ttl=ttl)
+
+    def _create_session(self, zerodha_id: str = "", ttl: Optional[int] = None) -> str:
         """Create cryptographically secure session token."""
         token = secrets.token_urlsafe(32)  # URL-safe base64 token
-        self._sessions[_hash_token(token)] = {
-            "zerodha_id": zerodha_id.upper(),
-            "created_at": time.time(),
-        }
+        session: dict = {"zerodha_id": zerodha_id.upper(), "created_at": time.time()}
+        if ttl:
+            session["ttl"] = min(int(ttl), SESSION_EXPIRY_SECONDS)
+        self._sessions[_hash_token(token)] = session
         self._save_sessions()
         return token
 
@@ -265,7 +269,7 @@ class OTPAuth:
         session = self._sessions.get(key)
         if not session:
             return None
-        if time.time() - session["created_at"] > SESSION_EXPIRY_SECONDS:
+        if time.time() - session["created_at"] > session.get("ttl", SESSION_EXPIRY_SECONDS):
             del self._sessions[key]
             return None
         return session

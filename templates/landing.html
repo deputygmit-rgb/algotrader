@@ -263,6 +263,80 @@
         .disclaimer { padding: 23px 25px; border: 1px solid var(--line); border-radius: 12px; color: #a4afc1; background: rgba(16, 24, 39, .56); font-size: 11px; }
         .disclaimer b { color: #dce4ef; }
         footer { display: flex; justify-content: space-between; gap: 16px; padding: 28px 0 35px; color: #77869e; font-size: 11px; }
+        button.button { cursor: pointer; font: inherit; font-weight: 700; }
+        button.button-quiet { font-weight: 600; }
+        .button[aria-busy="true"] { opacity: .7; pointer-events: none; }
+        .demo-error { min-height: 18px; margin-top: 10px; color: #ff9aac; font-size: 12px; }
+
+        /* ticker tape */
+        .tape { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); background: rgba(5, 9, 16, .7); mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
+        .tape-track { display: flex; gap: 34px; width: max-content; padding: 9px 0; animation: tape 60s linear infinite; font: 500 11px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .tape:hover .tape-track { animation-play-state: paused; }
+        .tape-item { display: inline-flex; gap: 8px; align-items: baseline; color: #c6d0de; }
+        .tape-item b { color: #8e9bb0; font-weight: 600; letter-spacing: .6px; }
+        .tape-item .up { color: #68eab6; }
+        .tape-item .down { color: #ff7d93; }
+        .tape-item.flash { animation: flash .6s ease; }
+        @keyframes tape { to { transform: translateX(-50%); } }
+        @keyframes flash { 0% { background: rgba(140, 240, 205, .14); } 100% { background: transparent; } }
+
+        /* live feature previews */
+        .feature { display: flex; flex-direction: column; }
+        .feature-live { margin: 16px 0 2px; padding: 11px 12px; min-height: 74px; border: 1px solid rgba(155, 180, 220, .1); border-radius: 9px; background: rgba(4, 8, 15, .55); font: 500 10px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; color: #aeb9c9; }
+        .feature-link { margin-top: auto; padding-top: 16px; }
+        .live-label { display: flex; justify-content: space-between; margin-bottom: 8px; color: #6f7d92; font-size: 8px; letter-spacing: .9px; }
+        .live-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 8px var(--mint); animation: blink 1.8s ease infinite; font-style: normal; }
+        @keyframes blink { 50% { opacity: .35; } }
+        .breadth { display: flex; height: 9px; overflow: hidden; border-radius: 5px; background: #2a1820; }
+        .breadth span { background: linear-gradient(90deg, #3fcf95, #7cf0c6); transition: width .8s ease; }
+        .breadth-row { display: flex; justify-content: space-between; margin-top: 8px; }
+        .quote-row { display: grid; grid-template-columns: 1fr auto 52px; gap: 8px; align-items: center; padding: 2px 0; }
+        .quote-row svg { width: 52px; height: 16px; }
+        .quote-row polyline { fill: none; stroke-width: 1.3; }
+        .feed { display: grid; gap: 4px; }
+        .feed-line { display: flex; justify-content: space-between; gap: 8px; animation: rise .5s ease; }
+        .feed-line span:first-child { color: #dfe6f0; }
+        @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
+        .equity svg { display: block; width: 100%; height: 46px; }
+        .equity polyline { fill: none; stroke: var(--mint); stroke-width: 1.6; }
+        .meter { margin-bottom: 7px; }
+        .meter-bar { height: 6px; margin-top: 4px; overflow: hidden; border-radius: 3px; background: rgba(155, 180, 220, .1); }
+        .meter-bar span { display: block; height: 100%; border-radius: 3px; transition: width .8s ease; }
+        .agents { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+        .agent { display: flex; align-items: center; gap: 6px; }
+        .agent i { width: 7px; height: 7px; border-radius: 50%; font-style: normal; transition: background .4s ease, box-shadow .4s ease; }
+        .agent em { margin-left: auto; color: #6f7d92; font-size: 8px; font-style: normal; }
+
+        /* scroll reveal */
+        .reveal { opacity: 0; transform: translateY(14px); transition: opacity .7s ease, transform .7s ease; }
+        .reveal.shown { opacity: 1; transform: none; }
+
+        /* login panel */
+        .login-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(3, 6, 12, .55); backdrop-filter: blur(3px); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+        .login-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 41; display: flex; flex-direction: column; width: min(430px, 100%); padding: 28px 30px; overflow-y: auto; border-left: 1px solid rgba(155, 180, 220, .16); background: linear-gradient(170deg, rgba(16, 24, 39, .98), rgba(8, 13, 24, .99)); box-shadow: -30px 0 90px rgba(0, 0, 0, .45); transform: translateX(104%); transition: transform .32s cubic-bezier(.2, .8, .2, 1); }
+        body.login-open .login-backdrop { opacity: 1; pointer-events: auto; }
+        body.login-open .login-panel { transform: none; }
+        body.login-open { overflow: hidden; }
+        .login-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 34px; }
+        .login-close { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
+        .login-close:hover { color: var(--text); border-color: rgba(140, 240, 205, .4); }
+        .login-panel h2 { margin: 12px 0 8px; font: 600 30px/1.1 "Space Grotesk", sans-serif; letter-spacing: -1.2px; }
+        .login-panel .lead { margin-bottom: 26px; color: var(--muted); font-size: 13px; }
+        .field { display: block; margin-bottom: 16px; }
+        .field span { display: block; margin-bottom: 7px; color: #aab6c9; font-size: 11px; font-weight: 600; letter-spacing: .4px; }
+        .field input { width: 100%; min-height: 46px; padding: 0 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; outline: none; background: rgba(4, 8, 15, .7); color: var(--text); font: 500 15px "DM Sans", sans-serif; transition: border-color .15s ease, box-shadow .15s ease; }
+        .field input:focus { border-color: rgba(140, 240, 205, .6); box-shadow: 0 0 0 3px rgba(140, 240, 205, .12); }
+        .field .otp { letter-spacing: 10px; text-align: center; font: 600 22px "Space Grotesk", sans-serif; }
+        .login-panel .button { width: 100%; }
+        .login-step[hidden] { display: none; }
+        .login-msg { min-height: 20px; margin-top: 12px; font-size: 12px; }
+        .login-msg.error { color: #ff9aac; }
+        .login-msg.success { color: var(--mint); }
+        .login-msg.info { color: var(--blue); }
+        .login-meta { display: flex; justify-content: space-between; margin-top: 12px; color: #78879f; font-size: 12px; }
+        .login-meta button { padding: 0; border: 0; background: none; color: #9fdbc9; font: inherit; cursor: pointer; }
+        .login-alt { margin-top: auto; padding-top: 26px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+        .login-alt .button { margin-top: 12px; }
         @media (max-width: 760px) {
             .nav { height: 70px; }
             .nav-right { gap: 12px; }
@@ -311,13 +385,17 @@
             .sim-bottom { font-size: 8px; }
             footer { flex-direction: column; }
         }
+        @media (max-width: 480px) {
+            .login-panel { padding: 22px 16px; }
+        }
         @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+            *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation: none !important; }
+            .reveal { opacity: 1; transform: none; }
         }
         .sim-terminal.paused .flow-dot { display: none; }
     </style>
 </head>
-<body>
+<body data-open-login="{{ 'true' if open_login else 'false' }}">
     <header class="shell nav">
         <a class="brand" href="/" aria-label="VerquoAI home">
             <span class="brand-mark" aria-hidden="true">V</span>
@@ -326,10 +404,13 @@
         <nav class="nav-right" aria-label="Main navigation">
             <a class="nav-link" href="#platform">Platform</a>
             <a class="nav-link" href="#market-flow">Market Flow</a>
-            <a class="button button-quiet" href="/login">Sign in</a>
-            <a class="button" href="/login">Open workspace <span aria-hidden="true">&nbsp;↗</span></a>
+            <a class="button button-quiet" href="/login" data-open-login>Sign in</a>
+            <button class="button" type="button" data-start-demo>Try the demo <span aria-hidden="true">&nbsp;↗</span></button>
         </nav>
     </header>
+    <div class="tape" aria-label="Simulated market ticker">
+        <div class="tape-track" id="tape-track"></div>
+    </div>
 
     <main>
         <section class="shell hero">
@@ -338,13 +419,14 @@
                     <div class="eyebrow"><span class="pulse"></span> A connected trading workspace</div>
                     <h1>See the market.<br><span>Understand the flow.</span></h1>
                     <div class="hero-actions">
-                        <a class="button" href="/login">Sign in securely <span aria-hidden="true">&nbsp;→</span></a>
-                        <a class="button button-quiet" href="#platform">Explore the platform</a>
+                        <button class="button" type="button" data-start-demo>Try the live demo <span aria-hidden="true">&nbsp;→</span></button>
+                        <a class="button button-quiet" href="/login" data-open-login>Sign in securely</a>
                     </div>
+                    <div class="demo-error" data-demo-error role="alert"></div>
                 </div>
                 <div>
                     <p class="hero-copy">Research, market activity, strategy tools, risk controls, and trade review—brought together in one focused workspace for your trading process.</p>
-                    <p class="subnote">Private workspace access is protected by email OTP sign-in.</p>
+                    <p class="subnote">The demo opens the full workspace on a simulated market and broker. No account, no Zerodha connection, nothing real at stake.</p>
                 </div>
             </div>
             <section class="sim-terminal" id="market-simulation" aria-label="Simulated market flow preview. All displayed market values are illustrative, not live data.">
@@ -398,11 +480,11 @@
                     <span class="sim-updated" id="sim-updated">SIMULATION TICK · --:--:--</span>
                     <button class="sim-play" id="sim-pause" type="button" aria-pressed="false">Ⅱ&nbsp; Pause</button>
                 </div>
-                <div class="sim-bottom"><span><strong>DEMO PREVIEW:</strong> Generated simulation only—not live prices, broker data, or trade signals.</span><a href="/login">Explore your workspace&nbsp; ↗</a></div>
+                <div class="sim-bottom"><span><strong>DEMO PREVIEW:</strong> Generated simulation only—not live prices, broker data, or trade signals.</span><a href="/app#tab=market-flow" data-start-demo="market-flow">Open it in the demo&nbsp; ↗</a></div>
             </section>
         </section>
 
-        <section class="section" id="platform">
+        <section class="section reveal" id="platform">
             <div class="shell">
                 <div class="section-heading platform-intro">
                     <div>
@@ -412,17 +494,17 @@
                     <p>Follow the market, explore your strategy, and review your process in a single workspace—built to keep context and risk in view.</p>
                 </div>
                 <div class="feature-grid">
-                    <article class="feature"><span class="feature-number">01 / FLOW</span><div class="feature-icon" aria-hidden="true">↗</div><h3>Market Flow</h3><p>Follow price and futures OI lenses, classify build-ups, compare market breadth, and replay recent flow history.</p><a class="feature-link" href="#market-flow">Explore the flow lens <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">02 / CONTEXT</span><div class="feature-icon" aria-hidden="true">⌁</div><h3>Market overview</h3><p>Bring index and stock quotes, contribution views, portfolio context, and market snapshots together.</p><a class="feature-link" href="/login">See workspace tools <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">03 / RESEARCH</span><div class="feature-icon" aria-hidden="true">⌕</div><h3>Signals &amp; analysis</h3><p>Explore scanner results, indicators, options OI analysis, charts, and signal-review workflows.</p><a class="feature-link" href="/login">Explore research tools <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">04 / STRATEGY</span><div class="feature-icon" aria-hidden="true">⌘</div><h3>Strategy lab</h3><p>Build strategies, examine F&amp;O structures, and work with backtest, replay, and paper-trading tools.</p><a class="feature-link" href="/login">Explore strategy tools <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">05 / RISK</span><div class="feature-icon" aria-hidden="true">◇</div><h3>Risk &amp; execution</h3><p>Keep positions, exposure, daily limits, protective controls, and broker connection status in view.</p><a class="feature-link" href="/login">Explore risk controls <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">06 / REVIEW</span><div class="feature-icon" aria-hidden="true">▤</div><h3>Journal &amp; agents</h3><p>Review trade analytics, portfolio health, system events, and supervised workflow-agent status.</p><a class="feature-link" href="/login">Explore trade review <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">01 / FLOW</span><div class="feature-icon" aria-hidden="true">↗</div><h3>Market Flow</h3><p>Follow price and futures OI lenses, classify build-ups, compare market breadth, and replay recent flow history.</p><div class="feature-live" aria-hidden="true"><div class="live-label"><span>BREADTH · SIMULATED</span><i></i></div><div class="breadth"><span id="live-breadth" style="width:58%"></span></div><div class="breadth-row"><span style="color:#68eab6" id="live-adv">ADV 290</span><span style="color:#ff7d93" id="live-dec">DEC 210</span></div></div><a class="feature-link" href="/app#tab=market-flow" data-start-demo="market-flow">Try it in the demo <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">02 / CONTEXT</span><div class="feature-icon" aria-hidden="true">⌁</div><h3>Market overview</h3><p>Bring index and stock quotes, contribution views, portfolio context, and market snapshots together.</p><div class="feature-live" aria-hidden="true" id="live-quotes"></div><a class="feature-link" href="/app#tab=overview" data-start-demo="overview">Try it in the demo <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">03 / RESEARCH</span><div class="feature-icon" aria-hidden="true">⌕</div><h3>Signals &amp; analysis</h3><p>Explore scanner results, indicators, options OI analysis, charts, and signal-review workflows.</p><div class="feature-live" aria-hidden="true"><div class="live-label"><span>SIGNAL FEED · SIMULATED</span><i></i></div><div class="feed" id="live-feed"></div></div><a class="feature-link" href="/app#tab=analysis" data-start-demo="analysis">Try it in the demo <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">04 / STRATEGY</span><div class="feature-icon" aria-hidden="true">⌘</div><h3>Strategy lab</h3><p>Build strategies, examine F&amp;O structures, and work with backtest, replay, and paper-trading tools.</p><div class="feature-live equity" aria-hidden="true"><div class="live-label"><span>BACKTEST EQUITY · SIMULATED</span><span id="live-equity-val">+0.0%</span></div><svg viewBox="0 0 200 46" preserveAspectRatio="none"><polyline id="live-equity" points=""/></svg></div><a class="feature-link" href="/app#tab=backtest" data-start-demo="backtest">Try it in the demo <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">05 / RISK</span><div class="feature-icon" aria-hidden="true">◇</div><h3>Risk &amp; execution</h3><p>Keep positions, exposure, daily limits, protective controls, and broker connection status in view.</p><div class="feature-live" aria-hidden="true"><div class="meter"><div class="live-label" style="margin:0"><span>EXPOSURE USED</span><span id="live-exp-val">42%</span></div><div class="meter-bar"><span id="live-exp" style="width:42%;background:linear-gradient(90deg,#8baeff,#8cf0cd)"></span></div></div><div class="meter"><div class="live-label" style="margin:0"><span>DAILY LOSS LIMIT</span><span id="live-loss-val">18%</span></div><div class="meter-bar"><span id="live-loss" style="width:18%;background:linear-gradient(90deg,#ffc270,#ff7d93)"></span></div></div></div><a class="feature-link" href="/app#tab=risk" data-start-demo="risk">Try it in the demo <span aria-hidden="true">→</span></a></article>
+                    <article class="feature"><span class="feature-number">06 / REVIEW</span><div class="feature-icon" aria-hidden="true">▤</div><h3>Journal &amp; agents</h3><p>Review trade analytics, portfolio health, system events, and supervised workflow-agent status.</p><div class="feature-live" aria-hidden="true"><div class="live-label"><span>AGENTS · SIMULATED</span><i></i></div><div class="agents" id="live-agents"></div></div><a class="feature-link" href="/app#tab=agents" data-start-demo="agents">Try it in the demo <span aria-hidden="true">→</span></a></article>
                 </div>
             </div>
         </section>
 
-        <section class="section flow-showcase" id="market-flow">
+        <section class="section flow-showcase reveal" id="market-flow">
             <div class="shell flow-showcase-inner flow-section">
                 <div class="flow-intro">
                     <div class="flow-overline">Designed for market context</div>
@@ -492,6 +574,37 @@
             <div class="disclaimer"><b>Important:</b> VerquoAI provides analytical and workflow tools, not investment advice or a promise of returns. Market data may be delayed or unavailable. Trading involves substantial risk, including possible loss of capital. Verify information independently and make your own decisions.</div>
         </section>
     </main>
+
+    <div class="login-backdrop" data-close-login></div>
+    <aside class="login-panel" id="login-panel" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-hidden="true">
+        <div class="login-head">
+            <span class="brand"><span class="brand-mark" aria-hidden="true">V</span><span>VerquoAI</span><sup>™</sup></span>
+            <button class="login-close" type="button" data-close-login aria-label="Close sign-in">×</button>
+        </div>
+        <div class="eyebrow"><span class="pulse"></span> Secure sign-in</div>
+        <h2 id="login-title">Open your workspace</h2>
+        <p class="lead">We email a one-time code to the address saved for your Zerodha ID.</p>
+
+        <div class="login-step" id="step-email">
+            <label class="field"><span>Zerodha ID</span><input type="text" id="zerodha-id-input" placeholder="e.g. AB1234" autocomplete="username" style="text-transform:uppercase"></label>
+            <label class="field"><span>Email address</span><input type="email" id="email-input" placeholder="you@example.com" autocomplete="email"></label>
+            <button class="button" type="button" id="btn-send-otp">Send code</button>
+            <div class="login-msg" id="msg-email" role="status"></div>
+        </div>
+
+        <div class="login-step" id="step-otp" hidden>
+            <label class="field"><span id="otp-delivery-message">Enter the 6-digit code sent to your email</span><input type="text" id="otp-input" class="otp" maxlength="6" inputmode="numeric" placeholder="······" autocomplete="one-time-code"></label>
+            <button class="button" type="button" id="btn-verify">Verify &amp; sign in</button>
+            <div class="login-msg" id="msg-otp" role="status"></div>
+            <div class="login-meta"><span id="otp-timer"></span><button type="button" id="btn-resend">Use a different ID / resend</button></div>
+        </div>
+
+        <div class="login-alt">
+            No account yet? Explore the full workspace on a simulated market first.
+            <button class="button button-quiet" type="button" data-start-demo>Try the demo instead</button>
+            <div class="demo-error" data-demo-error role="alert"></div>
+        </div>
+    </aside>
 
     <footer class="shell">
         <span>© <span id="year"></span> VerquoAI™</span>
@@ -645,6 +758,245 @@
             updateSimulation();
             intervalId = window.setInterval(updateSimulation, 1150);
             window.addEventListener('pagehide', () => window.clearInterval(intervalId), { once: true });
+        })();
+    </script>
+    <script>
+        // ── simulated previews (client-side only; illustrative values) ──
+        function startLivePreviews(reducedMotion) {
+            const fmt = (n, d = 2) => n.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+            const symbols = [
+                ['NIFTY 50', 25012.4], ['BANKNIFTY', 56120.8], ['SENSEX', 82214.6], ['FINNIFTY', 26488.1],
+                ['RELIANCE', 1412.3], ['HDFCBANK', 1975.6], ['INFY', 1518.2], ['TCS', 3102.9], ['ICICIBANK', 1388.4],
+                ['SBIN', 842.7], ['LT', 3621.5], ['ITC', 412.9], ['BHARTIARTL', 1903.1], ['AXISBANK', 1176.2],
+            ].map(([name, close]) => ({ name, close, price: close * (1 + (Math.random() - 0.5) * 0.012), hist: [] }));
+            const track = document.getElementById('tape-track');
+            const item = s => {
+                const pct = (s.price / s.close - 1) * 100;
+                return `<span class="tape-item" data-sym="${s.name}"><b>${s.name}</b>${fmt(s.price)}<span class="${pct >= 0 ? 'up' : 'down'}">${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(2)}%</span></span>`;
+            };
+            const drawTape = () => { track.innerHTML = symbols.map(item).join('') + symbols.map(item).join(''); };
+            drawTape();
+
+            const quotes = document.getElementById('live-quotes');
+            const spark = (hist, up) => {
+                const min = Math.min(...hist), max = Math.max(...hist), span = max - min || 1;
+                const pts = hist.map((v, i) => `${(i / (hist.length - 1 || 1) * 52).toFixed(1)},${(15 - (v - min) / span * 14).toFixed(1)}`).join(' ');
+                return `<svg viewBox="0 0 52 16"><polyline points="${pts}" stroke="${up ? '#68eab6' : '#ff7d93'}"/></svg>`;
+            };
+            const drawQuotes = () => {
+                quotes.innerHTML = '<div class="live-label"><span>INDICES · SIMULATED</span><i></i></div>' + symbols.slice(0, 3).map(s => {
+                    const pct = (s.price / s.close - 1) * 100;
+                    return `<div class="quote-row"><span style="color:#dfe6f0">${s.name}</span><span class="${pct >= 0 ? 'up' : 'down'}" style="color:${pct >= 0 ? '#68eab6' : '#ff7d93'}">${fmt(s.price)}</span>${spark(s.hist.length > 1 ? s.hist : [s.close, s.price], pct >= 0)}</div>`;
+                }).join('');
+            };
+
+            const feed = document.getElementById('live-feed');
+            const setups = ['EMA crossover · 15m', 'RSI reversal · 5m', 'VWAP breakout · 5m', 'Long build-up · OI', 'Stage 2 breakout · D', 'Short covering · OI', 'Mean reversion · 15m'];
+            const pushSignal = () => {
+                const s = symbols[4 + Math.floor(Math.random() * (symbols.length - 4))];
+                const setup = setups[Math.floor(Math.random() * setups.length)];
+                const buy = Math.random() > 0.42;
+                const line = document.createElement('div');
+                line.className = 'feed-line';
+                line.innerHTML = `<span>${s.name}</span><span>${setup}</span><span style="color:${buy ? '#68eab6' : '#ff7d93'}">${buy ? 'BUY' : 'SELL'}</span>`;
+                feed.prepend(line);
+                while (feed.children.length > 3) feed.lastChild.remove();
+            };
+
+            const equityLine = document.getElementById('live-equity');
+            let equity = [0];
+            const stepEquity = () => {
+                const last = equity[equity.length - 1];
+                equity.push(last + (Math.random() - 0.4) * 1.1);
+                if (equity.length > 60) equity = [0];
+                const min = Math.min(...equity, -1), max = Math.max(...equity, 1);
+                equityLine.setAttribute('points', equity.map((v, i) => `${(i / 59 * 200).toFixed(1)},${(44 - (v - min) / (max - min) * 40).toFixed(1)}`).join(' '));
+                const value = equity[equity.length - 1];
+                document.getElementById('live-equity-val').textContent = `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+            };
+
+            const agents = document.getElementById('live-agents');
+            const states = [['running', '#68eab6'], ['waiting', '#ffc270'], ['scanning', '#8baeff']];
+            const drawAgents = () => {
+                agents.innerHTML = ['SCANNER', 'VERIFIER', 'EXECUTOR', 'TRACKER'].map((name, i) => {
+                    const [label, color] = states[(Math.floor(Date.now() / 2600) + i) % states.length];
+                    return `<span class="agent"><i style="background:${color};box-shadow:0 0 8px ${color}"></i>${name}<em>${label}</em></span>`;
+                }).join('');
+            };
+
+            const step = () => {
+                symbols.forEach(s => {
+                    s.price *= 1 + (Math.random() - 0.495) * (s.name.length > 8 ? 0.0006 : 0.0012);
+                    s.hist.push(s.price);
+                    if (s.hist.length > 30) s.hist.shift();
+                });
+                drawTape();
+                drawQuotes();
+                const adv = 230 + Math.round(Math.sin(Date.now() / 9000) * 60 + Math.random() * 20);
+                document.getElementById('live-breadth').style.width = `${(adv / 500 * 100).toFixed(1)}%`;
+                document.getElementById('live-adv').textContent = `ADV ${adv}`;
+                document.getElementById('live-dec').textContent = `DEC ${500 - adv}`;
+                const exposure = 40 + Math.round(Math.sin(Date.now() / 7000) * 12);
+                const loss = 16 + Math.round(Math.cos(Date.now() / 11000) * 9);
+                document.getElementById('live-exp').style.width = `${exposure}%`;
+                document.getElementById('live-exp-val').textContent = `${exposure}%`;
+                document.getElementById('live-loss').style.width = `${loss}%`;
+                document.getElementById('live-loss-val').textContent = `${loss}%`;
+                stepEquity();
+                drawAgents();
+            };
+            for (let i = 0; i < 3; i++) pushSignal();
+            for (let i = 0; i < 20; i++) stepEquity();
+            step();
+            if (reducedMotion) return;
+            const timers = [setInterval(step, 1400), setInterval(pushSignal, 3200)];
+            window.addEventListener('pagehide', () => timers.forEach(clearInterval), { once: true });
+
+            const observer = new IntersectionObserver(entries => entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('shown'); observer.unobserve(e.target); }
+            }), { threshold: 0.12 });
+            document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+        }
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (prefersReducedMotion) document.querySelectorAll('.reveal').forEach(el => el.classList.add('shown'));
+        startLivePreviews(prefersReducedMotion);
+
+        // ── try the demo ──
+        async function startDemo(tab, button) {
+            const errors = document.querySelectorAll('[data-demo-error]');
+            errors.forEach(el => { el.textContent = ''; });
+            button?.setAttribute('aria-busy', 'true');
+            try {
+                const res = await fetch('/demo/start', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.success) throw new Error(data.message || 'The demo could not start. Please try again.');
+                window.location.href = `/app${tab ? '#tab=' + encodeURIComponent(tab) : ''}`;
+            } catch (e) {
+                errors.forEach(el => { el.textContent = e.message; });
+                button?.removeAttribute('aria-busy');
+            }
+        }
+        document.querySelectorAll('[data-start-demo]').forEach(el => el.addEventListener('click', event => {
+            event.preventDefault();
+            startDemo(el.dataset.startDemo || '', el);
+        }));
+
+        // ── sign-in panel ──
+        (() => {
+            const panel = document.getElementById('login-panel');
+            let lastFocus = null;
+            let currentZerodhaId = '';
+            let timer;
+            const $ = id => document.getElementById(id);
+            const message = (id, kind, text) => { const el = $(id); el.className = `login-msg ${kind}`; el.textContent = text; };
+            const showStep = step => {
+                $('step-email').hidden = step !== 'email';
+                $('step-otp').hidden = step !== 'otp';
+                (step === 'otp' ? $('otp-input') : $('zerodha-id-input')).focus();
+            };
+            const open = () => {
+                lastFocus = document.activeElement;
+                document.body.classList.add('login-open');
+                panel.setAttribute('aria-hidden', 'false');
+                if (location.pathname !== '/login') history.replaceState(null, '', '/login');
+                setTimeout(() => $('zerodha-id-input').focus(), 60);
+            };
+            const close = () => {
+                document.body.classList.remove('login-open');
+                panel.setAttribute('aria-hidden', 'true');
+                if (location.pathname === '/login') history.replaceState(null, '', '/');
+                lastFocus?.focus?.();
+            };
+            document.querySelectorAll('[data-open-login]').forEach(el => el.addEventListener('click', e => { e.preventDefault(); open(); }));
+            document.querySelectorAll('[data-close-login]').forEach(el => el.addEventListener('click', close));
+            document.addEventListener('keydown', e => {
+                if (!document.body.classList.contains('login-open')) return;
+                if (e.key === 'Escape') close();
+                if (e.key === 'Tab') {  // keep focus inside the dialog
+                    const focusable = [...panel.querySelectorAll('button, input')].filter(el => !el.closest('[hidden]'));
+                    const first = focusable[0], last = focusable[focusable.length - 1];
+                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                }
+            });
+
+            const startTimer = () => {
+                let seconds = 300;
+                clearInterval(timer);
+                timer = setInterval(() => {
+                    seconds--;
+                    $('otp-timer').textContent = seconds > 0
+                        ? `Code expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+                        : 'Code expired. Request a new one.';
+                    if (seconds <= 0) clearInterval(timer);
+                }, 1000);
+            };
+
+            async function sendOTP() {
+                const zerodhaId = $('zerodha-id-input').value.trim().toUpperCase();
+                const email = $('email-input').value.trim();
+                if (!zerodhaId) return message('msg-email', 'error', 'Please enter your Zerodha ID');
+                if (!email) return message('msg-email', 'error', 'Please enter your email address');
+                currentZerodhaId = zerodhaId;
+                const btn = $('btn-send-otp');
+                btn.setAttribute('aria-busy', 'true');
+                message('msg-email', 'info', 'Sending code…');
+                try {
+                    const res = await fetch('/auth/send-otp', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email, zerodha_id: zerodhaId }),
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        message('msg-email', 'error', data.message || 'Failed to send the code');
+                    } else {
+                        if (data.mode === 'development' && data.otp) {
+                            $('otp-input').value = data.otp;
+                            $('otp-delivery-message').textContent = 'Development-only code (email failed)';
+                        } else {
+                            $('otp-delivery-message').textContent = 'Enter the 6-digit code sent to your email';
+                        }
+                        message('msg-email', 'success', '');
+                        message('msg-otp', 'info', '');
+                        showStep('otp');
+                        startTimer();
+                    }
+                } catch (e) {
+                    message('msg-email', 'error', 'Connection error. Please try again.');
+                }
+                btn.removeAttribute('aria-busy');
+            }
+
+            async function verifyOTP() {
+                const otp = $('otp-input').value.trim();
+                if (otp.length !== 6) return message('msg-otp', 'error', 'Please enter the 6-digit code');
+                const btn = $('btn-verify');
+                btn.setAttribute('aria-busy', 'true');
+                try {
+                    const res = await fetch('/auth/verify-otp', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ otp, zerodha_id: currentZerodhaId }),
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        message('msg-otp', 'success', 'Signed in. Opening your workspace…');
+                        setTimeout(() => { window.location.href = '/app'; }, 400);
+                        return;
+                    }
+                    message('msg-otp', 'error', data.message || 'Invalid code');
+                } catch (e) {
+                    message('msg-otp', 'error', 'Connection error. Please try again.');
+                }
+                btn.removeAttribute('aria-busy');
+            }
+
+            $('btn-send-otp').addEventListener('click', sendOTP);
+            $('btn-verify').addEventListener('click', verifyOTP);
+            $('btn-resend').addEventListener('click', () => showStep('email'));
+            $('email-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendOTP(); });
+            $('zerodha-id-input').addEventListener('keydown', e => { if (e.key === 'Enter') $('email-input').focus(); });
+            $('otp-input').addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTP(); });
+            if (document.body.dataset.openLogin === 'true') open();
         })();
     </script>
 </body>

@@ -23,7 +23,7 @@ from src.data.backtest import BacktestEngine, WalkForwardOptimizer
 from src.data.bar_aggregator import BarAggregator, bucket_start
 from src.data.exit_plan import TIMEFRAME_MINUTES, allows_short, product_for
 from src.data.journal import TradeJournal
-from src.data.market_data_store import get_market_data_store
+from src.data.market_data_store import MarketDataStore, get_market_data_store
 from src.data.models import (
     Exchange,
     Interval,
@@ -102,12 +102,22 @@ logger = get_logger(__name__)
 class TradingService:
     _instance: Optional[TradingService] = None
 
-    def __init__(self, api_key: str = "", api_secret: str = "", zerodha_id: str = "") -> None:
+    def __init__(self, api_key: str = "", api_secret: str = "", zerodha_id: str = "", demo: bool = False) -> None:
         self._settings = get_settings()
         self._zerodha_id = zerodha_id
-        self._auth = KiteAuthenticator(api_key=api_key, api_secret=api_secret, zerodha_id=zerodha_id)
-        self._client = KiteClient(self._auth)
-        self._ticker = KiteTicker(self._auth)
+        # Demo sessions run this same service against a simulated broker
+        # (src/demo): no Zerodha calls, orders fill in a private sandbox.
+        self.is_demo = demo
+        if demo:
+            from src.demo.broker import DemoKiteClient, DemoTicker
+
+            self._client = DemoKiteClient(zerodha_id)
+            self._auth = self._client._auth
+            self._ticker = DemoTicker(self._client)
+        else:
+            self._auth = KiteAuthenticator(api_key=api_key, api_secret=api_secret, zerodha_id=zerodha_id)
+            self._client = KiteClient(self._auth)
+            self._ticker = KiteTicker(self._auth)
         self._risk = RiskManager()
         self._execution = ExecutionEngine(self._client, self._risk)
         # Journals and saved strategies are per user (see src/utils/user_paths.py).
@@ -166,7 +176,10 @@ class TradingService:
         self._portfolio_reporter = PortfolioReporter(self._client)
         self._backtest_results: dict[str, Any] = {}  # cache latest backtest results
         self._last_health_report: Optional[dict[str, Any]] = None  # cache latest health report
-        self._market_store = get_market_data_store()
+        # Candles are cached by instrument token: demo data must never reach the shared cache.
+        self._market_store = (
+            MarketDataStore(db_path=user_data_path(zerodha_id, "market_data.db")) if demo else get_market_data_store()
+        )
         self._last_quote_persist: dict[int, float] = {}
         self._quote_persist_interval_s = 2.0  # throttle per-token quote_snapshots writes
         self._oi_snapshot_task: Optional[asyncio.Task] = None
@@ -3921,8 +3934,8 @@ class TradingServiceManager:
             cls._instance = TradingServiceManager()
         return cls._instance
 
-    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "") -> TradingService:
-        return self._mcp_driver.get_service(zerodha_id, api_key=api_key, api_secret=api_secret)
+    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "", demo: bool = False) -> TradingService:
+        return self._mcp_driver.get_service(zerodha_id, api_key=api_key, api_secret=api_secret, demo=demo)
 
     def has_service(self, zerodha_id: str) -> bool:
         return self._mcp_driver.has_service(zerodha_id)

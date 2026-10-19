@@ -306,6 +306,15 @@ function updateStatusBadge(data) {
     const btnLogin = document.getElementById('btn-login');
     const btnStart = document.getElementById('btn-start');
     const btnStop = document.getElementById('btn-stop');
+    if (data.demo) {
+        // Simulated broker: always "connected"; a logged-in user can still connect Zerodha.
+        statusBadge.textContent = data.running ? 'DEMO · LIVE' : 'DEMO';
+        statusBadge.className = 'status-badge status-demo';
+        btnLogin.style.display = data.demo === 'user' ? '' : 'none';
+        btnStart.style.display = data.running ? 'none' : '';
+        btnStop.style.display = data.running ? '' : 'none';
+        return;
+    }
     if (data.running) {
         statusBadge.textContent = 'LIVE';
         statusBadge.className = 'status-badge status-live';
@@ -3192,6 +3201,14 @@ async function logoutUser() {
         await API.post('/auth/logout', {});
     } catch (e) {}
     window.location.href = '/login';
+}
+
+// Leave a public demo (ends its sandbox) and go somewhere else, e.g. the login panel.
+async function exitDemoTo(url) {
+    try {
+        await API.post('/auth/logout', {});
+    } catch (e) {}
+    window.location.href = url;
 }
 
 async function logoutAllDevices() {

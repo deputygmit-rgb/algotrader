@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import src.analysis.scanner as scanner_mod
 from src.analysis.scanner import StockScanner
 
 
@@ -44,11 +43,6 @@ class FakeClient:
 
     async def get_profile(self):
         return SimpleNamespace(user_id="U1")
-
-
-@pytest.fixture(autouse=True)
-def _tokens(monkeypatch):
-    monkeypatch.setattr(scanner_mod, "_ALL_NSE_TOKENS", {})
 
 
 @pytest.mark.asyncio

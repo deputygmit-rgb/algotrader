@@ -53,8 +53,8 @@ class MCPDriverSupervisorAgent:
         self._started = False
         logger.info("mcp_driver_supervisor_stopped")
 
-    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "") -> "TradingService":
-        return self._supervisor.get_service(zerodha_id, api_key, api_secret)
+    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "", demo: bool = False) -> "TradingService":
+        return self._supervisor.get_service(zerodha_id, api_key, api_secret, demo=demo)
 
     def has_service(self, zerodha_id: str) -> bool:
         return self._supervisor.has_service(zerodha_id)

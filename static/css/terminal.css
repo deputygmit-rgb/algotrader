@@ -88,6 +88,21 @@ button, input, select, textarea { font-family: inherit; }
 .status-live { color: var(--t-g); box-shadow: 0 0 12px rgba(91,227,160,.25); }
 .status-offline { color: var(--t-r); }
 .status-connected { color: var(--t-c); }
+.status-demo { color: var(--t-a); box-shadow: 0 0 12px rgba(255,209,102,.2); }
+
+.t-demo-banner {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 8px 20px; border-bottom: 1px solid var(--t-line);
+    background: linear-gradient(90deg, rgba(255,209,102,.10), rgba(56,214,255,.04) 60%, transparent);
+    font-family: var(--t-font); font-size: 12px; color: var(--t-txt);
+}
+.t-demo-tag {
+    padding: 2px 8px; border: 1px solid var(--t-a); color: var(--t-a);
+    letter-spacing: .12em; font-weight: 700; font-size: 11px;
+}
+.t-demo-text { flex: 1 1 320px; color: var(--t-dim); line-height: 1.5; }
+.t-demo-actions { display: flex; gap: 8px; }
+@media (max-width: 640px) { .t-demo-banner { padding: 8px 16px; } }
 .t-head-meta { display: inline-flex; align-items: center; gap: 14px; font-size: 11px; color: var(--t-dim); letter-spacing: 1px; }
 
 /* ── ticker tape ────────────────────────────────────────────────── */

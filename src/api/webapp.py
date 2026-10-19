@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -25,6 +26,13 @@ from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth
 from src.auth.user_config import UserConfigService
+from src.demo.sessions import (
+    PUBLIC_SESSION_SECONDS,
+    demo_sessions,
+    is_public_demo_id,
+    new_public_id,
+    user_demo_id,
+)
 from src.utils.exceptions import KiteError, KillSwitchError
 from src.utils.logger import get_logger
 
@@ -47,9 +55,12 @@ def _get_fno_demo() -> DemoFnoSimulator:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await mcp_driver.startup()
+    demo_sessions.purge_orphans()
+    reaper = asyncio.create_task(demo_sessions.run_reaper())
     try:
         yield
     finally:
+        reaper.cancel()
         await mcp_driver.shutdown()
 
 
@@ -63,19 +74,59 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 SESSION_COOKIE = "kta_session"
 
-PUBLIC_PATHS = {"/", "/login", "/auth/send-otp", "/auth/verify-otp", "/auth/callback", "/api/auth/callback", "/api/auth/postback"}
+PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-otp", "/auth/callback",
+                "/api/auth/callback", "/api/auth/postback"}
 
 
-def get_user_service(request: Request) -> TradingService:
-    token = request.cookies.get(SESSION_COOKIE, "")
-    zerodha_id = otp_auth.get_session_user(token)
-    if not zerodha_id:
-        raise HTTPException(401, "Not authenticated")
+def _real_service(zerodha_id: str) -> TradingService:
+    if is_public_demo_id(zerodha_id):
+        raise HTTPException(403, "Demo sessions cannot connect to Zerodha - log in with your own account")
     user_cfg = UserConfigService.get_instance().get_user(zerodha_id)
     if not user_cfg:
         raise HTTPException(403, "User not configured")
     mgr = TradingServiceManager.get_instance()
     return mgr.get_service(zerodha_id, api_key=user_cfg.api_key, api_secret=user_cfg.api_secret)
+
+
+def _service_for_session(token: str) -> TradingService:
+    """The service a session works with.
+
+    Public demo visitors get their own simulated-broker service. A logged-in
+    user gets their real service once Zerodha is connected, and a demo service
+    (same terminal, simulated broker) until then.
+    """
+    zerodha_id = otp_auth.get_session_user(token)
+    if not zerodha_id:
+        raise HTTPException(401, "Not authenticated")
+    mgr = TradingServiceManager.get_instance()
+    if is_public_demo_id(zerodha_id):
+        demo_sessions.touch(zerodha_id)
+        return mgr.get_service(zerodha_id, demo=True)
+    real = _real_service(zerodha_id)
+    if real.is_authenticated:
+        return real
+    demo_id = user_demo_id(zerodha_id)
+    demo_sessions.touch(demo_id)
+    return mgr.get_service(demo_id, demo=True)
+
+
+def get_user_service(request: Request) -> TradingService:
+    return _service_for_session(request.cookies.get(SESSION_COOKIE, ""))
+
+
+def get_real_user_service(request: Request) -> TradingService:
+    """The user's Zerodha-backed service, for connecting Zerodha itself."""
+    zerodha_id = get_session_zerodha_id(request)
+    if not zerodha_id:
+        raise HTTPException(401, "Not authenticated")
+    return _real_service(zerodha_id)
+
+
+def demo_kind(svc: TradingService) -> str:
+    """'public', 'user' (not connected to Zerodha yet) or '' for a real service."""
+    if not getattr(svc, "is_demo", False):
+        return ""
+    return "public" if is_public_demo_id(svc.zerodha_id) else "user"
 
 
 def get_session_zerodha_id(request: Request) -> str:
@@ -199,7 +250,7 @@ async def auth_middleware(request: Request, call_next):
 async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
-    return templates.TemplateResponse(request, "login.html", {"request": request})
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True})
 
 
 @app.post("/auth/send-otp")
@@ -278,9 +329,33 @@ async def verify_otp(request: Request) -> Any:
         return {"success": False, "message": "Invalid or expired OTP"}
 
 
+@app.post("/demo/start")
+async def demo_start(request: Request) -> Any:
+    """Open the terminal on a simulated market and broker, no account needed."""
+    if is_logged_in(request):
+        return {"success": True, "redirect": "/app"}
+    if not otp_auth.check_ip_rate_limit("demo-start", _client_ip(request), max_requests=6, window_seconds=3600):
+        return JSONResponse({"success": False, "message": "Too many demo sessions from this network. Try again later."},
+                            status_code=429)
+    if not demo_sessions.has_capacity():
+        return JSONResponse({"success": False, "message": "The demo is busy right now. Please try again in a few minutes."},
+                            status_code=503)
+    demo_id = new_public_id()
+    token = otp_auth.create_demo_session(demo_id, PUBLIC_SESSION_SECONDS)
+    demo_sessions.touch(demo_id)
+    logger.info("demo_session_started", demo_id=demo_id)
+    response = JSONResponse({"success": True, "redirect": "/app"})
+    response.set_cookie(SESSION_COOKIE, token, max_age=PUBLIC_SESSION_SECONDS, httponly=True, samesite="lax",
+                        secure=_is_secure_request(request), path="/")
+    return response
+
+
 @app.post("/auth/logout")
 async def logout(request: Request) -> Any:
     token = request.cookies.get(SESSION_COOKIE, "")
+    zerodha_id = otp_auth.get_session_user(token) or ""
+    if is_public_demo_id(zerodha_id):
+        await demo_sessions.end(zerodha_id)
     otp_auth.logout(token)
     response = JSONResponse({"success": True})
     response.delete_cookie(SESSION_COOKIE)
@@ -300,9 +375,12 @@ async def logout_all(request: Request) -> Any:
 STEP_UP_REQUIRED = "step_up_required"
 
 
-def _require_step_up(request: Request) -> None:
+def _require_step_up(request: Request, svc: TradingService) -> None:
     """Risky actions (real orders, live trading, auto-trade, kill switch off)
-    need an OTP confirmed in the last few minutes, not just a session cookie."""
+    need an OTP confirmed in the last few minutes, not just a session cookie.
+    Demo services trade a simulated sandbox, so they need no confirmation."""
+    if getattr(svc, "is_demo", False):
+        return
     if not otp_auth.has_recent_step_up(request.cookies.get(SESSION_COOKIE, "")):
         raise HTTPException(403, STEP_UP_REQUIRED)
 
@@ -345,7 +423,7 @@ def _static_version(rel_path: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "landing.html", {"request": request})
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False})
 
 
 @app.get("/app", response_class=HTMLResponse)
@@ -362,6 +440,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         js_version = "1"
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
+        "demo_kind": demo_kind(svc),
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
@@ -401,6 +480,7 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
     svc = get_user_service(request)
     result = {
         "authenticated": svc.is_authenticated,
+        "demo": demo_kind(svc),
         "running": svc.is_running,
         "zerodha_id": svc.zerodha_id,
         "strategies": svc.get_strategies_info(),
@@ -443,7 +523,7 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
 
 @app.get("/api/login-url")
 async def login_url(request: Request) -> dict[str, str]:
-    svc = get_user_service(request)
+    svc = get_real_user_service(request)
     return {"url": svc.get_login_url()}
 
 
@@ -454,8 +534,9 @@ async def auth_callback(request: Request):
     if status != "success" or not request_token:
         return RedirectResponse("/app?auth_error=Login+failed+or+was+cancelled")
     try:
-        svc = get_user_service(request)
+        svc = get_real_user_service(request)
         await svc.authenticate(request_token)
+        await demo_sessions.end(user_demo_id(svc.zerodha_id))
         mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/app?auth=success")
     except HTTPException:
@@ -473,8 +554,9 @@ async def auth_callback_bare(request: Request):
     if status != "success" or not request_token:
         return RedirectResponse("/app?auth_error=Login+failed+or+was+cancelled")
     try:
-        svc = get_user_service(request)
+        svc = get_real_user_service(request)
         await svc.authenticate(request_token)
+        await demo_sessions.end(user_demo_id(svc.zerodha_id))
         mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/app?auth=success")
     except HTTPException:
@@ -533,8 +615,9 @@ async def authenticate(request: Request) -> dict[str, Any]:
     token = body.get("request_token", "")
     if not token:
         raise HTTPException(400, "request_token is required")
-    svc = get_user_service(request)
+    svc = get_real_user_service(request)
     result = await svc.authenticate(token)
+    await demo_sessions.end(user_demo_id(svc.zerodha_id))
     mcp_driver.wake_agent(svc.zerodha_id)
     return result
 
@@ -657,7 +740,7 @@ async def start_live(request: Request) -> dict[str, Any]:
     if not tokens:
         raise HTTPException(400, "tokens list is required")
     svc = get_user_service(request)
-    _require_step_up(request)
+    _require_step_up(request, svc)
     return await svc.start_live(tokens, mode)
 
 
@@ -698,19 +781,13 @@ async def start_oi_tracking(request: Request) -> dict[str, Any]:
 
 @app.websocket("/ws/oi")
 async def oi_websocket(websocket: WebSocket) -> None:
-    token = websocket.cookies.get(SESSION_COOKIE, "")
-    zerodha_id = otp_auth.get_session_user(token)
-    if not zerodha_id:
-        await websocket.close(code=4001)
-        return
-    user_cfg = UserConfigService.get_instance().get_user(zerodha_id)
-    if not user_cfg:
+    try:
+        svc = _service_for_session(websocket.cookies.get(SESSION_COOKIE, ""))
+    except HTTPException:
         await websocket.close(code=4001)
         return
 
     await websocket.accept()
-    mgr = TradingServiceManager.get_instance()
-    svc = mgr.get_service(zerodha_id, api_key=user_cfg.api_key, api_secret=user_cfg.api_secret)
     svc.oi_tracker.register_oi_ws_client(websocket)
     try:
         data = svc.get_oi_all()
@@ -811,7 +888,7 @@ async def oi_strategy_execute(request: Request) -> dict[str, Any]:
     if not signal_id:
         return {"error": "signal_id required"}
     svc = get_user_service(request)
-    _require_step_up(request)  # places a real broker order
+    _require_step_up(request, svc)  # places a real broker order
     return await svc.oi_strategy_execute_signal(signal_id)
 
 
@@ -950,7 +1027,7 @@ async def analysis_stock_execute(request: Request) -> dict[str, Any]:
     if not symbol or not strategy_name or not timeframe:
         raise HTTPException(400, "symbol, strategy and timeframe are required")
     svc = get_user_service(request)
-    _require_step_up(request)  # places a real broker order
+    _require_step_up(request, svc)  # places a real broker order
     try:
         return await svc.execute_stock_strategy_signal(
             symbol=symbol,
@@ -1595,7 +1672,7 @@ async def set_day_trade_autotrade(request: Request) -> dict[str, Any]:
     svc = get_user_service(request)
     # Switching auto-trade off is always allowed; anything else can send orders.
     if body != {"enabled": False}:
-        _require_step_up(request)
+        _require_step_up(request, svc)
     return svc.update_board_autotrade(body)
 
 
@@ -1939,7 +2016,7 @@ async def toggle_kill_switch(request: Request) -> dict[str, Any]:
     if activate:
         svc._risk.activate_kill_switch("Manual activation via dashboard")
     else:
-        _require_step_up(request)
+        _require_step_up(request, svc)
         try:
             svc._risk.deactivate_kill_switch()
         except KillSwitchError as e:
@@ -2235,19 +2312,13 @@ async def export_journal(request: Request) -> dict[str, Any]:
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    token = websocket.cookies.get(SESSION_COOKIE, "")
-    zerodha_id = otp_auth.get_session_user(token)
-    if not zerodha_id:
-        await websocket.close(code=4001)
-        return
-    user_cfg = UserConfigService.get_instance().get_user(zerodha_id)
-    if not user_cfg:
+    try:
+        svc = _service_for_session(websocket.cookies.get(SESSION_COOKIE, ""))
+    except HTTPException:
         await websocket.close(code=4001)
         return
 
     await websocket.accept()
-    mgr = TradingServiceManager.get_instance()
-    svc = mgr.get_service(zerodha_id, api_key=user_cfg.api_key, api_secret=user_cfg.api_secret)
     svc.register_ws_client(websocket)
     try:
         while True:
