@@ -116,8 +116,8 @@ class TrackerAgent(BaseAgent):
                     self.activity.work(len(net) + len(orders))
                     try:
                         self.activity.set_task("Persisting the snapshot", "act")
-                        self.service._market_store.store_positions(net)
-                        self.service._market_store.store_orders(orders)
+                        self.service._market_store.store_positions(net, user_id=self.zerodha_id)
+                        self.service._market_store.store_orders(orders, user_id=self.zerodha_id)
                     except Exception as e:
                         # Persistence is best-effort - never let it mark the sync failed.
                         logger.error("tracker_agent_persist_failed", zerodha_id=self.zerodha_id, error=str(e))

@@ -773,6 +773,8 @@ class PutCreditSpreadRunnerStrategy(OptionStrategyBase):
 
     def _persist_state(self) -> None:
         """Save strategy state to disk for crash recovery."""
+        if self.params.get("disable_persistence", False):
+            return  # backtests must not overwrite the live position state
         try:
             os.makedirs(_STATE_DIR, exist_ok=True)
             state_data = {

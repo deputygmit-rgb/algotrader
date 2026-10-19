@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from src.data.models import TradeJournalEntry
 from src.utils.config import get_settings
@@ -13,8 +13,9 @@ logger = get_logger(__name__)
 
 
 class TradeJournal:
-    def __init__(self) -> None:
+    def __init__(self, path: Optional[str] = None) -> None:
         self._settings = get_settings()
+        self._path = path or self._settings.trade_journal_file
         self._entries: list[TradeJournalEntry] = []
         self._pnl_tracker: dict[str, float] = {}
         self._load_journal()
@@ -108,7 +109,7 @@ class TradeJournal:
 
     def _save_journal(self) -> None:
         try:
-            path = self._settings.trade_journal_file
+            path = self._path
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = [e.model_dump(mode="json") for e in self._entries]
             with open(path, "w") as f:
@@ -117,7 +118,7 @@ class TradeJournal:
             logger.error("journal_save_error", error=str(e))
 
     def _load_journal(self) -> None:
-        path = self._settings.trade_journal_file
+        path = self._path
         if not os.path.exists(path):
             return
         try:

@@ -125,7 +125,8 @@ CREATE TABLE IF NOT EXISTS orders_log (
     average_price   REAL    NOT NULL DEFAULT 0,
     product         TEXT    NOT NULL DEFAULT '',
     tag             TEXT    NOT NULL DEFAULT '',
-    PRIMARY KEY (order_id, ts)
+    user_id         TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, order_id, ts)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS positions_log (
@@ -139,7 +140,8 @@ CREATE TABLE IF NOT EXISTS positions_log (
     pnl             REAL    NOT NULL DEFAULT 0,
     buy_quantity    INTEGER NOT NULL DEFAULT 0,
     sell_quantity   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (tradingsymbol, exchange, product, ts)
+    user_id         TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, tradingsymbol, exchange, product, ts)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS backtest_results (
@@ -244,6 +246,11 @@ class MarketDataStore:
     def _init_db(self) -> None:
         conn = self._get_conn()
         conn.executescript(_SCHEMA)
+        # Databases created before snapshots were tagged per account.
+        for table in ("orders_log", "positions_log"):
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if "user_id" not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
     def close(self) -> None:
@@ -794,7 +801,7 @@ class MarketDataStore:
 
     # ─── Orders Log ─────────────────────────────────────────────
 
-    def store_orders(self, orders: list[dict[str, Any]]) -> int:
+    def store_orders(self, orders: list[dict[str, Any]], user_id: str = "") -> int:
         """Persist a snapshot of orders (upsert by order_id+ts)."""
         if not orders:
             return 0
@@ -815,6 +822,7 @@ class MarketDataStore:
                 o.get("average_price", 0),
                 o.get("product", ""),
                 o.get("tag", ""),
+                user_id.upper(),
             )
             for o in orders
         ]
@@ -822,24 +830,24 @@ class MarketDataStore:
             """INSERT OR REPLACE INTO orders_log
                (order_id, ts, tradingsymbol, exchange, transaction_type,
                 order_type, quantity, price, status, filled_quantity,
-                average_price, product, tag)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                average_price, product, tag, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
         return len(rows)
 
-    def get_orders_log(self, limit: int = 200) -> list[dict[str, Any]]:
-        """Retrieve most recent logged orders."""
+    def get_orders_log(self, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Retrieve one account's most recent logged orders."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM orders_log ORDER BY ts DESC LIMIT ?", (limit,)
+            "SELECT * FROM orders_log WHERE user_id = ? ORDER BY ts DESC LIMIT ?", (user_id.upper(), limit)
         ).fetchall()
         return [dict(r) for r in rows]
 
     # ─── Positions Log ──────────────────────────────────────────
 
-    def store_positions(self, positions: list[dict[str, Any]]) -> int:
+    def store_positions(self, positions: list[dict[str, Any]], user_id: str = "") -> int:
         """Persist a snapshot of positions."""
         if not positions:
             return 0
@@ -857,24 +865,25 @@ class MarketDataStore:
                 p.get("pnl", 0),
                 p.get("buy_quantity", 0),
                 p.get("sell_quantity", 0),
+                user_id.upper(),
             )
             for p in positions
         ]
         conn.executemany(
             """INSERT OR REPLACE INTO positions_log
                (tradingsymbol, exchange, product, ts, quantity,
-                average_price, last_price, pnl, buy_quantity, sell_quantity)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                average_price, last_price, pnl, buy_quantity, sell_quantity, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()
         return len(rows)
 
-    def get_positions_log(self, limit: int = 200) -> list[dict[str, Any]]:
-        """Retrieve most recent logged positions."""
+    def get_positions_log(self, user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Retrieve one account's most recent logged positions."""
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM positions_log ORDER BY ts DESC LIMIT ?", (limit,)
+            "SELECT * FROM positions_log WHERE user_id = ? ORDER BY ts DESC LIMIT ?", (user_id.upper(), limit)
         ).fetchall()
         return [dict(r) for r in rows]
 

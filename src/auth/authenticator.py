@@ -10,6 +10,7 @@ from typing import Optional
 import aiohttp
 import certifi
 
+from src.auth.user_config import decrypt_secret, encrypt_secret
 from src.data.models import SessionData
 from src.utils.config import get_settings
 from src.utils.exceptions import AuthenticationError
@@ -23,9 +24,16 @@ TOKEN_STORE_FILE = ".kite_session.json"
 class KiteAuthenticator:
     def __init__(self, api_key: str = "", api_secret: str = "", zerodha_id: str = "") -> None:
         self._settings = get_settings()
-        self._user_api_key = api_key or self._settings.kite_api_key
-        self._user_api_secret = api_secret or self._settings.kite_api_secret
         self._zerodha_id = zerodha_id
+        # KITE_API_KEY / KITE_API_SECRET / KITE_ACCESS_TOKEN in .env belong to one
+        # account. Only the legacy single-user authenticator (no zerodha_id) may
+        # use them; a per-user one must never fall back to another account's keys.
+        self._uses_env_credentials = not zerodha_id
+        if self._uses_env_credentials:
+            api_key = api_key or self._settings.kite_api_key
+            api_secret = api_secret or self._settings.kite_api_secret
+        self._user_api_key = api_key
+        self._user_api_secret = api_secret
         self._session_data: Optional[SessionData] = None
         self._token_timestamp: float = 0.0
         self._token_file = f".kite_session_{zerodha_id}.json" if zerodha_id else TOKEN_STORE_FILE
@@ -70,6 +78,20 @@ class KiteAuthenticator:
                 f"Session generation failed: {result.get('message', 'Unknown error')}"
             )
 
+        # The request_token arrives on a public callback URL, so bind it to the
+        # VerquoAI user: never attach another Zerodha account to this session.
+        kite_user_id = str(result.get("data", {}).get("user_id", "")).upper()
+        if self._zerodha_id and kite_user_id != self._zerodha_id.upper():
+            logger.warning(
+                "session_user_mismatch",
+                expected=self._zerodha_id.upper(),
+                received=kite_user_id,
+            )
+            raise AuthenticationError(
+                "The Zerodha account you logged in with does not match your VerquoAI user. "
+                "Log in to Zerodha with the same ID."
+            )
+
         self._session_data = SessionData(**result["data"])
         self._token_timestamp = time.time()
         self._store_token()
@@ -86,7 +108,7 @@ class KiteAuthenticator:
         if self._session_data and self._session_data.access_token:
             return self._session_data.access_token
         settings_token = self._settings.kite_access_token
-        if settings_token:
+        if settings_token and self._uses_env_credentials:
             return settings_token
         raise AuthenticationError("No access token available. Please authenticate first.")
 
@@ -114,7 +136,7 @@ class KiteAuthenticator:
         if not self._session_data:
             return
         data = {
-            "access_token": self._session_data.access_token,
+            "access_token": encrypt_secret(self._session_data.access_token),
             "public_token": self._session_data.public_token,
             "user_id": self._session_data.user_id,
             "timestamp": self._token_timestamp,
@@ -132,14 +154,15 @@ class KiteAuthenticator:
         try:
             with open(self._token_file) as f:
                 data = json.load(f)
+            access_token, _ = decrypt_secret(data.get("access_token", ""))
             self._session_data = SessionData(
-                access_token=data.get("access_token", ""),
+                access_token=access_token,
                 public_token=data.get("public_token", ""),
                 user_id=data.get("user_id", ""),
             )
             self._token_timestamp = data.get("timestamp", 0.0)
             logger.info("token_loaded", user_id=self._session_data.user_id)
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             logger.warning("token_load_failed", error=str(e))
 
     def invalidate_session(self) -> None:

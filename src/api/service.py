@@ -92,6 +92,7 @@ from src.options.fno_builder import (
 from src.utils.config import get_settings
 from src.utils.exceptions import KillSwitchError, RiskLimitError
 from src.utils.logger import get_logger
+from src.utils.user_paths import user_data_path
 
 import pandas as pd
 
@@ -109,8 +110,13 @@ class TradingService:
         self._ticker = KiteTicker(self._auth)
         self._risk = RiskManager()
         self._execution = ExecutionEngine(self._client, self._risk)
-        self._journal = TradeJournal()
-        self._journal_store = JournalStore(db_path="data/journal.db")
+        # Journals and saved strategies are per user (see src/utils/user_paths.py).
+        self._journal = TradeJournal(
+            user_data_path(zerodha_id, "trade_journal.json", self._settings.trade_journal_file)
+        )
+        self._journal_store = JournalStore(
+            db_path=user_data_path(zerodha_id, "journal.db", "data/journal.db")
+        )
         self._journal_analytics = JournalAnalytics(self._journal_store)
         self._portfolio_health = PortfolioHealthTracker(self._journal_store)
         
@@ -149,8 +155,12 @@ class TradingService:
         self._signal_log: list[dict[str, Any]] = []
         self._ws_clients: list[Any] = []
         self._lock = asyncio.Lock()
-        self._custom_store = CustomStrategyStore()
-        self._fno_strategy_store = FnOStrategyStore()
+        self._custom_store = CustomStrategyStore(
+            user_data_path(zerodha_id, "custom_strategies.json", "data/custom_strategies.json")
+        )
+        self._fno_strategy_store = FnOStrategyStore(
+            user_data_path(zerodha_id, "fno_custom_strategies.json", "data/fno_custom_strategies.json")
+        )
         self._paper_results: dict[str, Any] = {}  # cache latest paper trade results
         self._market_data = MarketDataProvider(self._client)
         self._portfolio_reporter = PortfolioReporter(self._client)

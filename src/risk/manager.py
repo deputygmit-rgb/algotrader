@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 from src.api.client import KiteClient
@@ -29,6 +29,9 @@ class RiskManager:
         self._positions: dict[str, Position] = {}
         self._total_exposure: float = 0.0
         self._kill_switch_active: bool = False
+        # Set when the daily-loss limit trips the switch: it then stays on for
+        # the rest of that day and cannot be switched off from the dashboard.
+        self._kill_switch_loss_date: Optional[date] = None
         self._trade_count: int = 0
         self._session_start: datetime = datetime.now()
         self._position_validator: Optional[PositionValidator] = None
@@ -37,11 +40,21 @@ class RiskManager:
     def is_kill_switch_active(self) -> bool:
         return self._kill_switch_active
 
-    def activate_kill_switch(self, reason: str = "") -> None:
+    @property
+    def is_kill_switch_locked(self) -> bool:
+        return self._kill_switch_loss_date == datetime.now().date()
+
+    def activate_kill_switch(self, reason: str = "", loss_limit: bool = False) -> None:
         self._kill_switch_active = True
-        logger.critical("kill_switch_activated", reason=reason, daily_pnl=self._daily_pnl)
+        if loss_limit:
+            self._kill_switch_loss_date = datetime.now().date()
+        logger.critical("kill_switch_activated", reason=reason, daily_pnl=self._daily_pnl, loss_limit=loss_limit)
 
     def deactivate_kill_switch(self) -> None:
+        if self.is_kill_switch_locked:
+            raise KillSwitchError(
+                "The kill switch tripped on the daily loss limit and stays on until the next trading day"
+            )
         self._kill_switch_active = False
         logger.info("kill_switch_deactivated")
 
@@ -50,7 +63,8 @@ class RiskManager:
         if self._daily_pnl <= -self._settings.kill_switch_loss:
             self.activate_kill_switch(
                 f"Daily loss {self._daily_pnl} exceeded kill switch threshold "
-                f"{self._settings.kill_switch_loss}"
+                f"{self._settings.kill_switch_loss}",
+                loss_limit=True,
             )
 
     def update_positions(self, positions: list[Position]) -> None:
@@ -224,6 +238,7 @@ class RiskManager:
             "max_daily_loss": self._settings.max_daily_loss,
             "max_exposure": self._settings.max_exposure,
             "kill_switch_active": self._kill_switch_active,
+            "kill_switch_locked": self.is_kill_switch_locked,
             "position_count": len(self._positions),
             "trade_count": self._trade_count,
             "session_start": self._session_start.isoformat(),
@@ -238,7 +253,8 @@ class RiskManager:
         self._daily_pnl = 0.0
         self._trade_count = 0
         self._session_start = datetime.now()
-        self._kill_switch_active = False
+        if not self.is_kill_switch_locked:
+            self._kill_switch_active = False
         logger.info("risk_manager_daily_reset")
     def start_position_monitoring(self, check_interval: int = 30) -> None:
         """Start continuous position validation monitoring (Fix #3)."""

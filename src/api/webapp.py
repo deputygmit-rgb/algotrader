@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
+import json
 import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Optional
+from urllib.parse import quote
 
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -19,8 +23,9 @@ from src.analysis.fno_flow import DemoFnoSimulator, FlowHistory, compute_fno_flo
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
-from src.auth.otp_auth import otp_auth
+from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth
 from src.auth.user_config import UserConfigService
+from src.utils.exceptions import KiteError, KillSwitchError
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -108,7 +113,41 @@ def _is_secure_request(request: Request) -> bool:
     return request.headers.get("x-forwarded-proto", "").lower() == "https"
 
 
+def _public_error(e: Exception) -> str:
+    """Message safe to show in the browser.
+
+    Kite/risk errors and validation errors describe the user's own request and
+    are shown as-is; anything else (file paths, SQL, library internals) is
+    logged and replaced with a generic message.
+    """
+    if isinstance(e, (KiteError, ValueError)):
+        return str(e)[:300]
+    logger.error("request_failed", error_type=type(e).__name__, error=str(e))
+    return "Internal error - the details are in the server log"
+
+
+def _content_security_policy(request: Request) -> str:
+    # The templates use inline <script> blocks and onclick= handlers, so
+    # script-src needs 'unsafe-inline'. The policy still blocks scripts from
+    # other origins, sending data to other origins, <base>/<object> injection,
+    # form posts elsewhere and framing.
+    ws_origin = f"wss://{request.url.netloc}" if _is_secure_request(request) else f"ws://{request.url.netloc}"
+    return "; ".join([
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com data:",
+        "img-src 'self' data: https:",
+        f"connect-src 'self' {ws_origin}",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ])
+
+
 def _apply_security_headers(response, request: Request):
+    response.headers["Content-Security-Policy"] = _content_security_policy(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -181,11 +220,15 @@ async def send_otp(request: Request) -> dict[str, Any]:
     user = user_cfg_svc.get_user(zerodha_id)
     if not user or not user.email or user.email.strip().lower() != email:
         return {"success": False, "message": "Account details could not be verified"}
+    # Per (account, IP): someone who knows your ID and email cannot use up the
+    # account-wide allowance from one address and lock you out.
+    if not otp_auth.check_ip_rate_limit(f"send-otp:{zerodha_id}", ip, max_requests=5, window_seconds=3600):
+        return {"success": False, "message": "Too many requests. Please try again later."}
 
     try:
         otp = otp_auth.generate_otp(zerodha_id)
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        return {"success": False, "message": _public_error(e)}
     
     if not otp_auth.send_otp_email(otp, user.email, zerodha_id):
         if _dev_otp_fallback_enabled(request):
@@ -224,7 +267,7 @@ async def verify_otp(request: Request) -> Any:
         response.set_cookie(
             SESSION_COOKIE,
             session_token,
-            max_age=86400 * 7,
+            max_age=SESSION_EXPIRY_SECONDS,
             httponly=True,
             samesite="lax",
             secure=_is_secure_request(request),
@@ -242,6 +285,55 @@ async def logout(request: Request) -> Any:
     response = JSONResponse({"success": True})
     response.delete_cookie(SESSION_COOKIE)
     return response
+
+
+@app.post("/auth/logout-all")
+async def logout_all(request: Request) -> Any:
+    """End this user's sessions on every browser and device."""
+    zerodha_id = get_session_zerodha_id(request)
+    count = otp_auth.logout_all(zerodha_id) if zerodha_id else 0
+    response = JSONResponse({"success": True, "sessions_ended": count})
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+STEP_UP_REQUIRED = "step_up_required"
+
+
+def _require_step_up(request: Request) -> None:
+    """Risky actions (real orders, live trading, auto-trade, kill switch off)
+    need an OTP confirmed in the last few minutes, not just a session cookie."""
+    if not otp_auth.has_recent_step_up(request.cookies.get(SESSION_COOKIE, "")):
+        raise HTTPException(403, STEP_UP_REQUIRED)
+
+
+@app.post("/auth/step-up/send")
+async def step_up_send(request: Request) -> dict[str, Any]:
+    zerodha_id = get_session_zerodha_id(request)
+    user = UserConfigService.get_instance().get_user(zerodha_id) if zerodha_id else None
+    if not user or not user.email:
+        raise HTTPException(403, "User not configured")
+    if not otp_auth.check_ip_rate_limit(f"step-up:{zerodha_id}", _client_ip(request), max_requests=10):
+        return {"success": False, "message": "Too many requests. Please try again later."}
+    try:
+        otp = otp_auth.generate_otp(zerodha_id, purpose=STEP_UP_PURPOSE)
+    except Exception as e:
+        return {"success": False, "message": _public_error(e)}
+    if not otp_auth.send_otp_email(otp, user.email, zerodha_id):
+        otp_auth.discard_pending_otp(zerodha_id, purpose=STEP_UP_PURPOSE)
+        return {"success": False, "message": "Unable to deliver OTP. Check email configuration and try again."}
+    return {"success": True, "message": "Confirmation code sent to your registered email"}
+
+
+@app.post("/auth/step-up/verify")
+async def step_up_verify(request: Request) -> dict[str, Any]:
+    if not otp_auth.check_ip_rate_limit("step-up-verify", _client_ip(request), max_requests=30):
+        return {"success": False, "message": "Too many attempts. Please try again later."}
+    body = await request.json()
+    otp = str(body.get("otp", "")).strip()
+    if otp and otp_auth.verify_step_up(request.cookies.get(SESSION_COOKIE, ""), otp):
+        return {"success": True}
+    return {"success": False, "message": "Invalid or expired code"}
 
 
 def _static_version(rel_path: str) -> str:
@@ -370,7 +462,7 @@ async def auth_callback(request: Request):
         return RedirectResponse("/login?auth_error=Please+login+first")
     except Exception as e:
         logger.error("auth_callback_failed", error=str(e))
-        return RedirectResponse(f"/app?auth_error={str(e)[:100]}")
+        return RedirectResponse(f"/app?auth_error={quote(_public_error(e)[:200])}")
 
 
 @app.get("/auth/callback")
@@ -389,7 +481,7 @@ async def auth_callback_bare(request: Request):
         return RedirectResponse("/login?auth_error=Please+login+first")
     except Exception as e:
         logger.error("auth_callback_bare_failed", error=str(e))
-        return RedirectResponse(f"/app?auth_error={str(e)[:100]}")
+        return RedirectResponse(f"/app?auth_error={quote(_public_error(e)[:200])}")
 
 
 @app.get("/api/auth/postback")
@@ -397,10 +489,41 @@ async def auth_postback(request: Request):
     return {"status": "ok"}
 
 
+POSTBACK_MAX_BYTES = 64 * 1024
+
+
 @app.post("/api/auth/postback")
 async def auth_postback_post(request: Request):
-    body = await request.json()
-    logger.info("postback_received", data=body)
+    """Kite order postback. Public URL, so only accept bodies carrying Kite's
+    checksum: SHA-256(order_id + order_timestamp + api_secret)."""
+    if not otp_auth.check_ip_rate_limit("postback", _client_ip(request), max_requests=1000):
+        return JSONResponse({"status": "error"}, status_code=429)
+    raw = await request.body()
+    if len(raw) > POSTBACK_MAX_BYTES:
+        return JSONResponse({"status": "error"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"status": "error"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"status": "error"}, status_code=400)
+    user = UserConfigService.get_instance().get_user(str(body.get("user_id", "")))
+    checksum = str(body.get("checksum", ""))
+    if not user or not user.api_secret or not checksum:
+        return JSONResponse({"status": "error"}, status_code=403)
+    expected = hashlib.sha256(
+        f"{body.get('order_id', '')}{body.get('order_timestamp', '')}{user.api_secret}".encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(expected, checksum):
+        logger.warning("postback_checksum_invalid", user_id=user.zerodha_id)
+        return JSONResponse({"status": "error"}, status_code=403)
+    logger.info(
+        "postback_received",
+        user_id=user.zerodha_id,
+        order_id=str(body.get("order_id", ""))[:40],
+        status=str(body.get("status", ""))[:40],
+        tradingsymbol=str(body.get("tradingsymbol", ""))[:40],
+    )
     return {"status": "ok"}
 
 
@@ -422,7 +545,7 @@ async def profile(request: Request) -> dict[str, Any]:
     try:
         return await svc.get_profile()
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/margins")
@@ -431,7 +554,7 @@ async def margins(request: Request) -> dict[str, Any]:
     try:
         return await svc.get_margins()
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/orders")
@@ -440,7 +563,7 @@ async def orders(request: Request) -> list[dict[str, Any]]:
     try:
         return await svc.get_orders()
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/positions")
@@ -449,7 +572,7 @@ async def positions(request: Request) -> dict[str, Any]:
     try:
         return await svc.get_positions()
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/holdings")
@@ -458,7 +581,7 @@ async def holdings(request: Request) -> list[dict[str, Any]]:
     try:
         return await svc.get_holdings()
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/risk")
@@ -523,7 +646,7 @@ async def search_instruments(request: Request, q: str = "", exchange: str = "NSE
         instruments = await svc.search_instruments(q, exchange)
         return instruments
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/live/start")
@@ -534,6 +657,7 @@ async def start_live(request: Request) -> dict[str, Any]:
     if not tokens:
         raise HTTPException(400, "tokens list is required")
     svc = get_user_service(request)
+    _require_step_up(request)
     return await svc.start_live(tokens, mode)
 
 
@@ -686,7 +810,9 @@ async def oi_strategy_execute(request: Request) -> dict[str, Any]:
     signal_id = body.get("signal_id", "")
     if not signal_id:
         return {"error": "signal_id required"}
-    return await get_user_service(request).oi_strategy_execute_signal(signal_id)
+    svc = get_user_service(request)
+    _require_step_up(request)  # places a real broker order
+    return await svc.oi_strategy_execute_signal(signal_id)
 
 
 @app.post("/api/oi/strategy/close")
@@ -750,7 +876,7 @@ async def run_analysis_scan(request: Request) -> dict[str, Any]:
         return await svc.run_analysis_scan(symbols, universe=universe)
     except Exception as e:
         logger.error("analysis_scan_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/analysis/results")
@@ -811,7 +937,7 @@ async def analysis_stock_test_strategy(request: Request) -> dict[str, Any]:
         )
     except Exception as e:
         logger.error("stock_test_strategy_error", symbol=symbol, error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/analysis/stock/execute")
@@ -824,6 +950,7 @@ async def analysis_stock_execute(request: Request) -> dict[str, Any]:
     if not symbol or not strategy_name or not timeframe:
         raise HTTPException(400, "symbol, strategy and timeframe are required")
     svc = get_user_service(request)
+    _require_step_up(request)  # places a real broker order
     try:
         return await svc.execute_stock_strategy_signal(
             symbol=symbol,
@@ -838,7 +965,7 @@ async def analysis_stock_execute(request: Request) -> dict[str, Any]:
         )
     except Exception as e:
         logger.error("stock_execute_error", symbol=symbol, error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/research/status")
@@ -976,7 +1103,7 @@ async def run_paper_trade(request: Request) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.error("paper_trade_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/paper-trade/sample")
@@ -997,7 +1124,7 @@ async def run_paper_trade_sample(request: Request) -> dict[str, Any]:
         )
     except Exception as e:
         logger.error("paper_trade_sample_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/paper-trade/results")
@@ -1036,7 +1163,7 @@ async def import_historical_data(request: Request) -> dict[str, Any]:
         )
     except Exception as e:
         logger.error("import_historical_data_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/replay/start")
@@ -1072,7 +1199,7 @@ async def start_market_replay(request: Request) -> dict[str, Any]:
         )
     except Exception as e:
         logger.error("replay_start_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/replay/stop")
@@ -1142,7 +1269,7 @@ async def test_custom_strategy(request: Request) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.error("strategy_test_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 # ────────────────────────────────────────────────────────────────
@@ -1226,7 +1353,7 @@ async def test_fno_custom_strategy(request: Request) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.error("fno_strategy_test_error", error=str(e))
-        return {"error": str(e), "strategy_saved": True}
+        return {"error": _public_error(e), "strategy_saved": True}
 
 
 @app.get("/api/analysis-strategies")
@@ -1465,7 +1592,11 @@ async def set_day_trade_autotrade(request: Request) -> dict[str, Any]:
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object expected")
-    return get_user_service(request).update_board_autotrade(body)
+    svc = get_user_service(request)
+    # Switching auto-trade off is always allowed; anything else can send orders.
+    if body != {"enabled": False}:
+        _require_step_up(request)
+    return svc.update_board_autotrade(body)
 
 
 @app.post("/api/market/day-trade/track")
@@ -1533,7 +1664,7 @@ async def get_holdings_report(request: Request) -> dict[str, Any]:
         return await svc.get_holdings_report()
     except Exception as e:
         logger.error("holdings_report_route_error", error=str(e))
-        return {"holdings": [], "summary": {}, "error": str(e)}
+        return {"holdings": [], "summary": {}, "error": _public_error(e)}
 
 
 @app.get("/api/reports/positions")
@@ -1544,7 +1675,7 @@ async def get_positions_report(request: Request) -> dict[str, Any]:
         return await svc.get_positions_report()
     except Exception as e:
         logger.error("positions_report_route_error", error=str(e))
-        return {"positions": [], "summary": {}, "error": str(e)}
+        return {"positions": [], "summary": {}, "error": _public_error(e)}
 
 
 @app.get("/api/reports/trades")
@@ -1555,7 +1686,7 @@ async def get_trades_report(request: Request) -> dict[str, Any]:
         return await svc.get_trades_report()
     except Exception as e:
         logger.error("trades_report_route_error", error=str(e))
-        return {"trades": [], "summary": {}, "error": str(e)}
+        return {"trades": [], "summary": {}, "error": _public_error(e)}
 
 
 @app.get("/api/reports/orders")
@@ -1566,7 +1697,7 @@ async def get_orders_report(request: Request) -> dict[str, Any]:
         return await svc.get_orders_report()
     except Exception as e:
         logger.error("orders_report_route_error", error=str(e))
-        return {"orders": [], "summary": {}, "error": str(e)}
+        return {"orders": [], "summary": {}, "error": _public_error(e)}
 
 
 @app.get("/api/reports/pnl")
@@ -1577,7 +1708,7 @@ async def get_pnl_report(request: Request) -> dict[str, Any]:
         return await svc.get_pnl_report()
     except Exception as e:
         logger.error("pnl_report_route_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/reports/margins")
@@ -1588,7 +1719,7 @@ async def get_margins_report(request: Request) -> dict[str, Any]:
         return await svc.get_margins_report()
     except Exception as e:
         logger.error("margins_report_route_error", error=str(e))
-        return {"margins": {}, "error": str(e)}
+        return {"margins": {}, "error": _public_error(e)}
 
 
 # ────────────────────────────────────────────────────────────────
@@ -1641,7 +1772,7 @@ async def run_backtest(request: Request) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.error("backtest_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/backtest/sample")
@@ -1666,7 +1797,7 @@ async def run_backtest_sample(request: Request) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.error("backtest_sample_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.get("/api/backtest/results")
@@ -1714,7 +1845,7 @@ async def import_fno_historical_data(request: Request) -> dict[str, Any]:
         )
     except Exception as e:
         logger.error("import_fno_historical_data_error", error=str(e))
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, _public_error(e))
 
 
 @app.post("/api/fno-backtest/run")
@@ -1801,11 +1932,18 @@ async def run_fno_paper_trade_sample(request: Request) -> dict[str, Any]:
 @app.post("/api/risk/kill-switch")
 async def toggle_kill_switch(request: Request) -> dict[str, Any]:
     body = await request.json()
+    activate = body.get("activate") if isinstance(body, dict) else None
+    if not isinstance(activate, bool):
+        raise HTTPException(400, "'activate' must be true or false")
     svc = get_user_service(request)
-    if body.get("activate"):
+    if activate:
         svc._risk.activate_kill_switch("Manual activation via dashboard")
     else:
-        svc._risk.deactivate_kill_switch()
+        _require_step_up(request)
+        try:
+            svc._risk.deactivate_kill_switch()
+        except KillSwitchError as e:
+            raise HTTPException(409, e.message)
     return svc.get_risk_summary()
 
 
@@ -1826,7 +1964,7 @@ async def get_pro_journal_summary(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_summary_error", error=str(e))
-        return {"error": str(e), "total_trades": 0}
+        return {"error": _public_error(e), "total_trades": 0}
 
 
 @app.get("/api/pro-journal/analytics")
@@ -1842,7 +1980,7 @@ async def get_journal_analytics(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_analytics_error", error=str(e))
-        return {"error": str(e), "total_trades": 0}
+        return {"error": _public_error(e), "total_trades": 0}
 
 
 @app.get("/api/pro-journal/fno-analytics")
@@ -1858,7 +1996,7 @@ async def get_fno_journal_analytics(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_fno_analytics_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/entries")
@@ -1894,7 +2032,7 @@ async def get_journal_entries(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_entries_error", error=str(e))
-        return {"entries": [], "total": 0, "error": str(e)}
+        return {"entries": [], "total": 0, "error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/entry/{entry_id}")
@@ -1909,7 +2047,7 @@ async def get_journal_entry(request: Request, entry_id: str) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_entry_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.post("/api/pro-journal/entry")
@@ -1923,7 +2061,7 @@ async def create_journal_entry(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_create_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.put("/api/pro-journal/entry/{entry_id}")
@@ -1937,7 +2075,7 @@ async def update_journal_entry(request: Request, entry_id: str) -> dict[str, Any
         raise
     except Exception as e:
         logger.error("pro_journal_update_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/regime-matrix")
@@ -1969,7 +2107,7 @@ async def get_slippage_drift(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_slippage_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/daily-pnl")
@@ -2013,7 +2151,7 @@ async def get_portfolio_health(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_portfolio_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/portfolio-health/history")
@@ -2026,7 +2164,7 @@ async def get_portfolio_health_history(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_health_history_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/equity-curve")
@@ -2065,7 +2203,7 @@ async def get_journal_db_stats(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_stats_error", error=str(e))
-        return {"error": str(e)}
+        return {"error": _public_error(e)}
 
 
 @app.get("/api/pro-journal/filters")
@@ -2092,7 +2230,7 @@ async def export_journal(request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         logger.error("pro_journal_export_error", error=str(e))
-        return {"entries": [], "error": str(e)}
+        return {"entries": [], "error": _public_error(e)}
 
 
 @app.websocket("/ws/live")

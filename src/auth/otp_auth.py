@@ -25,12 +25,25 @@ logger = get_logger(__name__)
 
 # Security constants
 OTP_EXPIRY_SECONDS = 300  # 5 minutes
-SESSION_EXPIRY_SECONDS = 86400 * 7  # 7 days
+SESSION_EXPIRY_SECONDS = 86400  # 24 hours - Kite access tokens expire daily anyway
+STEP_UP_SECONDS = 900  # A fresh OTP unlocks risky actions for 15 minutes
 MAX_OTP_ATTEMPTS = 3  # Max incorrect OTP attempts
-MAX_OTP_REQUESTS_PER_HOUR = 5  # Prevent OTP spam
+# Per-account cap on OTP emails (all IPs together). The tighter per-(account, IP)
+# limit lives in the web layer, so one IP cannot use up the account's allowance.
+MAX_OTP_REQUESTS_PER_HOUR = 20
 MAX_OTP_REQUESTS_PER_IP_PER_HOUR = 15  # Per-IP throttle across all Zerodha IDs
 MAX_VERIFY_ATTEMPTS_PER_IP_PER_HOUR = 30  # Per-IP throttle for OTP verification
 SESSION_FILE = os.path.expanduser("~/.kta_sessions.json")  # Home directory, not /tmp
+STEP_UP_PURPOSE = "STEP-UP"
+
+
+def _hash_token(token: str) -> str:
+    """Sessions are stored by SHA-256 so the session file holds no usable cookies."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _is_token_hash(key: str) -> bool:
+    return len(key) == 64 and all(c in "0123456789abcdef" for c in key)
 
 
 class OTPAuth:
@@ -70,8 +83,11 @@ class OTPAuth:
                 with open(SESSION_FILE, "r") as f:
                     sessions = json.load(f)
                 now = time.time()
-                # Filter expired sessions
-                valid = {k: v for k, v in sessions.items() if now - v.get("created_at", 0) < SESSION_EXPIRY_SECONDS}
+                # Drop expired sessions and any stored before tokens were hashed.
+                valid = {
+                    k: v for k, v in sessions.items()
+                    if _is_token_hash(k) and now - v.get("created_at", 0) < SESSION_EXPIRY_SECONDS
+                }
                 if len(valid) < len(sessions):
                     self._sessions = valid
                     self._save_sessions()
@@ -92,7 +108,12 @@ class OTPAuth:
         except OSError as e:
             logger.error("session_save_failed", error=str(e))
 
-    def generate_otp(self, zerodha_id: str = "") -> str:
+    @staticmethod
+    def _otp_key(zerodha_id: str, purpose: str = "") -> str:
+        key = zerodha_id.upper()
+        return f"{purpose}:{key}" if purpose else key
+
+    def generate_otp(self, zerodha_id: str = "", purpose: str = "") -> str:
         """Generate OTP with rate limiting.
         
         Args:
@@ -107,7 +128,7 @@ class OTPAuth:
         now = time.time()
         hour_ago = now - 3600
         
-        # Check rate limit: max 5 requests per hour per user
+        # Check rate limit: max MAX_OTP_REQUESTS_PER_HOUR requests per hour per user
         if zerodha_id not in self._otp_request_count:
             self._otp_request_count[zerodha_id] = []
         
@@ -124,7 +145,7 @@ class OTPAuth:
         
         # Generate cryptographically secure OTP
         otp = str(secrets.randbelow(900000) + 100000)
-        key = zerodha_id.upper()
+        key = self._otp_key(zerodha_id, purpose)
         self._pending_otps[key] = {
             "otp": otp,
             "created_at": now,
@@ -134,9 +155,9 @@ class OTPAuth:
         logger.info("otp_generated", zerodha_id=zerodha_id)
         return otp
 
-    def discard_pending_otp(self, zerodha_id: str) -> None:
+    def discard_pending_otp(self, zerodha_id: str, purpose: str = "") -> None:
         """Invalidate an OTP that could not be delivered."""
-        self._pending_otps.pop(zerodha_id.upper(), None)
+        self._pending_otps.pop(self._otp_key(zerodha_id, purpose), None)
 
     def send_otp_email(self, otp: str, recipient_email: str, zerodha_id: str = "") -> bool:
         """Send an OTP to the email address configured for the user.
@@ -155,7 +176,7 @@ class OTPAuth:
 
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"Kite Trading Agent - Login OTP: {otp}"
+            msg["Subject"] = "VerquoAI - your verification code"
             msg["From"] = self._smtp_email
             msg["To"] = recipient_email
 
@@ -189,17 +210,9 @@ class OTPAuth:
             logger.error("otp_email_failed", zerodha_id=zerodha_id, error=str(e))
             return False
 
-    def verify_otp(self, otp: str, zerodha_id: str = "") -> Optional[str]:
-        """Verify OTP with attempt limiting.
-        
-        Args:
-            otp: OTP code to verify
-            zerodha_id: Associated Zerodha ID
-        
-        Returns:
-            Session token if valid, None otherwise
-        """
-        key = zerodha_id.upper()
+    def _consume_otp(self, otp: str, zerodha_id: str, purpose: str = "") -> Optional[dict]:
+        """Check an OTP with expiry and attempt limiting; returns the pending entry on success."""
+        key = self._otp_key(zerodha_id, purpose)
         pending = self._pending_otps.get(key)
         if not pending:
             logger.warning("otp_verify_no_pending", zerodha_id=zerodha_id)
@@ -223,46 +236,77 @@ class OTPAuth:
             logger.warning("otp_invalid", zerodha_id=zerodha_id, attempt=pending["attempts"])
             return None
 
-        stored_zid = pending.get("zerodha_id", "")
         del self._pending_otps[key]
-        session_token = self._create_session(stored_zid)
+        return pending
+
+    def verify_otp(self, otp: str, zerodha_id: str = "") -> Optional[str]:
+        """Verify a login OTP; returns a new session token if valid, None otherwise."""
+        pending = self._consume_otp(otp, zerodha_id)
+        if not pending:
+            return None
+        session_token = self._create_session(pending.get("zerodha_id", ""))
         logger.info("otp_verified", zerodha_id=zerodha_id)
         return session_token
 
     def _create_session(self, zerodha_id: str = "") -> str:
         """Create cryptographically secure session token."""
         token = secrets.token_urlsafe(32)  # URL-safe base64 token
-        self._sessions[token] = {
+        self._sessions[_hash_token(token)] = {
             "zerodha_id": zerodha_id.upper(),
             "created_at": time.time(),
         }
         self._save_sessions()
         return token
 
-    def validate_session(self, token: str) -> bool:
+    def _get_session(self, token: str) -> Optional[dict]:
         if not token:
-            return False
-        session = self._sessions.get(token)
+            return None
+        key = _hash_token(token)
+        session = self._sessions.get(key)
         if not session:
-            return False
+            return None
         if time.time() - session["created_at"] > SESSION_EXPIRY_SECONDS:
-            del self._sessions[token]
-            return False
-        return True
+            del self._sessions[key]
+            return None
+        return session
+
+    def validate_session(self, token: str) -> bool:
+        return self._get_session(token) is not None
 
     def get_session_user(self, token: str) -> Optional[str]:
-        if not token:
-            return None
-        session = self._sessions.get(token)
-        if not session:
-            return None
-        if time.time() - session["created_at"] > SESSION_EXPIRY_SECONDS:
-            return None
-        return session.get("zerodha_id", "")
+        session = self._get_session(token)
+        return session.get("zerodha_id", "") if session else None
 
     def logout(self, token: str) -> None:
-        self._sessions.pop(token, None)
+        if token:
+            self._sessions.pop(_hash_token(token), None)
         self._save_sessions()
+
+    def logout_all(self, zerodha_id: str) -> int:
+        """End every session of this user (all browsers and devices)."""
+        uid = zerodha_id.upper()
+        keys = [k for k, v in self._sessions.items() if v.get("zerodha_id") == uid]
+        for k in keys:
+            del self._sessions[k]
+        self._save_sessions()
+        logger.info("sessions_revoked", zerodha_id=uid, count=len(keys))
+        return len(keys)
+
+    def verify_step_up(self, token: str, otp: str) -> bool:
+        """Confirm a fresh OTP for this session; unlocks risky actions for STEP_UP_SECONDS."""
+        session = self._get_session(token)
+        if not session:
+            return False
+        if not self._consume_otp(otp, session.get("zerodha_id", ""), STEP_UP_PURPOSE):
+            return False
+        session["step_up_until"] = time.time() + STEP_UP_SECONDS
+        self._save_sessions()
+        logger.info("step_up_verified", zerodha_id=session.get("zerodha_id", ""))
+        return True
+
+    def has_recent_step_up(self, token: str) -> bool:
+        session = self._get_session(token)
+        return bool(session) and session.get("step_up_until", 0) > time.time()
 
     def check_ip_rate_limit(self, bucket: str, ip: str, max_requests: int, window_seconds: int = 3600) -> bool:
         """Generic per-IP rate limiter shared by login/OTP endpoints.

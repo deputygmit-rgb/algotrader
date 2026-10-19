@@ -24,6 +24,12 @@ def _load_or_create_key() -> bytes:
     """
     env_key = os.environ.get(_KEY_ENV_VAR)
     if env_key:
+        if os.path.exists(_KEY_FILE):
+            logger.warning(
+                "user_config_key_file_unused",
+                key_file=_KEY_FILE,
+                hint=f"{_KEY_ENV_VAR} is set; delete the old key file so the key is not stored next to the data.",
+            )
         return env_key.encode()
     if os.path.exists(_KEY_FILE):
         with open(_KEY_FILE, "rb") as f:
@@ -44,22 +50,38 @@ def _load_or_create_key() -> bytes:
 _fernet = Fernet(_load_or_create_key())
 
 
-def _encrypt(value: str) -> str:
+# Every Fernet token starts with this (version byte 0x80, base64-encoded).
+_FERNET_PREFIX = "gAAAAA"
+
+
+def encrypt_secret(value: str) -> str:
     if not value:
         return ""
     return _fernet.encrypt(value.encode()).decode()
 
 
-def _decrypt(value: str) -> tuple[str, bool]:
-    """Returns (plaintext, was_legacy_plaintext)."""
+def decrypt_secret(value: str) -> tuple[str, bool]:
+    """Returns (plaintext, was_legacy_plaintext).
+
+    Raises ValueError when the value is a Fernet token this key cannot open
+    (wrong or rotated key) instead of mistaking the ciphertext for plaintext.
+    """
     if not value:
         return "", False
     try:
         return _fernet.decrypt(value.encode()).decode(), False
     except InvalidToken:
+        if value.startswith(_FERNET_PREFIX):
+            raise ValueError(
+                f"Encrypted value cannot be decrypted - check {_KEY_ENV_VAR} matches the key it was saved with"
+            ) from None
         # Pre-encryption value written before this feature existed - use as-is,
         # caller should re-save to migrate it to encrypted form.
         return value, True
+
+
+_encrypt = encrypt_secret
+_decrypt = decrypt_secret
 
 
 class UserConfig:
@@ -106,18 +128,27 @@ class UserConfigService:
             except Exception as e:
                 logger.error("user_config_load_failed", error=str(e))
         else:
+            # Bootstrap the first user from the environment. Both the Zerodha ID
+            # and the login email must be configured explicitly: whoever controls
+            # that mailbox can log in.
             api_key = os.environ.get("KITE_API_KEY", "")
             api_secret = os.environ.get("KITE_API_SECRET", "")
-            if api_key:
-                default_id = "AC3735"
+            default_id = os.environ.get("KITE_USER_ID", "").strip().upper()
+            default_email = os.environ.get("KITE_USER_EMAIL", "").strip().lower()
+            if api_key and default_id and default_email:
                 self._users[default_id] = UserConfig(
                     zerodha_id=default_id,
                     api_key=api_key,
                     api_secret=api_secret,
-                    email="theprotrader007@gmail.com",
+                    email=default_email,
                 )
                 self._save()
                 logger.info("default_user_created", zerodha_id=default_id)
+            elif api_key:
+                logger.warning(
+                    "default_user_not_created",
+                    hint="Set KITE_USER_ID and KITE_USER_EMAIL to bootstrap the first user.",
+                )
 
     def _save(self) -> None:
         os.makedirs(os.path.dirname(USER_CONFIG_FILE), exist_ok=True)

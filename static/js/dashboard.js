@@ -1,7 +1,18 @@
+// Prefer the server's message ({detail}/{error}) over the raw JSON body.
+async function responseError(res) {
+    const text = await res.text();
+    try {
+        const json = JSON.parse(text);
+        return json.detail || json.error || json.message || text;
+    } catch (_) {
+        return text;
+    }
+}
+
 const API = {
     async get(url) {
         const res = await fetch(url);
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(await responseError(res));
         return res.json();
     },
     async post(url, data) {
@@ -10,12 +21,12 @@ const API = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
         });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(await responseError(res));
         return res.json();
     },
     async delete_(url) {
         const res = await fetch(url, { method: 'DELETE' });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(await responseError(res));
         return res.json();
     },
     // Like post(), but aborts with a clear error instead of hanging forever
@@ -30,7 +41,7 @@ const API = {
                 body: JSON.stringify(data),
                 signal: controller.signal,
             });
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok) throw new Error(await responseError(res));
             return await res.json();
         } catch (e) {
             if (e.name === 'AbortError') throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
@@ -775,7 +786,7 @@ async function searchInstruments() {
             </div>`;
         }).join('');
     } catch (e) {
-        resultsDiv.innerHTML = `<div style="padding:10px;color:var(--accent-red);font-size:12px">Error: ${e.message}</div>`;
+        resultsDiv.innerHTML = `<div style="padding:10px;color:var(--accent-red);font-size:12px">Error: ${escHtml(e.message)}</div>`;
     }
 }
 
@@ -3183,6 +3194,14 @@ async function logoutUser() {
     window.location.href = '/login';
 }
 
+async function logoutAllDevices() {
+    if (!confirm('Log out of VerquoAI on every browser and device?')) return;
+    try {
+        await API.post('/auth/logout-all', {});
+    } catch (e) {}
+    window.location.href = '/login';
+}
+
 // ─── Symbol ↔ Token Resolution ────────────────────────────────
 
 /**
@@ -3623,7 +3642,7 @@ function displayPaperResult(r) {
                 <td class="${pnlCl}">₹${fmtNum(p.pnl)}</td>
                 <td>${p.entry_time || '--'}</td>
                 <td>${p.exit_time || '--'}</td>
-                <td>${p.reason || '--'}</td>
+                <td>${escHtml(p.reason || '--')}</td>
             </tr>`;
         }).join('');
     } else {
@@ -5810,7 +5829,7 @@ async function viewJournalEntry(id) {
         html += `<div><b>Strategy:</b> ${data.strategy || '—'}</div>`;
         html += `<div><b>Instrument:</b> ${data.instrument || '—'}</div>`;
         html += `<div><b>Direction:</b> ${data.direction || '—'}</div>`;
-        html += `<div><b>Source:</b> ${data.source || '—'}</div>`;
+        html += `<div><b>Source:</b> ${escHtml(data.source || '—')}</div>`;
         html += `<div><b>Entry:</b> ₹${(data.entry_price || 0).toFixed(2)}</div>`;
         html += `<div><b>Exit:</b> ₹${(data.exit_price || 0).toFixed(2)}</div>`;
         const pnl = data.net_pnl || 0;
