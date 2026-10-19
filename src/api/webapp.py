@@ -160,7 +160,7 @@ async def auth_middleware(request: Request, call_next):
 async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html", {"request": request})
 
 
 @app.post("/auth/send-otp")
@@ -253,7 +253,7 @@ def _static_version(rel_path: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse("landing.html", {"request": request})
+    return templates.TemplateResponse(request, "landing.html", {"request": request})
 
 
 @app.get("/app", response_class=HTMLResponse)
@@ -268,7 +268,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         js_version = str(int(os.path.getmtime(js_path)))
     except OSError:
         js_version = "1"
-    return templates.TemplateResponse("dashboard.html", {
+    return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
@@ -293,7 +293,7 @@ async def stock_detail_page(request: Request, symbol: str) -> HTMLResponse:
     if not re.fullmatch(r"[A-Z0-9&.-]{1,32}", normalized_symbol):
         raise HTTPException(400, "Invalid stock symbol")
     session_token = request.cookies.get(SESSION_COOKIE, "")
-    return templates.TemplateResponse("stock_detail.html", {
+    return templates.TemplateResponse(request, "stock_detail.html", {
         "request": request,
         "symbol": normalized_symbol,
         "csrf_token": otp_auth.get_csrf_token(session_token),
