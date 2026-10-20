@@ -306,3 +306,18 @@ def test_routing_view_users_get_the_shared_feed_others_the_demo(monkeypatch):
     monkeypatch.setattr(SharedMarketHub, "_instance",
                         SharedMarketHub(account_id=SOURCE_ID, source_factory=lambda a: _source(False)))
     assert webapp._shared_market_service("AB1234", viewer) is None              # source logged out: demo
+
+
+def test_view_account_without_kite_app_gets_a_clear_answer_on_connect(monkeypatch):
+    from fastapi import HTTPException
+
+    from src.api import webapp
+    from src.auth.user_config import UserConfigService
+
+    store = SimpleNamespace(get_user=lambda zid: SimpleNamespace(api_key="", access_level=VIEW))
+    monkeypatch.setattr(UserConfigService, "get_instance", staticmethod(lambda: store))
+    monkeypatch.setattr(webapp, "get_session_zerodha_id", lambda request: "VW1234")
+    monkeypatch.setattr(webapp, "get_real_user_service", lambda request: pytest.fail("no login URL without a key"))
+    with pytest.raises(HTTPException) as err:
+        run(webapp.login_url(SimpleNamespace()))
+    assert err.value.status_code == 400

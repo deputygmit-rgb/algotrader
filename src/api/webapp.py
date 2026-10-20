@@ -890,6 +890,9 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
 
 @app.get("/api/login-url")
 async def login_url(request: Request) -> dict[str, str]:
+    user = UserConfigService.get_instance().get_user(get_session_zerodha_id(request))
+    if user is not None and not user.api_key:
+        raise HTTPException(400, "Your account has no Kite Connect app yet - ask the admin to add your API key.")
     svc = get_real_user_service(request)
     return {"url": svc.get_login_url()}
 
