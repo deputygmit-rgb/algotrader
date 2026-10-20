@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     backtest_data_dir: str = Field(default="data/historical", description="Backtest data directory")
     instruments_cache_file: str = Field(default="data/instruments.csv", description="Instruments cache path")
     disable_ssl_verify: bool = Field(default=False, description="Disable SSL verification (development only)")
+    preflight_live_orders: bool = Field(
+        default=False,
+        description="Run the Verifier's pre-trade checklist (session, margin, slippage, ...) on every live "
+                    "strategy order before it is sent; a failed check blocks the order",
+    )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -1,6 +1,7 @@
 """Position validation for multi-leg strategies (Fix #3)."""
 
 import asyncio
+import re
 from typing import Any, Optional
 
 from src.data.models import TransactionType
@@ -41,13 +42,14 @@ class PositionValidator:
                 "issues": [],
             }
         
-        # Group by underlying symbol
+        # Group the legs of one spread together: same underlying and expiry, i.e. the
+        # option symbol without its strike and CE / PE ("NIFTY24OCT25000CE" ->
+        # "NIFTY24OCT"). Grouping by the full symbol put each leg of a spread in a
+        # group of its own, so every correctly hedged spread read "missing hedge leg".
         by_symbol: dict[str, list] = {}
         for pos in positions:
-            symbol = pos.tradingsymbol
-            if symbol not in by_symbol:
-                by_symbol[symbol] = []
-            by_symbol[symbol].append(pos)
+            symbol = re.sub(r"\d+(?:\.\d+)?(CE|PE)$", "", pos.tradingsymbol) or "(options)"
+            by_symbol.setdefault(symbol, []).append(pos)
         
         issues = []
         

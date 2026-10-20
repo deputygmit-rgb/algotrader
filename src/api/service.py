@@ -217,6 +217,15 @@ class TradingService:
         # Workload events for the agents' logs (strategy evaluations, signals,
         # orders, scan progress). See src/agent/telemetry.py.
         self.telemetry = Telemetry()
+        # Signal life cycle: every live signal's stages (signal -> checks -> order -> fill ->
+        # protection -> exit), stored, streamed over /ws/live and journalled by the agent
+        # that owns each stage (src/execution/lifecycle.py).
+        from src.execution.lifecycle import SignalLifecycle
+
+        self._lifecycle = SignalLifecycle(emit=self._on_lifecycle_event, store=self._market_store,
+                                          account=zerodha_id or "")
+        self._execution.set_event_sink(self._lifecycle.event)
+        self._execution.attach_state_store(self._market_store, zerodha_id or "")
         self._replay_task: Optional[asyncio.Task] = None
         self._replay_state: dict[str, Any] = {"status": "idle", "running": False}
         self._nifty_contrib_cache: tuple[float, dict[str, Any]] | None = None
@@ -1943,6 +1952,36 @@ class TradingService:
         if bus is not None:
             bus.emit(topic, **data)
 
+    def _on_lifecycle_event(self, topic: str, **ev: Any) -> None:
+        """A signal reached a new stage: tell the agents and stream it to the dashboard."""
+        self._emit(topic, **ev)
+        if self.__dict__.get("_ws_clients"):
+            try:
+                asyncio.get_running_loop().create_task(self._broadcast_ws({"type": "lifecycle", "data": ev}))
+            except RuntimeError:
+                pass   # no running loop (sync caller): the Agents view still polls the log
+
+    def get_signal_lifecycles(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Recent signals (newest first) with their ordered stage events. After a restart
+        today's are rebuilt from the signal_events table."""
+        recent = self._lifecycle.recent(limit)
+        if recent:
+            return recent
+        rows = self._market_store.get_signal_events(self._zerodha_id or "", since=datetime.now().strftime("%Y-%m-%d"))
+        by_id: dict[str, dict[str, Any]] = {}
+        for ev in rows:
+            sig = by_id.setdefault(ev["lifecycle_id"], {"lifecycle_id": ev["lifecycle_id"], "started_at": ev["ts"],
+                                                       "events": []})
+            for key in ("symbol", "strategy", "side", "quantity", "timeframe"):
+                if ev.get(key) is not None and sig.get(key) is None:
+                    sig[key] = ev[key]
+            sig["events"].append(ev)
+            sig["stage"], sig["updated_at"] = ev["stage"], ev["ts"]
+        from src.execution.lifecycle import TERMINAL
+        for sig in by_id.values():
+            sig["done"] = sig["stage"] in TERMINAL
+        return sorted(by_id.values(), key=lambda x: x["updated_at"], reverse=True)[:limit]
+
     def _symbol_for(self, token: int, strategy: Any = None) -> str:
         """Tradingsymbol for a token, from the strategies' symbol maps (for logs)."""
         for s in ([strategy] if strategy is not None else []) + list(self._strategies):
@@ -2130,9 +2169,11 @@ class TradingService:
             notes=f"Exit reason: {exit_reason}",
         )
 
-        # Update risk PnL
+        # Daily P&L has one writer (the broker's position P&L, _refresh_risk_pnl): refresh it
+        # now, so the loss limit sees this exit at once instead of within 30 s. (It used
+        # to be overwritten with this one trade's P&L - and reset to 0 on every fill.)
         try:
-            self._risk.update_daily_pnl(tracked.pnl)
+            await self._refresh_risk_pnl()
         except Exception as e:
             logger.error("risk_pnl_update_error", error=str(e))
 
@@ -2239,6 +2280,12 @@ class TradingService:
             "price": signal.price, "timeframe": timeframe, "confidence": signal.confidence,
         }
         self._emit("signal.received", **sig_info, exit=is_exit)
+        from src.execution.lifecycle import new_lifecycle_id
+
+        lid = signal.metadata.get("lifecycle_id") or new_lifecycle_id()
+        signal.metadata["lifecycle_id"] = lid
+        self._lifecycle_event(lid, "SIGNAL", sig_info, exit=is_exit, setup=signal.metadata.get("setup"),
+                              trigger=signal.metadata.get("trigger"), source=signal.metadata.get("source") or "strategy")
         outcome: dict[str, Any] = {"decision": "", "reason": "", "order_id": ""}
         try:
             open_pos = self._execution.open_position_for(signal.tradingsymbol, signal.strategy_name)
@@ -2249,6 +2296,7 @@ class TradingService:
                     logger.info("signal_ignored_position_open", strategy=signal.strategy_name, symbol=signal.tradingsymbol)
                     self._emit("signal.ignored", **sig_info, reason="position already open in that direction")
                     outcome.update(decision="ignored", reason="position already open in that direction")
+                    self._lifecycle_event(lid, "IGNORED", sig_info, reason=outcome["reason"])
                     return
                 await self._execution.close_position(open_pos.order_id, reason="signal_exit")
                 self._emit("order.close", **sig_info, order_id=open_pos.order_id, reason="opposite signal")
@@ -2259,6 +2307,7 @@ class TradingService:
                     and not entry_allowed(timeframe, now_t.strftime("%H:%M"))):
                 self._emit("signal.ignored", **sig_info, reason="too close to the 15:15 intraday square-off")
                 outcome.update(decision="ignored", reason="too close to the 15:15 intraday square-off")
+                self._lifecycle_event(lid, "IGNORED", sig_info, reason=outcome["reason"])
                 return
             if not can_open:
                 if not is_exit:
@@ -2266,6 +2315,7 @@ class TradingService:
                 outcome.update(decision="exit" if is_exit or open_pos is not None else "ignored",
                                reason="closed the open position" if open_pos is not None else
                                "exit signal" if is_exit else f"shorting not allowed on {timeframe} (delivery)")
+                self._lifecycle_event(lid, "IGNORED", sig_info, reason=outcome["reason"])
                 return
 
             signal_data = {
@@ -2282,6 +2332,14 @@ class TradingService:
             await self._broadcast_ws({"type": "signal", "data": signal_data})
 
             order_id = None
+            if (getattr(self.__dict__.get("_settings"), "preflight_live_orders", False)
+                    and signal.metadata.get("source") != "day_trade_board"):
+                blocked = await self._preflight_block(signal)      # the board runs its own preflight
+                if blocked:
+                    outcome.update(decision="blocked", reason=blocked)
+                    self._emit("risk.blocked", **sig_info, error=blocked)
+                    self._lifecycle_event(lid, "BLOCKED", sig_info, by="pre-trade checklist", reason=blocked)
+                    return None
             try:
                 order_id = await self._execution.execute_signal(signal)
                 outcome.update(decision="sent" if order_id else "failed", order_id=order_id or "",
@@ -2320,6 +2378,28 @@ class TradingService:
             return order_id or None
         finally:
             self._ledger_live_signal(signal, timeframe, outcome)
+
+    def _lifecycle_event(self, lid: str, stage: str, sig_info: dict[str, Any], **data: Any) -> None:
+        """Record a life-cycle stage; a no-op without a tracker (services built without
+        __init__ in tests), like ``_emit`` - observability never breaks order routing."""
+        life = self.__dict__.get("_lifecycle")
+        if life is None:
+            return
+        info = {k: sig_info.get(k) for k in ("strategy", "symbol", "side", "quantity", "timeframe")}
+        life.event(lid, stage, **info, **data)
+
+    async def _preflight_block(self, signal: Signal) -> Optional[str]:
+        """The pre-trade checklist on a live order: None when it passes, else why it is blocked."""
+        from src.risk.preflight import PreflightChecker, TradingMode
+
+        try:
+            if self.__dict__.get("_live_preflight") is None:
+                self._live_preflight = PreflightChecker(client=self._client, ticker=self._ticker, risk_manager=self._risk)
+            report = await asyncio.wait_for(self._live_preflight.run_all_checks(signal=signal, mode=TradingMode.LIVE),
+                                            timeout=20)
+            return None if report.passed else "preflight: " + "; ".join(report.blocked_reasons)
+        except Exception as e:      # a checklist that cannot run must not wave the order through
+            return f"preflight could not run: {e}"
 
     def _ledger_live_signal(self, signal: Signal, timeframe: str, outcome: dict[str, Any]) -> None:
         """Record a live strategy signal and what became of it in the signals ledger."""
@@ -3961,16 +4041,33 @@ class TradingService:
         """Get available F&O strategy names."""
         return self.FNO_STRATEGIES
 
+    async def _refresh_risk_pnl(self) -> float:
+        """The risk manager's exposure and day P&L, from the broker's positions - the only
+        writer of the day P&L, so the loss limit and kill switch see one consistent figure."""
+        positions = await self._client.get_positions()
+        self._risk.update_positions(positions.net)
+        daily_pnl = sum(p.pnl for p in positions.net)
+        self._risk.update_daily_pnl(daily_pnl)
+        self._last_positions = positions
+        return daily_pnl
+
     async def _position_update_loop(self) -> None:
+        paused = False
         while self._running:
+            if not self.is_authenticated:
+                if not paused:
+                    logger.warning("position_updates_paused_no_session")
+                    paused = True
+                await asyncio.sleep(30)
+                continue
+            if paused:
+                logger.info("position_updates_resumed")
+                paused = False
             try:
-                positions = await self._client.get_positions()
-                self._risk.update_positions(positions.net)
-                daily_pnl = sum(p.pnl for p in positions.net)
-                self._risk.update_daily_pnl(daily_pnl)
+                daily_pnl = await self._refresh_risk_pnl()
                 await self._broadcast_ws({
                     "type": "positions",
-                    "data": positions.model_dump(),
+                    "data": self._last_positions.model_dump(),
                     "pnl": daily_pnl,
                 })
             except Exception as e:

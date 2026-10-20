@@ -972,6 +972,15 @@
             </div>
             <div class="ag-cards" id="ag-cards"></div>
             <div class="ag-detail card" id="ag-detail" hidden></div>
+            <div class="card ag-life-card" id="ag-life-card">
+                <div class="ag-console-hd">
+                    <div class="card-title" style="margin:0">Signal life cycle <span class="ag-note" id="ag-life-count"></span></div>
+                    <div class="ag-console-tools">
+                        <span class="mf-tabs" id="ag-life-filter"><button class="on" data-v="all">ALL</button><button data-v="open">IN PROGRESS</button><button data-v="problem">PROBLEMS</button></span>
+                    </div>
+                </div>
+                <div class="ag-life" id="ag-life"><div class="ag-life-empty">No live signals yet — each strategy or board signal appears here as it moves from signal to checks, order, fill, protection and exit.</div></div>
+            </div>
             <div class="card ag-console-card" id="ag-console-card">
                 <div class="ag-console-hd">
                     <div class="card-title" style="margin:0">Agent console <span class="ag-note" id="ag-console-count"></span></div>

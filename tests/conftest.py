@@ -10,9 +10,17 @@ All strategy × mode tests share these fixtures.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import math
+import os
 import random
+import tempfile
+
+# Tests must never write into the real logs/ or data/ folders: the log file is
+# redirected before any src module reads its settings (an earlier test run left
+# a fake "open spread" in data/strategy_state, which a live runner would load).
+os.environ["LOG_FILE"] = os.path.join(tempfile.mkdtemp(prefix="algotrader-tests-"), "trading.log")
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -265,3 +273,18 @@ def sensex_daily_data() -> pd.DataFrame:
         seed=555,
         symbol="SENSEX",
     )
+
+
+# ─────────────────────────────────────────────────────────
+# Isolation from the real data/ folder
+# ─────────────────────────────────────────────────────────
+
+_STATEFUL_RUNNERS = ("src.options.call_credit_spread_runner", "src.options.put_credit_spread_runner")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_strategy_state(tmp_path, monkeypatch):
+    """Spread runners persist their state under data/strategy_state (relative to the
+    working directory): each test gets its own folder instead."""
+    for name in _STATEFUL_RUNNERS:
+        monkeypatch.setattr(importlib.import_module(name), "_STATE_DIR", str(tmp_path / "strategy_state"))

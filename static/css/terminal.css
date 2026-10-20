@@ -546,3 +546,26 @@ tr.sector-detail td { background: rgba(56,214,255,.03) !important; padding: 8px 
 .t-access-agentic { border-color: var(--t-g); color: var(--t-g); }
 body[data-access="view"] [data-requires],
 body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-allowed; }
+
+/* ── Signal life cycle (Agents view) ─────────────────────────────── */
+.ag-life-card { padding-bottom: 10px; }
+.ag-life { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.ag-life-empty { color: var(--t-dim); font-size: 11.5px; padding: 10px 2px; }
+.ag-life-row { border: 1px solid var(--t-line); border-radius: 4px; background: #03060a; padding: 6px 10px; }
+.ag-life-row.fresh { box-shadow: 0 0 0 1px var(--t-c) inset; }
+.ag-life-hd { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 11.5px; }
+.ag-life-hd b { letter-spacing: .5px; }
+.ag-life-hd .id { color: var(--t-mute); font-size: 10px; }
+.ag-life-hd .st { margin-left: auto; font-size: 10px; letter-spacing: 1px; padding: 0 6px; border-radius: 2px; border: 1px solid var(--t-line-2); }
+.ag-life-strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.ag-life-chip { font-size: 10px; letter-spacing: .5px; padding: 1px 6px; border-radius: 2px; border: 1px solid var(--t-line-2); color: var(--t-txt); cursor: default; }
+.ag-life-chip em { font-style: normal; color: var(--t-mute); margin-left: 4px; }
+.ag-life-chip.info { border-color: rgba(91,227,160,.45); }
+.ag-life-chip.warning { border-color: rgba(255,209,102,.6); color: var(--t-a); }
+.ag-life-chip.error { border-color: rgba(255,90,110,.7); color: var(--t-r); }
+.ag-life-chip.debug { color: var(--t-dim); }
+.ag-life-chip.executor { background: rgba(91,227,160,.06); }
+.ag-life-chip.tracker { background: rgba(255,159,67,.06); }
+.ag-life-chip.verifier { background: rgba(177,140,255,.07); }
+.ag-life-last { margin-top: 4px; font-size: 11px; color: var(--t-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 700px) { .ag-life-hd .st { margin-left: 0; } }

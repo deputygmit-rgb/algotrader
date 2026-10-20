@@ -2,6 +2,8 @@
 // Verifier / Executor / Tracker agents, plus a header health indicator.
 //   GET /api/agents/status           - state, tasks, KPIs, recent events
 //   GET /api/agents/log?cursor=...   - incremental log stream for the console
+//   GET /api/agents/lifecycle        - recent signals with their life-cycle stages;
+//                                      live stage events arrive on /ws/live ({type: 'lifecycle'})
 const AgentsView = (() => {
     const AGENTS = {
         scanner: { name: 'SCANNER', icon: '⌖', color: '#38d6ff', role: 'Market scanner · NIFTY 500 technical analysis' },
@@ -23,7 +25,17 @@ const AgentsView = (() => {
         state: 'STATE', cycle: 'CYCLE', finding: 'FINDING', signal: 'SIGNAL', order: 'ORDER', change: 'CHANGE',
         error: 'ERROR', info: 'INFO', trace: 'TRACE', evaluate: 'EVAL', analyse: 'ANALYSE', scan: 'SCAN',
         audit: 'AUDIT', check: 'CHECK', sync: 'SYNC', health: 'HEALTH', bar: 'BAR', warning: 'WARN',
+        lifecycle: 'LIFE',
     };
+    const STAGE_LABEL = {
+        SIGNAL: 'SIGNAL', VALIDATED: 'CHECKED', BLOCKED: 'BLOCKED', IGNORED: 'IGNORED', PLACED: 'ORDER',
+        PARTIAL: 'PART FILL', FILLED: 'FILLED', REJECTED: 'REJECTED', CANCELLED: 'CANCELLED',
+        PROTECTED: 'PROTECTED', STOP_FAILED: 'STOP FAILED', STOP_REPLACED: 'STOP RE-PLACED', TRAILED: 'TRAILED',
+        SCALED: 'SCALED', EXITING: 'EXITING', CLOSED: 'CLOSED', RESTORED: 'RESTORED',
+    };
+    const PROBLEM = new Set(['BLOCKED', 'REJECTED', 'STOP_FAILED', 'CANCELLED']);
+    const lifeSignals = new Map();   // lifecycle_id -> {..., events: []}
+    let lifeFilter = 'all', lifeFresh = null, lifeLoaded = false;
 
     let data = null, clockSkew = 0, pollTimer = null, tickTimer = null, logTimer = null;
     let detail = null, started = false;
@@ -430,7 +442,81 @@ const AgentsView = (() => {
         });
     }
 
+    // ── signal life cycle ─────────────────────────────────────────────
+    function stageDetail(e) {
+        const bits = [];
+        if (e.order_id) bits.push('#' + e.order_id);
+        if (e.reason) bits.push(e.reason);
+        if (e.filled != null) bits.push(`${e.filled}/${e.quantity} @ ${e.average_price ?? '—'}`);
+        if (e.trigger != null) bits.push(`trigger ${e.trigger} limit ${e.limit}`);
+        if (e.price != null && e.stage !== 'SIGNAL') bits.push('@ ' + e.price);
+        if (e.pnl != null) bits.push('P&L ' + e.pnl);
+        return bits.join(' · ');
+    }
+    function lifeRowHtml(sig) {
+        const last = sig.events[sig.events.length - 1] || {};
+        const head = [sig.side, sig.quantity, sig.symbol].filter(x => x != null).join(' ');
+        const chips = sig.events.map(e => {
+            const t = (e.ts || '').slice(11, 19);
+            const title = `${e.stage} · ${e.agent} · ${e.ts}\n${stageDetail(e)}`;
+            return `<span class="ag-life-chip ${esc(e.level)} ${esc(e.agent)}" title="${esc(title)}">${esc(STAGE_LABEL[e.stage] || e.stage)}<em>${esc(t)}</em></span>`;
+        }).join('');
+        const lvl = PROBLEM.has(last.stage) ? 'error' : sig.done ? 'info' : 'warning';
+        return `<div class="ag-life-row${sig.lifecycle_id === lifeFresh ? ' fresh' : ''}" data-lid="${esc(sig.lifecycle_id)}">
+            <div class="ag-life-hd"><b>${esc(head || sig.lifecycle_id)}</b><span>${esc(sig.strategy || '')}${sig.timeframe ? ' · ' + esc(sig.timeframe) : ''}</span>
+                <span class="id">${esc(sig.lifecycle_id)} · ${esc(ago(sig.updated_at))}</span>
+                <span class="st ag-life-chip ${lvl}">${esc(STAGE_LABEL[last.stage] || last.stage || '')}</span></div>
+            <div class="ag-life-strip">${chips}</div>
+            <div class="ag-life-last">${esc(stageDetail(last))}</div></div>`;
+    }
+    function renderLife() {
+        const box = $('ag-life');
+        if (!box || !isActiveTab()) return;
+        let rows = [...lifeSignals.values()].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+        if (lifeFilter === 'open') rows = rows.filter(s => !s.done);
+        if (lifeFilter === 'problem') rows = rows.filter(s => s.events.some(e => PROBLEM.has(e.stage)));
+        $('ag-life-count').textContent = `${lifeSignals.size} signal${lifeSignals.size === 1 ? '' : 's'} · ${[...lifeSignals.values()].filter(s => !s.done).length} in progress`;
+        if (!rows.length) {
+            box.innerHTML = `<div class="ag-life-empty">${lifeSignals.size ? 'Nothing matches this filter.' : 'No live signals yet — each strategy or board signal appears here as it moves from signal to checks, order, fill, protection and exit.'}</div>`;
+            return;
+        }
+        box.innerHTML = rows.slice(0, 80).map(lifeRowHtml).join('');
+    }
+    async function fetchLifecycle() {
+        try {
+            const res = await fetch('/api/agents/lifecycle?limit=100');
+            const json = await res.json();
+            (json.signals || []).forEach(sig => lifeSignals.set(sig.lifecycle_id, sig));
+            lifeLoaded = true;
+            renderLife();
+        } catch (e) { /* the panel fills from the websocket */ }
+    }
+    // one stage event from /ws/live
+    function lifecycle(ev) {
+        if (!ev || !ev.lifecycle_id) return;
+        let sig = lifeSignals.get(ev.lifecycle_id);
+        if (!sig) {
+            sig = { lifecycle_id: ev.lifecycle_id, started_at: ev.ts, events: [] };
+            lifeSignals.set(ev.lifecycle_id, sig);
+        }
+        ['symbol', 'strategy', 'side', 'quantity', 'timeframe'].forEach(k => { if (sig[k] == null && ev[k] != null) sig[k] = ev[k]; });
+        sig.events.push(ev);
+        sig.stage = ev.stage;
+        sig.updated_at = ev.ts;
+        sig.done = ['BLOCKED', 'IGNORED', 'REJECTED', 'CANCELLED', 'CLOSED'].includes(ev.stage);
+        if (lifeSignals.size > 300) lifeSignals.delete(lifeSignals.keys().next().value);
+        lifeFresh = ev.lifecycle_id;
+        renderLife();
+    }
+
     function bind() {
+        $('ag-life-filter')?.addEventListener('click', e => {
+            const b = e.target.closest('button[data-v]');
+            if (!b) return;
+            lifeFilter = b.dataset.v;
+            [...$('ag-life-filter').children].forEach(x => x.classList.toggle('on', x === b));
+            renderLife();
+        });
         $('ag-cards').addEventListener('click', e => {
             const log = e.target.closest('[data-console]');
             if (log) { focusConsole(log.dataset.console); return; }
@@ -448,6 +534,7 @@ const AgentsView = (() => {
         if (!started) { bind(); started = true; }
         poll();
         fetchLog();
+        if (!lifeLoaded) fetchLifecycle(); else renderLife();
         clearInterval(tickTimer);
         tickTimer = setInterval(tickTimers, 1000);
     }
@@ -461,5 +548,5 @@ const AgentsView = (() => {
     function scanProgress() {}
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
-    return { start, scanProgress, focusConsole, closeDetail: () => { detail = null; $('ag-detail').hidden = true; render(); } };
+    return { start, scanProgress, lifecycle, focusConsole, closeDetail: () => { detail = null; $('ag-detail').hidden = true; render(); } };
 })();

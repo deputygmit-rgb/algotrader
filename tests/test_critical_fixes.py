@@ -10,208 +10,15 @@ from src.data.models import Signal, Exchange, OrderType, ProductType, Transactio
 from src.data.journal import TradeJournal
 from src.data.position_tracker import PositionTracker, get_position_tracker
 from src.execution.engine import ExecutionEngine
-from src.execution.order_group import MultiLegOrderGroup, OrderGroupStatus
 from src.risk.manager import RiskManager
 from src.risk.position_validator import PositionValidator
 from src.options.exercise_handler import ExerciseHandler
 
 
-class TestMultiLegOrderGroup:
-    """Test Fix #1: Multi-Leg Order Group Management."""
-    
-    def test_add_legs(self):
-        """Test adding legs to order group."""
-        group = MultiLegOrderGroup(strategy_name="iron_condor")
-        
-        signal1 = Signal(
-            tradingsymbol="20000CE",
-            exchange=Exchange.NFO,
-            transaction_type=TransactionType.SELL,
-            quantity=50,
-        )
-        
-        group.add_leg(signal1, required_qty=50)
-        assert len(group.legs) == 1
-        assert group.legs[0].signal.tradingsymbol == "20000CE"
-        assert group.legs[0].required_quantity == 50
-    
-    def test_validate_fills_all_filled(self):
-        """Test validation when all legs are filled."""
-        group = MultiLegOrderGroup(strategy_name="iron_condor")
-        
-        signal1 = Signal(
-            tradingsymbol="20000CE",
-            exchange=Exchange.NFO,
-            transaction_type=TransactionType.SELL,
-            quantity=50,
-        )
-        
-        group.add_leg(signal1, required_qty=50)
-        group.legs[0].filled_quantity = 50
-        
-        validation = group.validate_fills()
-        
-        assert validation["20000CE"] is True
-        assert group.status == OrderGroupStatus.COMPLETE
-    
-    def test_validate_fills_partial_fill(self):
-        """Test validation when partial fill occurs."""
-        group = MultiLegOrderGroup(strategy_name="iron_condor")
-        
-        signal1 = Signal(
-            tradingsymbol="20000CE",
-            exchange=Exchange.NFO,
-            transaction_type=TransactionType.SELL,
-            quantity=50,
-        )
-        
-        group.add_leg(signal1, required_qty=50)
-        group.legs[0].filled_quantity = 30  # Only 30 filled of 50
-        
-        validation = group.validate_fills()
-        
-        assert validation["20000CE"] is False
-        assert group.status == OrderGroupStatus.PARTIAL
-    
-    def test_mismatch_summary(self):
-        """Test getting mismatch details."""
-        group = MultiLegOrderGroup(strategy_name="iron_condor")
-        
-        signal1 = Signal(
-            tradingsymbol="20000CE",
-            exchange=Exchange.NFO,
-            transaction_type=TransactionType.SELL,
-            quantity=50,
-        )
-        
-        group.add_leg(signal1, required_qty=50)
-        group.legs[0].filled_quantity = 30
-        
-        summary = group.get_mismatch_summary()
-        
-        assert summary["critical"] is True
-        assert len(summary["mismatches"]) == 1
-        assert summary["mismatches"][0]["variance"] == 20
-        assert summary["mismatches"][0]["variance_pct"] == 40.0
-    
-    @pytest.mark.asyncio
-    async def test_execute_with_rollback_success(self):
-        """Test successful multi-leg execution."""
-        # Mock objects
-        mock_client = AsyncMock(spec=KiteClient)
-        mock_risk_manager = MagicMock(spec=RiskManager)
-        mock_risk_manager.validate_signal.return_value = (True, "Valid")
-        
-        engine = ExecutionEngine(mock_client, mock_risk_manager)
-        
-        # Mock order placement
-        mock_client.place_order = AsyncMock(return_value="order_1")
-        mock_client.get_order = AsyncMock(
-            return_value=MagicMock(filled_quantity=50, average_price=100.5)
-        )
-        
-        group = MultiLegOrderGroup(strategy_name="iron_condor")
-        signal1 = Signal(
-            tradingsymbol="20000CE",
-            exchange=Exchange.NFO,
-            transaction_type=TransactionType.SELL,
-            quantity=50,
-        )
-        
-        group.add_leg(signal1, required_qty=50)
-        
-        # Execute
-        success = await group.execute_with_rollback(engine)
-        
-        assert success is True
-        assert group.status == OrderGroupStatus.COMPLETE
-    
-    @pytest.mark.asyncio
-    async def test_execute_with_rollback_partial_fill(self):
-        """Test rollback on partial fill."""
-        # Mock objects
-        mock_client = AsyncMock(spec=KiteClient)
-        mock_risk_manager = MagicMock(spec=RiskManager)
-        mock_risk_manager.validate_signal.return_value = (True, "Valid")
-        
-        engine = ExecutionEngine(mock_client, mock_risk_manager)
-        
-        # Mock partial fill
-        mock_client.place_order = AsyncMock(return_value="order_1")
-        mock_client.get_order = AsyncMock(
-            return_value=MagicMock(filled_quantity=30, average_price=100.5)  # Only 30 of 50
-        )
-        mock_client.cancel_order = AsyncMock()
-        
-        group = MultiLegOrderGroup(strategy_name="iron_condor")
-        signal1 = Signal(
-            tradingsymbol="20000CE",
-            exchange=Exchange.NFO,
-            transaction_type=TransactionType.SELL,
-            quantity=50,
-        )
-        
-        group.add_leg(signal1, required_qty=50)
-        
-        # Execute
-        success = await group.execute_with_rollback(engine)
-        
-        assert success is False
-        assert group.status == OrderGroupStatus.PARTIAL
-        # Verify cancel was called
-        mock_client.cancel_order.assert_called()
-
-
-class TestStopLossExecution:
-    """Test Fix #2: Stop-Loss Execution Price."""
-    
-    def test_apply_stop_loss_buy_order(self):
-        """Test stop-loss for BUY order."""
-        mock_client = MagicMock(spec=KiteClient)
-        mock_risk_manager = MagicMock(spec=RiskManager)
-        
-        engine = ExecutionEngine(mock_client, mock_risk_manager)
-        
-        signal = Signal(
-            tradingsymbol="NIFTY",
-            exchange=Exchange.NSE,
-            transaction_type=TransactionType.BUY,
-            quantity=1,
-            price=100.0,
-            stop_loss=95.0,
-        )
-        
-        order = engine._signal_to_order(signal)
-        engine._apply_stop_loss_to_order(order, signal)
-        
-        # For BUY, execution price should be below trigger
-        assert order.trigger_price == 95.0
-        assert order.price == 94.525  # 95.0 * (1 - 0.5/100)
-        assert order.order_type == OrderType.SL
-    
-    def test_apply_stop_loss_sell_order(self):
-        """Test stop-loss for SELL order."""
-        mock_client = MagicMock(spec=KiteClient)
-        mock_risk_manager = MagicMock(spec=RiskManager)
-        
-        engine = ExecutionEngine(mock_client, mock_risk_manager)
-        
-        signal = Signal(
-            tradingsymbol="NIFTY",
-            exchange=Exchange.NSE,
-            transaction_type=TransactionType.SELL,
-            quantity=1,
-            price=100.0,
-            stop_loss=105.0,
-        )
-        
-        order = engine._signal_to_order(signal)
-        engine._apply_stop_loss_to_order(order, signal)
-        
-        # For SELL, execution price should be above trigger
-        assert order.trigger_price == 105.0
-        assert order.price == 105.525  # 105.0 * (1 + 0.5/100)
-        assert order.order_type == OrderType.SL
+# The multi-leg order group (src/execution/order_group.py) is not used by the app,
+# and _apply_stop_loss_to_order is a deliberate no-op (the stop is a separate
+# order placed after the fill): the real stop path is tested in
+# tests/test_execution_stops.py.
 
 
 class TestPositionValidation:
@@ -274,7 +81,7 @@ class TestPositionValidation:
         
         assert result["validated"] is False
         assert len(result["issues"]) > 0
-        assert result["issues"][0]["variance"] == 20
+        assert result["issues"][0]["variance_qty"] == 20
 
 
 class TestMarginPreValidation:

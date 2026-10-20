@@ -1,4 +1,21 @@
 """
+NOT SAFE FOR LIVE ORDERS - ExecutionEngine.execute_multi_leg_strategy refuses
+to run it. Known defects, each covered by an xfail test in
+tests/test_safeguards.py:
+
+* hedge, child-split and crash-recovery orders are hard-coded BUY, whatever
+  the side of the leg they protect;
+* BrokerTimestampedTimeouts waits for status "FILLED" (Kite: "COMPLETE"), so
+  every stop is cancelled and re-sent at market, and its market fallback
+  defaults to BUY;
+* the fill loop in ``execute`` only ends on all-filled or REJECTED (a
+  CANCELLED / OPEN leg loops forever), and ``monitor_interim_exposure`` never
+  refreshes fills, so once entered it never exits;
+* PersistenceLayer.load_state returns an empty state (legs are never saved),
+  in /tmp; recovery re-sends unconfirmed intents without asking the broker
+  whether they were placed (duplicate orders);
+* interim hedges and the margin model are placeholders.
+
 CORRECTED Fix #1: Multi-Leg Order Execution with Hedge Recovery
 
 This module implements production-ready multi-leg execution with:
@@ -13,6 +30,7 @@ import asyncio
 import json
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum

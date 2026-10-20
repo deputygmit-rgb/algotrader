@@ -1474,6 +1474,15 @@ async def agents_log(request: Request, cursor: str = "", agent: str = "", limit:
     return {"entries": entries, "cursor": ",".join(f"{k}:{v}" for k, v in seen.items())}
 
 
+@app.get("/api/agents/lifecycle")
+async def agents_lifecycle(request: Request, limit: int = 50) -> dict[str, Any]:
+    """Recent signals with their life-cycle stages (signal -> checks -> order -> fill ->
+    protection -> exit), newest first. Live updates arrive on /ws/live as
+    ``{"type": "lifecycle", "data": <event>}``."""
+    svc = get_user_service(request)
+    return {"signals": svc.get_signal_lifecycles(max(1, min(limit, 300)))}
+
+
 @app.get("/api/agents/log/download")
 async def agents_log_download(request: Request, agent: str, day: str = "") -> Any:
     """Download one agent's JSONL log for a day (default today)."""

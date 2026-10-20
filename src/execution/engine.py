@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from datetime import datetime, time as dtime
+import math
+from datetime import date, datetime, time as dtime
 from typing import Any, Callable, Optional
 
 from src.api.client import KiteClient
@@ -19,6 +20,7 @@ from src.data.models import (
 )
 from src.auth.access import RISK, order_origin
 from src.data.exit_plan import exec_spec, execution_spec, levels_from_spec
+from src.execution.lifecycle import lifecycle_id_of, order_tag
 from src.execution.order_coordinator import (
     OrderCoordinator,
     FreezeQuantityManager,
@@ -32,6 +34,37 @@ from src.utils.exceptions import KillSwitchError, OrderError, RiskLimitError
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+TICK_SIZE = 0.05            # NSE / NFO price tick: Kite rejects prices that are not a multiple of it
+STOP_FILL_GRACE_S = 10.0    # a broker stop past its trigger this long without filling is replaced at market
+PARTIAL_FILL_WAIT_S = 20.0  # an entry still part-filled after this long: the rest is cancelled, the fill protected
+TERMINAL_STATUSES = ("COMPLETE", "CANCELLED", "REJECTED")
+# broker statuses of an order that is still working (a protective order in one of these is live)
+LIVE_ORDER_STATUSES = ("OPEN", "TRIGGER PENDING", "OPEN PENDING", "VALIDATION PENDING", "PUT ORDER REQ RECEIVED",
+                       "MODIFY PENDING", "MODIFY VALIDATION PENDING", "MODIFIED", "AMO REQ RECEIVED")
+SESSION_OPEN_T, SESSION_CLOSE_T = dtime(9, 15), dtime(15, 30)
+
+
+def to_tick(price: float, mode: str = "nearest", tick: float = TICK_SIZE) -> float:
+    """``price`` on the exchange tick grid: ``up`` / ``down`` / ``nearest``."""
+    steps = price / tick
+    n = math.ceil(steps - 1e-9) if mode == "up" else math.floor(steps + 1e-9) if mode == "down" else round(steps)
+    return round(n * tick, 2)
+
+
+def stop_order_prices(stop: float, is_long: bool, buffer_pct: float) -> tuple[float, float]:
+    """Trigger and limit of the protective SL-LIMIT order, on the tick grid.
+
+    The trigger is rounded toward the position (a long's stop triggers a tick
+    earlier rather than later) and the limit away from it, so the order is
+    valid for Kite (sell: limit <= trigger, buy: limit >= trigger) and has
+    room to fill.
+    """
+    if is_long:
+        trigger = to_tick(stop, "up")
+        return trigger, to_tick(trigger * (1 - buffer_pct / 100), "down")
+    trigger = to_tick(stop, "down")
+    return trigger, to_tick(trigger * (1 + buffer_pct / 100), "up")
 
 
 # ────────────────────────────────────────────────────────────────
@@ -100,6 +133,7 @@ class TrackedPosition:
 
         # State
         self.sl_order_id: str | None = None
+        self.stop_breached_at: datetime | None = None   # price first seen past the stop (software backstop)
         self.is_closed = False
         self.exit_price: float = 0.0
         self.exit_reason: str = ""
@@ -108,6 +142,34 @@ class TrackedPosition:
     @property
     def is_long(self) -> bool:
         return self.transaction_type == "BUY"
+
+    _STATE_FIELDS = ("order_id", "tradingsymbol", "exchange", "transaction_type", "quantity", "entry_price",
+                     "strategy_name", "product", "initial_stop_loss", "current_stop_loss", "trailing_active",
+                     "best_price", "target", "target_order_id", "open_quantity", "realized_pnl", "scale_at",
+                     "scale_fraction", "breakeven_after_scale", "scaled", "max_hold_seconds", "sl_order_id")
+
+    def to_state(self) -> dict[str, Any]:
+        """Everything needed to rebuild this position after a restart."""
+        d = {k: getattr(self, k) for k in self._STATE_FIELDS}
+        d["entry_time"] = self.entry_time.isoformat()
+        d["exit_by"] = self.exit_by.strftime("%H:%M") if self.exit_by else None
+        d["signal"] = self.signal.model_dump(mode="json") if self.signal is not None else None
+        return d
+
+    @classmethod
+    def from_state(cls, d: dict[str, Any]) -> "TrackedPosition":
+        signal = Signal(**d["signal"]) if d.get("signal") else None
+        t = cls(d["order_id"], d["tradingsymbol"], d["exchange"], d["transaction_type"], int(d["quantity"]),
+                float(d["entry_price"]), stop_loss=d.get("initial_stop_loss"), target=d.get("target"),
+                strategy_name=d.get("strategy_name", ""), product=d.get("product", "MIS"), signal=signal)
+        for k in cls._STATE_FIELDS:
+            if k in d:
+                setattr(t, k, d[k])
+        t.entry_time = datetime.fromisoformat(d["entry_time"]) if d.get("entry_time") else datetime.now()
+        if d.get("exit_by"):
+            hh, mm = d["exit_by"].split(":")
+            t.exit_by = dtime(int(hh), int(mm))
+        return t
 
     def update_trailing_stop(self, current_price: float) -> bool:
         """Update trailing stop based on current price. Returns True if SL moved."""
@@ -178,8 +240,80 @@ class ExecutionEngine:
         self._freeze_mgr = FreezeQuantityManager()
         self._market_guard = MarketStateGuard(client)
 
+        # Signal life cycle (src/execution/lifecycle.py): stage events go to this sink
+        self._event_sink: Callable[..., None] | None = None
+        # Durable state (MarketDataStore.engine_state) so a restart can rebuild
+        # working entry orders and open positions with their protective orders
+        self._state_store: Any = None
+        self._account: str = ""
+        self._pending_meta: dict[str, dict[str, Any]] = {}   # order_id -> {first_partial_at, filled_seen}
+        self._session_day: date | None = None                # protection refreshed for this trading day
+        self._paused_no_session = False
+
+    # ────────────────────────────────────────────────────────
+    # Life-cycle events, durable state, broker session
+    # ────────────────────────────────────────────────────────
+
+    def set_event_sink(self, sink: Callable[..., None]) -> None:
+        """``sink(lifecycle_id, stage, **data)`` receives every life-cycle stage the engine reaches."""
+        self._event_sink = sink
+
+    def attach_state_store(self, store: Any, account: str) -> None:
+        self._state_store, self._account = store, account
+
+    def _event(self, stage: str, obj: Any, **data: Any) -> None:
+        sink = self.__dict__.get("_event_sink")
+        if sink is None:
+            return
+        try:
+            lid = data.pop("lifecycle_id", None) or lifecycle_id_of(obj)
+            for key, attr in (("symbol", "tradingsymbol"), ("strategy", "strategy_name")):
+                if key not in data and getattr(obj, attr, None):
+                    data[key] = getattr(obj, attr)
+            sink(lid, stage, **data)
+        except Exception as e:
+            logger.warning("lifecycle_event_failed", stage=stage, error=str(e))
+
+    def _save(self, kind: str, order_id: str, data: dict[str, Any]) -> None:
+        store = self.__dict__.get("_state_store")
+        if store is None:
+            return
+        try:
+            store.save_engine_state(self._account, kind, order_id, data)
+        except Exception as e:
+            logger.error("engine_state_save_failed", kind=kind, order_id=order_id, error=str(e))
+
+    def _forget(self, kind: str, order_id: str) -> None:
+        store = self.__dict__.get("_state_store")
+        if store is None:
+            return
+        try:
+            store.delete_engine_state(self._account, kind, order_id)
+        except Exception as e:
+            logger.error("engine_state_delete_failed", kind=kind, order_id=order_id, error=str(e))
+
+    def _save_position(self, tracked: "TrackedPosition") -> None:
+        self._save("position", tracked.order_id, tracked.to_state())
+
+    def _save_pending(self, order_id: str, req: OrderRequest) -> None:
+        signal = getattr(req, "_signal", None)
+        self._save("pending", order_id, {"order": req.model_dump(mode="json"),
+                                         "signal": signal.model_dump(mode="json") if signal is not None else None})
+
+    def _broker_ready(self) -> bool:
+        """False while there is no broker session: the loops pause (one log line) instead of
+        failing every cycle with 'No access token'."""
+        auth = getattr(self.__dict__.get("_client"), "_auth", None)
+        ready = bool(getattr(auth, "is_authenticated", True)) if auth is not None else True
+        if ready == self._paused_no_session:
+            self._paused_no_session = not ready
+            (logger.warning if not ready else logger.info)(
+                "engine_paused_no_session" if not ready else "engine_resumed_session")
+        return ready
+
     async def execute_signal(self, signal: Signal) -> Optional[str]:
         if self._risk.is_kill_switch_active:
+            self._event("BLOCKED", signal, by="kill switch", reason="kill switch is active")
             raise KillSwitchError("Kill switch is active, cannot execute orders")
 
         # Market-entry signals from strategies usually carry price=0/None, which
@@ -200,6 +334,7 @@ class ExecutionEngine:
         is_valid, reason = self._risk.validate_signal(signal)
         if not is_valid:
             logger.warning("signal_rejected", reason=reason, signal=signal.model_dump())
+            self._event("BLOCKED", signal, by="risk manager", reason=reason)
             raise RiskLimitError(reason)
 
         # MARKET STATE CHECK: Block orders during pre-open/auction/circuit
@@ -212,7 +347,9 @@ class ExecutionEngine:
                 symbol=signal.tradingsymbol,
                 reason=guard_reason,
             )
+            self._event("BLOCKED", signal, by="market state", reason=guard_reason)
             raise OrderError(f"Market state unsafe: {guard_reason}")
+        self._event("VALIDATED", signal, checks="risk limits, kill switch, market state", price=signal.price)
 
         # FREEZE SPLIT: Split oversized signals into NSE-compliant child orders
         child_signals = self._freeze_mgr.split_signal(signal)
@@ -259,6 +396,9 @@ class ExecutionEngine:
             self._pending_orders[order_id] = order_request
             # Store signal info for post-fill SL placement
             self._pending_orders[order_id]._signal = signal  # type: ignore[attr-defined]
+            self._save_pending(order_id, order_request)
+            self._event("PLACED", signal, order_id=order_id, side=signal.transaction_type.value,
+                        quantity=signal.quantity, order_type=signal.order_type.value, tag=order_request.tag)
             logger.info(
                 "signal_executed",
                 order_id=order_id,
@@ -275,6 +415,7 @@ class ExecutionEngine:
                 error=str(e),
                 signal=signal.model_dump(),
             )
+            self._event("REJECTED", signal, by="broker", reason=str(e))
             raise
 
     async def execute_with_slippage_protection(
@@ -360,12 +501,9 @@ class ExecutionEngine:
         # Reverse direction for protective order
         sl_txn = TransactionType.SELL if tracked.is_long else TransactionType.BUY
         
-        # SL-LIMIT: trigger at stop price, execute with small slippage buffer
-        trigger_price = tracked.current_stop_loss
-        if tracked.is_long:
-            limit_price = round(trigger_price * (1 - self._slippage_tolerance / 100), 2)
-        else:
-            limit_price = round(trigger_price * (1 + self._slippage_tolerance / 100), 2)
+        # SL-LIMIT: trigger at the stop, execute with a small slippage buffer (tick grid)
+        trigger_price, limit_price = stop_order_prices(tracked.current_stop_loss, tracked.is_long,
+                                                       self._slippage_tolerance)
 
         sl_order = OrderRequest(
             tradingsymbol=tracked.tradingsymbol,
@@ -376,6 +514,7 @@ class ExecutionEngine:
             product=ProductType(tracked.product),
             price=limit_price,
             trigger_price=trigger_price,
+            tag=order_tag(lifecycle_id_of(tracked)),
         )
 
         try:
@@ -383,6 +522,9 @@ class ExecutionEngine:
             if isinstance(sl_order_id, list):
                 sl_order_id = sl_order_id[0] if sl_order_id else None
             tracked.sl_order_id = sl_order_id
+            self._save_position(tracked)
+            self._event("PROTECTED", tracked, leg="stop", order_id=sl_order_id, trigger=trigger_price,
+                        limit=limit_price, quantity=tracked.open_quantity)
             logger.info(
                 "protective_sl_placed",
                 entry_order=tracked.order_id,
@@ -394,6 +536,8 @@ class ExecutionEngine:
             return sl_order_id
         except Exception as e:
             logger.error("protective_sl_failed", error=str(e), order_id=tracked.order_id)
+            self._event("STOP_FAILED", tracked, leg="stop", reason=str(e), stop=tracked.current_stop_loss,
+                        note="software backstop will exit at market if the stop is crossed")
             return None
 
     @_risk_orders
@@ -402,11 +546,8 @@ class ExecutionEngine:
         if not tracked.sl_order_id or not tracked.current_stop_loss:
             return False
 
-        trigger_price = tracked.current_stop_loss
-        if tracked.is_long:
-            limit_price = round(trigger_price * (1 - self._slippage_tolerance / 100), 2)
-        else:
-            limit_price = round(trigger_price * (1 + self._slippage_tolerance / 100), 2)
+        trigger_price, limit_price = stop_order_prices(tracked.current_stop_loss, tracked.is_long,
+                                                       self._slippage_tolerance)
 
         try:
             modify_req = OrderModifyRequest(
@@ -416,6 +557,8 @@ class ExecutionEngine:
                 price=limit_price,
             )
             await self._client.modify_order(modify_req)
+            self._save_position(tracked)
+            self._event("TRAILED", tracked, stop=trigger_price, best_price=tracked.best_price)
             logger.info(
                 "trailing_sl_modified",
                 order_id=tracked.sl_order_id,
@@ -446,7 +589,8 @@ class ExecutionEngine:
             order_type=OrderType.LIMIT,
             quantity=tracked.open_quantity,
             product=ProductType(tracked.product),
-            price=tracked.target,
+            price=to_tick(tracked.target, "down" if tracked.is_long else "up"),
+            tag=order_tag(lifecycle_id_of(tracked)),
         )
 
         try:
@@ -454,6 +598,9 @@ class ExecutionEngine:
             if isinstance(target_order_id, list):
                 target_order_id = target_order_id[0] if target_order_id else None
             tracked.target_order_id = target_order_id
+            self._save_position(tracked)
+            self._event("PROTECTED", tracked, leg="target", order_id=target_order_id, price=target_order.price,
+                        quantity=tracked.open_quantity)
             logger.info(
                 "protective_target_placed",
                 entry_order=tracked.order_id,
@@ -464,6 +611,7 @@ class ExecutionEngine:
             return target_order_id
         except Exception as e:
             logger.error("protective_target_failed", error=str(e), order_id=tracked.order_id)
+            self._event("STOP_FAILED", tracked, leg="target", reason=str(e), target=tracked.target)
             return None
 
     # ────────────────────────────────────────────────────────
@@ -477,61 +625,218 @@ class ExecutionEngine:
         asyncio.ensure_future(self._position_monitor_loop())
 
     async def _position_monitor_loop(self) -> None:
-        """Continuous loop checking positions for SL breach, trailing stop updates, MIS square-off.
-        Also detects when broker SL orders have been filled."""
+        """Every few seconds: protective-order fills, scale-out, time exits, the stop
+        backstop, trailing; at 15:15 the MIS square-off. Delivery (CNC) positions keep
+        being managed after 15:15, and each new trading day starts by making sure
+        every open position has a live stop and target (day orders expire overnight)."""
         while self._running:
             await asyncio.sleep(self._position_monitor_interval)
-            
-            if not self._tracked_positions:
+            if not self._tracked_positions or not self._broker_ready():
                 continue
-
             try:
-                # Check MIS square-off time first
-                now = datetime.now().time()
-                if now >= self._mis_squareoff_time:
-                    await self._squareoff_mis_positions()
-                    continue
-
-                # Detect SL / target order fills on broker (each cancels its OCO sibling)
-                await self._detect_sl_fills()
-                await self._detect_target_fills()
-
-                # Get current prices from broker positions
-                positions = await self._client.get_positions()
-                price_map: dict[str, float] = {}
-                for p in (positions.net if hasattr(positions, "net") else []):
-                    if p.last_price and p.last_price > 0:
-                        price_map[p.tradingsymbol] = p.last_price
-
-                for order_id, tracked in list(self._tracked_positions.items()):
-                    if tracked.is_closed:
-                        continue
-
-                    current_price = price_map.get(tracked.tradingsymbol)
-                    if not current_price:
-                        continue
-
-                    # Execution plan: partial exit at the scale level, then time exits
-                    if tracked.scale_at and not tracked.scaled:
-                        side = 1 if tracked.is_long else -1
-                        if side * (current_price - tracked.scale_at) >= 0:
-                            await self._scale_out(tracked, current_price)
-                    if self._time_exit_due(tracked):
-                        await self.close_position(order_id, reason="TIME_EXIT")
-                        continue
-
-                    # Update trailing stop
-                    if tracked.update_trailing_stop(current_price):
-                        await self._modify_stop_loss_order(tracked)
-                        logger.info(
-                            "trailing_stop_updated",
-                            symbol=tracked.tradingsymbol,
-                            new_sl=tracked.current_stop_loss,
-                            best_price=tracked.best_price,
-                        )
-
+                await self.monitor_once()
             except Exception as e:
                 logger.error("position_monitor_error", error=str(e))
+
+    async def monitor_once(self, now: datetime | None = None) -> None:
+        """One monitoring pass (the loop body; callable on its own in tests)."""
+        now = now or datetime.now()
+        in_session = SESSION_OPEN_T <= now.time() < SESSION_CLOSE_T
+        if in_session and self._session_day != now.date():
+            self._session_day = now.date()
+            await self._refresh_protection()
+
+        squareoff = now.time() >= self._mis_squareoff_time
+        if squareoff:
+            await self._squareoff_mis_positions()
+
+        # Detect SL / target order fills on broker (each cancels its OCO sibling)
+        await self._detect_sl_fills()
+        await self._detect_target_fills()
+        if not in_session:
+            return      # no market: nothing to trade on (orders would be rejected)
+
+        positions = await self._client.get_positions()
+        price_map: dict[str, float] = {}
+        for p in (positions.net if hasattr(positions, "net") else []):
+            if p.last_price and p.last_price > 0:
+                price_map[p.tradingsymbol] = p.last_price
+
+        for order_id, tracked in list(self._tracked_positions.items()):
+            if tracked.is_closed or (squareoff and tracked.product == "MIS"):
+                continue
+            current_price = price_map.get(tracked.tradingsymbol)
+            if not current_price:
+                continue
+
+            # Execution plan: partial exit at the scale level, then time exits
+            if tracked.scale_at and not tracked.scaled:
+                side = 1 if tracked.is_long else -1
+                if side * (current_price - tracked.scale_at) >= 0:
+                    await self._scale_out(tracked, current_price)
+            if self._time_exit_due(tracked, now):
+                await self.close_position(order_id, reason="TIME_EXIT")
+                continue
+
+            # Software backstop: the broker stop is the primary protection, but a
+            # stop that was never placed (rejected, failed) or that triggered and
+            # did not fill (a gap through its limit) must not leave the trade open
+            if tracked.current_stop_loss is not None:
+                if await self._enforce_stop(order_id, tracked, current_price, now):
+                    continue
+
+            # Update trailing stop
+            if tracked.update_trailing_stop(current_price):
+                await self._modify_stop_loss_order(tracked)
+                logger.info(
+                    "trailing_stop_updated",
+                    symbol=tracked.tradingsymbol,
+                    new_sl=tracked.current_stop_loss,
+                    best_price=tracked.best_price,
+                )
+
+    async def _refresh_protection(self) -> None:
+        """Make every open position's stop and target live again.
+
+        Regular orders are day orders: a delivery position's stop and target
+        expire at the close, and after a restart the saved order ids may be
+        gone. A position the broker no longer holds is closed out here
+        (closed outside the app); one it does hold gets any missing stop /
+        target placed again.
+        """
+        held = await self._broker_quantities()
+        for order_id, tracked in list(self._tracked_positions.items()):
+            if tracked.is_closed:
+                continue
+            if held is not None and held.get(tracked.tradingsymbol, 0) == 0:
+                logger.warning("position_gone_at_broker", symbol=tracked.tradingsymbol, order_id=order_id)
+                self._finalize_position_exit(tracked, tracked.entry_price, "closed outside the app")
+                continue
+            for leg in ("sl_order_id", "target_order_id"):
+                oid = getattr(tracked, leg)
+                state = await self._order_state(oid) if oid else None
+                if state is not None and state.status == "COMPLETE":
+                    continue                       # filled: the fill detectors close the position
+                if state is None or state.status not in LIVE_ORDER_STATUSES:
+                    setattr(tracked, leg, None)
+                    if leg == "sl_order_id" and tracked.current_stop_loss is not None:
+                        await self._place_protective_stop_loss(tracked)
+                        self._event("STOP_REPLACED", tracked, leg="stop", previous=oid,
+                                    reason="expired or missing at the start of the session")
+                    elif leg == "target_order_id" and tracked.target:
+                        await self._place_protective_target(tracked)
+                        self._event("STOP_REPLACED", tracked, leg="target", previous=oid,
+                                    reason="expired or missing at the start of the session")
+            self._save_position(tracked)
+
+    async def _broker_quantities(self) -> Optional[dict[str, int]]:
+        """Net quantity per symbol across positions and holdings (None if unavailable)."""
+        try:
+            qty: dict[str, int] = {}
+            positions = await self._client.get_positions()
+            for p in (positions.net if hasattr(positions, "net") else []):
+                qty[p.tradingsymbol] = qty.get(p.tradingsymbol, 0) + int(p.quantity or 0)
+            for h in await self._client.get_holdings():
+                q = int(getattr(h, "quantity", 0) or 0) + int(getattr(h, "t1_quantity", 0) or 0)
+                qty[h.tradingsymbol] = qty.get(h.tradingsymbol, 0) + q
+            return qty
+        except Exception as e:
+            logger.warning("broker_quantities_unavailable", error=str(e))
+            return None
+
+    async def restore_state(self) -> dict[str, int]:
+        """Rebuild working entry orders and open positions saved before a restart.
+
+        Their broker state is settled by the next reconciliation pass (pending
+        orders) and by ``_refresh_protection`` at the first monitoring pass
+        (positions: still held? stop and target still live?).
+        """
+        store = self.__dict__.get("_state_store")
+        if store is None:
+            return {"pending": 0, "positions": 0}
+        saved = store.load_engine_state(self._account)
+        for order_id, d in saved.get("pending", {}).items():
+            req = OrderRequest(**d["order"])
+            req._signal = Signal(**d["signal"]) if d.get("signal") else None  # type: ignore[attr-defined]
+            self._pending_orders.setdefault(order_id, req)
+            self._event("RESTORED", req, kind="entry order", order_id=order_id)
+        for order_id, d in saved.get("position", {}).items():
+            if order_id in self._tracked_positions:
+                continue
+            tracked = TrackedPosition.from_state(d)
+            self._tracked_positions[order_id] = tracked
+            self._event("RESTORED", tracked, kind="open position", order_id=order_id,
+                        quantity=tracked.open_quantity, stop=tracked.current_stop_loss, sl_order=tracked.sl_order_id)
+        self._session_day = None        # first in-session pass re-checks every restored position
+        counts = {"pending": len(saved.get("pending", {})), "positions": len(saved.get("position", {}))}
+        if any(counts.values()):
+            logger.warning("engine_state_restored", **counts)
+        return counts
+
+    async def _enforce_stop(self, order_id: str, tracked: TrackedPosition, price: float,
+                            now: datetime | None = None) -> bool:
+        """Make sure the stop holds. Returns True when the position was closed.
+
+        * No broker stop order: retry placing it while price is on the right side
+          of the stop; once price is past the stop, close at market.
+        * Broker stop order in place and price past the stop: give the broker
+          ``STOP_FILL_GRACE_S`` to fill it, then - if it has not filled - cancel
+          it and close at market (``close_position`` settles any fill that
+          happened in the meantime, so the exit is never doubled).
+        """
+        now = now or datetime.now()
+        if not tracked.check_stop_loss_hit(price):
+            tracked.stop_breached_at = None
+            if not tracked.sl_order_id:
+                await self._place_protective_stop_loss(tracked)        # a missing stop: try again
+            return False
+        if not tracked.sl_order_id:
+            logger.critical("stop_backstop_exit", symbol=tracked.tradingsymbol, stop=tracked.current_stop_loss,
+                            price=price, reason="no broker stop order in place")
+            await self.close_position(order_id, reason="STOP_BACKSTOP")
+            return True
+        if tracked.stop_breached_at is None:
+            tracked.stop_breached_at = now
+            return False
+        if (now - tracked.stop_breached_at).total_seconds() < STOP_FILL_GRACE_S:
+            return False
+        logger.critical("stop_unfilled_exit", symbol=tracked.tradingsymbol, stop=tracked.current_stop_loss,
+                        price=price, sl_order=tracked.sl_order_id,
+                        seconds_past_stop=round((now - tracked.stop_breached_at).total_seconds(), 1))
+        await self.close_position(order_id, reason="STOP_UNFILLED")
+        return True
+
+    async def _order_state(self, order_id: str) -> Optional[Order]:
+        """Latest broker state of an order (None if it cannot be read)."""
+        try:
+            history = await self._client.get_order_history(order_id)
+            return history[-1] if history else None
+        except Exception as e:
+            logger.warning("order_state_unavailable", order_id=order_id, error=str(e))
+            return None
+
+    async def _withdraw_protective(self, tracked: TrackedPosition, order_id: Optional[str]) -> Optional[Order]:
+        """Cancel a protective (stop / target) order and return its final broker state.
+
+        Whatever it filled before the cancel took effect is booked against the
+        position (fewer shares left to exit, P&L realised at its average price).
+        """
+        if not order_id:
+            return None
+        try:
+            await self._client.cancel_order(order_id, OrderVariety.REGULAR)
+        except Exception as e:
+            logger.info("protective_cancel_failed", order_id=order_id, error=str(e))   # often: already filled
+        state = await self._order_state(order_id)
+        filled = int(getattr(state, "filled_quantity", 0) or 0) if state else 0
+        if filled > 0:
+            filled = min(filled, tracked.open_quantity)
+            side = 1 if tracked.is_long else -1
+            price = float(getattr(state, "average_price", 0) or 0) or tracked.current_stop_loss or tracked.entry_price
+            tracked.realized_pnl += side * (price - tracked.entry_price) * filled
+            tracked.open_quantity -= filled
+            tracked.exit_price = price
+        return state
 
     @staticmethod
     def _time_exit_due(tracked: TrackedPosition, now: datetime | None = None) -> bool:
@@ -571,6 +876,9 @@ class ExecutionEngine:
             tracked.current_stop_loss = tracked.entry_price
             tracked.trailing_active = False
         await self._resize_protective_orders(tracked)
+        self._save_position(tracked)
+        self._event("SCALED", tracked, booked=qty, price=price, remaining=tracked.open_quantity,
+                    stop=tracked.current_stop_loss)
         logger.info(
             "position_scaled_out",
             symbol=tracked.tradingsymbol,
@@ -582,13 +890,12 @@ class ExecutionEngine:
     @_risk_orders
     async def _resize_protective_orders(self, tracked: TrackedPosition) -> None:
         """Match the SL / target orders to the open quantity (and the SL to the current stop)."""
-        side_buffer = (1 - self._slippage_tolerance / 100) if tracked.is_long else (1 + self._slippage_tolerance / 100)
         requests = []
         if tracked.sl_order_id and tracked.current_stop_loss:
+            trigger, limit = stop_order_prices(tracked.current_stop_loss, tracked.is_long, self._slippage_tolerance)
             requests.append(OrderModifyRequest(
                 order_id=tracked.sl_order_id, variety=OrderVariety.REGULAR,
-                quantity=tracked.open_quantity, trigger_price=tracked.current_stop_loss,
-                price=round(tracked.current_stop_loss * side_buffer, 2),
+                quantity=tracked.open_quantity, trigger_price=trigger, price=limit,
             ))
         if tracked.target_order_id:
             requests.append(OrderModifyRequest(
@@ -599,7 +906,19 @@ class ExecutionEngine:
             try:
                 await self._client.modify_order(req)
             except Exception as e:
+                # a protective order larger than the position would, when it fills, open a
+                # position the other way: replace it at the right size instead
                 logger.error("protective_resize_failed", order_id=req.order_id, error=str(e))
+                await self._withdraw_protective(tracked, req.order_id)
+                if req.order_id == tracked.sl_order_id:
+                    tracked.sl_order_id = None
+                    if tracked.open_quantity > 0:
+                        await self._place_protective_stop_loss(tracked)
+                else:
+                    tracked.target_order_id = None
+                    if tracked.open_quantity > 0:
+                        await self._place_protective_target(tracked)
+                self._event("STOP_REPLACED", tracked, order_id=req.order_id, reason=f"resize failed: {e}")
 
     async def _detect_sl_fills(self) -> None:
         """Check if any broker-side SL orders have been filled.
@@ -709,79 +1028,23 @@ class ExecutionEngine:
         tracked.pnl = round(
             tracked.realized_pnl + side * (exit_price - tracked.entry_price) * tracked.open_quantity, 2
         )
+        self._forget("position", tracked.order_id)
+        self._event("CLOSED", tracked, reason=reason, exit_price=exit_price, pnl=tracked.pnl)
 
-    @_risk_orders
     async def _squareoff_mis_positions(self) -> None:
-        """Square off all MIS positions before 3:20 PM broker auto-square-off."""
-        mis_positions = [
-            p for p in self._tracked_positions.values()
-            if p.product == "MIS" and not p.is_closed
-        ]
-        
-        if not mis_positions:
+        """Square off all MIS positions before the broker's 3:20 PM auto-square-off.
+
+        Each goes through ``close_position``, which first withdraws the stop /
+        target and books anything they already filled - a square-off right
+        after a stop filled must not sell a second time.
+        """
+        mis = [(oid, p) for oid, p in self._tracked_positions.items() if p.product == "MIS" and not p.is_closed]
+        if not mis:
             return
-        
-        logger.warning(
-            "mis_squareoff_triggered",
-            count=len(mis_positions),
-            time=datetime.now().strftime("%H:%M:%S"),
-        )
-        
-        for tracked in mis_positions:
+        logger.warning("mis_squareoff_triggered", count=len(mis), time=datetime.now().strftime("%H:%M:%S"))
+        for order_id, tracked in mis:
             try:
-                # Cancel existing SL/target orders first (OCO pair)
-                if tracked.sl_order_id:
-                    try:
-                        await self._client.cancel_order(tracked.sl_order_id, OrderVariety.REGULAR)
-                    except Exception:
-                        pass
-                if tracked.target_order_id:
-                    try:
-                        await self._client.cancel_order(tracked.target_order_id, OrderVariety.REGULAR)
-                    except Exception:
-                        pass
-
-                # Place market order to close position
-                exit_txn = TransactionType.SELL if tracked.is_long else TransactionType.BUY
-                exit_order = OrderRequest(
-                    tradingsymbol=tracked.tradingsymbol,
-                    exchange=Exchange(tracked.exchange),
-                    transaction_type=exit_txn,
-                    order_type=OrderType.MARKET,
-                    quantity=tracked.open_quantity,
-                    product=ProductType(tracked.product),
-                )
-                
-                exit_id = await self._coordinator.place_order(exit_order)
-                if isinstance(exit_id, list):
-                    exit_id = exit_id[0] if exit_id else "unknown"
-                
-                # Estimate exit price from last known price or SL
-                # Actual fill price will be reconciled later, but we need best estimate now
-                positions = await self._client.get_positions()
-                est_price = tracked.entry_price  # fallback
-                for p in (positions.net if hasattr(positions, "net") else []):
-                    if p.tradingsymbol == tracked.tradingsymbol and p.last_price:
-                        est_price = p.last_price
-                        break
-                
-                self._finalize_position_exit(tracked, est_price, "MIS_SQUAREOFF")
-                
-                logger.info(
-                    "mis_position_squared_off",
-                    symbol=tracked.tradingsymbol,
-                    exit_order=exit_id,
-                    direction="LONG" if tracked.is_long else "SHORT",
-                    pnl=tracked.pnl,
-                )
-                
-                # Notify journal callback
-                if self._on_exit_callback:
-                    try:
-                        await self._on_exit_callback(tracked, exit_id)
-                    except Exception as e:
-                        logger.error("exit_callback_error", error=str(e))
-
+                await self.close_position(order_id, reason="MIS_SQUAREOFF")
             except Exception as e:
                 logger.error("mis_squareoff_error", symbol=tracked.tradingsymbol, error=str(e))
 
@@ -792,17 +1055,23 @@ class ExecutionEngine:
         if not tracked or tracked.is_closed:
             return None
 
-        # Cancel SL/target orders first (OCO pair)
-        if tracked.sl_order_id:
-            try:
-                await self._client.cancel_order(tracked.sl_order_id, OrderVariety.REGULAR)
-            except Exception:
-                pass
-        if tracked.target_order_id:
-            try:
-                await self._client.cancel_order(tracked.target_order_id, OrderVariety.REGULAR)
-            except Exception:
-                pass
+        # Withdraw the SL / target orders first (OCO pair). Either may have filled,
+        # fully or in part, before the cancel: that quantity is already out, and
+        # sending a market order for it as well would reverse the position.
+        sl_state = await self._withdraw_protective(tracked, tracked.sl_order_id)
+        tgt_state = await self._withdraw_protective(tracked, tracked.target_order_id)
+        if tracked.open_quantity <= 0:
+            filled_by = "stop_loss" if sl_state is not None and getattr(sl_state, "filled_quantity", 0) else "target"
+            self._finalize_position_exit(tracked, tracked.exit_price or tracked.entry_price, filled_by)
+            logger.warning("close_found_position_already_exited", order_id=order_id, by=filled_by,
+                           requested_reason=reason)
+            if self._on_exit_callback:
+                try:
+                    await self._on_exit_callback(tracked, tracked.sl_order_id if filled_by == "stop_loss"
+                                                 else tracked.target_order_id)
+                except Exception as e:
+                    logger.error("exit_callback_error", error=str(e))
+            return None
 
         exit_txn = TransactionType.SELL if tracked.is_long else TransactionType.BUY
         exit_order = OrderRequest(
@@ -812,8 +1081,9 @@ class ExecutionEngine:
             order_type=OrderType.MARKET,
             quantity=tracked.open_quantity,
             product=ProductType(tracked.product),
+            tag=order_tag(lifecycle_id_of(tracked)),
         )
-        
+        self._event("EXITING", tracked, reason=reason, quantity=tracked.open_quantity, order_type="MARKET")
         exit_id = await self._coordinator.place_order(exit_order)
         if isinstance(exit_id, list):
             exit_id = exit_id[0] if exit_id else None
@@ -850,6 +1120,7 @@ class ExecutionEngine:
 
     def _signal_to_order(self, signal: Signal) -> OrderRequest:
         return OrderRequest(
+            tag=order_tag(lifecycle_id_of(signal)),      # marks the order as the app's, per signal
             tradingsymbol=signal.tradingsymbol,
             exchange=signal.exchange,
             transaction_type=signal.transaction_type,
@@ -882,39 +1153,127 @@ class ExecutionEngine:
         return partial_fills
 
     async def reconcile_orders(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "matched": 0,
-            "mismatched": 0,
-            "errors": [],
-        }
+        """Settle every pending entry order against the broker (same handling as the fast loop)."""
+        result: dict[str, Any] = {"matched": 0, "mismatched": 0, "errors": []}
         try:
             broker_orders = await self._client.get_orders()
             broker_order_map = {o.order_id: o for o in broker_orders}
-
             for order_id in list(self._pending_orders.keys()):
                 broker_order = broker_order_map.get(order_id)
                 if broker_order:
-                    if broker_order.status in ("COMPLETE", "CANCELLED", "REJECTED"):
-                        self._filled_orders[order_id] = broker_order
-                        del self._pending_orders[order_id]
+                    if await self._handle_order_update(order_id, broker_order):
                         result["matched"] += 1
-
-                        if broker_order.status == "REJECTED":
-                            logger.warning(
-                                "order_rejected",
-                                order_id=order_id,
-                                reason=broker_order.status_message,
-                            )
                 else:
                     result["mismatched"] += 1
                     result["errors"].append(f"Order {order_id} not found on broker")
-
             logger.info("reconciliation_complete", result=result)
         except Exception as e:
             logger.error("reconciliation_error", error=str(e))
             result["errors"].append(str(e))
-
         return result
+
+    async def _handle_order_update(self, order_id: str, broker_order: Order, now: datetime | None = None) -> bool:
+        """Advance one pending entry order. Returns True once it is settled.
+
+        The single place an entry fill is turned into a protected position -
+        both reconciliation loops call it, so a fill can never be taken off the
+        pending list without its stop, target and journal entry.
+
+        * COMPLETE: the filled quantity opens the position.
+        * CANCELLED / REJECTED: any part that filled before is opened and
+          protected; nothing filled -> the signal ends there.
+        * still working with a part filled: after ``PARTIAL_FILL_WAIT_S`` the
+          rest is cancelled; the next update settles the part that filled.
+        """
+        req = self._pending_orders.get(order_id)
+        if req is None:
+            return False
+        now = now or datetime.now()
+        status = broker_order.status
+        filled = int(broker_order.filled_quantity or 0)
+        signal = getattr(req, "_signal", None)
+        if status == "COMPLETE" and filled <= 0:
+            filled = req.quantity
+
+        if status not in TERMINAL_STATUSES:
+            meta = self._pending_meta.setdefault(order_id, {})
+            if filled > meta.get("filled_seen", 0):
+                meta["filled_seen"] = filled
+                meta.setdefault("first_partial_at", now)
+                self._event("PARTIAL", req, order_id=order_id, filled=filled, quantity=req.quantity,
+                            average_price=broker_order.average_price)
+            first = meta.get("first_partial_at")
+            if first and not meta.get("cancel_sent") and (now - first).total_seconds() >= PARTIAL_FILL_WAIT_S:
+                meta["cancel_sent"] = True
+                try:
+                    await self._client.cancel_order(order_id, OrderVariety.REGULAR)
+                    logger.warning("partial_fill_remainder_cancelled", order_id=order_id, filled=filled,
+                                   quantity=req.quantity)
+                except Exception as e:
+                    logger.error("partial_fill_cancel_failed", order_id=order_id, error=str(e))
+            return False
+
+        self._pending_orders.pop(order_id, None)
+        self._pending_meta.pop(order_id, None)
+        self._filled_orders[order_id] = broker_order
+        self._forget("pending", order_id)
+        if filled > 0:
+            if status != "COMPLETE":
+                logger.warning("entry_partially_filled", order_id=order_id, status=status, filled=filled,
+                               quantity=req.quantity)
+            logger.info("fast_recon_fill_confirmed", order_id=order_id, average_price=broker_order.average_price,
+                        filled=filled)
+            self._event("FILLED", req, order_id=order_id, filled=filled, quantity=req.quantity,
+                        average_price=broker_order.average_price,
+                        note=None if filled >= req.quantity else f"{status.lower()} after a partial fill")
+            await self._open_position_from_fill(order_id, broker_order, signal, filled)
+        elif status == "REJECTED":
+            logger.warning("fast_recon_rejection_detected", order_id=order_id, reason=broker_order.status_message,
+                           latency_ms=round(self._fast_recon_interval * 1000))
+            self._event("REJECTED", req, order_id=order_id, by="broker", reason=broker_order.status_message)
+        else:
+            self._event("CANCELLED", req, order_id=order_id, reason=broker_order.status_message or "cancelled")
+        return True
+
+    async def _open_position_from_fill(self, order_id: str, broker_order: Order, signal: Optional[Signal],
+                                       filled: int) -> None:
+        """Track a filled entry (its actual quantity) and place its stop and target."""
+        fill_price = broker_order.average_price or 0.0
+        if signal and fill_price > 0:
+            # stop / target on the signal are distances from the entry, not prices
+            sl_price = None
+            if signal.stop_loss:
+                sl_price = round(fill_price - signal.stop_loss, 2) if signal.transaction_type == TransactionType.BUY \
+                    else round(fill_price + signal.stop_loss, 2)
+            target_price = None
+            if signal.target:
+                target_price = round(fill_price + signal.target, 2) if signal.transaction_type == TransactionType.BUY \
+                    else round(fill_price - signal.target, 2)
+            tracked = TrackedPosition(
+                order_id=order_id,
+                tradingsymbol=signal.tradingsymbol,
+                exchange=signal.exchange.value if hasattr(signal.exchange, "value") else str(signal.exchange),
+                transaction_type=signal.transaction_type.value,
+                quantity=filled,
+                entry_price=fill_price,
+                stop_loss=sl_price,
+                target=target_price,
+                strategy_name=signal.strategy_name or "",
+                product=signal.product.value if hasattr(signal.product, "value") else str(signal.product),
+                signal=signal,
+            )
+            self._apply_exec_plan(tracked, signal, fill_price)
+            self._tracked_positions[order_id] = tracked
+            self._save_position(tracked)
+            if tracked.current_stop_loss is not None:
+                await self._place_protective_stop_loss(tracked)
+            if tracked.target:
+                await self._place_protective_target(tracked)
+        if self._on_fill_callback:
+            try:
+                await self._on_fill_callback(order_id, broker_order, signal)
+            except Exception as e:
+                logger.error("fill_callback_error", error=str(e))
 
     async def start_reconciliation_loop(self) -> None:
         """Start BOTH fast and slow reconciliation loops + position monitor.
@@ -927,6 +1286,10 @@ class ExecutionEngine:
         Position monitor (3s): SL monitoring, trailing stop updates, MIS square-off.
         """
         self._running = True
+        try:
+            await self.restore_state()
+        except Exception as e:
+            logger.error("engine_state_restore_failed", error=str(e))
         logger.info(
             "reconciliation_loops_started",
             fast_interval=self._fast_recon_interval,
@@ -942,101 +1305,20 @@ class ExecutionEngine:
         )
     
     async def _fast_reconciliation_loop(self) -> None:
-        """Fast reconciliation for ACTIVE/PENDING orders only.
-        
-        Runs every 1-2 seconds to catch rejections within seconds.
-        On COMPLETE: creates TrackedPosition, places protective SL, calls journal callback.
-        """
+        """Every 2 s: settle pending entry orders (fills, partial fills, rejections)."""
         while self._running:
             await asyncio.sleep(self._fast_recon_interval)
-            if not self._pending_orders:
+            if not self._pending_orders or not self._broker_ready():
                 continue
-            
             try:
-                broker_orders = await self._client.get_orders()
-                broker_order_map = {o.order_id: o for o in broker_orders}
-                
+                broker_order_map = {o.order_id: o for o in await self._client.get_orders()}
                 for order_id in list(self._pending_orders.keys()):
                     broker_order = broker_order_map.get(order_id)
-                    if broker_order and broker_order.status in (
-                        "COMPLETE", "CANCELLED", "REJECTED"
-                    ):
-                        order_req = self._pending_orders.pop(order_id)
-                        self._filled_orders[order_id] = broker_order
-                        
-                        if broker_order.status == "REJECTED":
-                            logger.warning(
-                                "fast_recon_rejection_detected",
-                                order_id=order_id,
-                                reason=broker_order.status_message,
-                                latency_ms=round(self._fast_recon_interval * 1000),
-                            )
-                        elif broker_order.status == "COMPLETE":
-                            logger.info(
-                                "fast_recon_fill_confirmed",
-                                order_id=order_id,
-                                average_price=broker_order.average_price,
-                            )
-                            
-                            # ── Post-fill actions ──
-                            signal = getattr(order_req, "_signal", None)
-                            fill_price = broker_order.average_price or 0.0
-                            
-                            # 1. Create tracked position for SL/trailing monitoring
-                            if signal and fill_price > 0:
-                                # Compute absolute SL/target prices from signal (both are
-                                # stored as points-distance from entry, not absolute prices)
-                                sl_price = None
-                                if signal.stop_loss:
-                                    if signal.transaction_type == TransactionType.BUY:
-                                        sl_price = round(fill_price - signal.stop_loss, 2)
-                                    else:
-                                        sl_price = round(fill_price + signal.stop_loss, 2)
-
-                                target_price = None
-                                if signal.target:
-                                    if signal.transaction_type == TransactionType.BUY:
-                                        target_price = round(fill_price + signal.target, 2)
-                                    else:
-                                        target_price = round(fill_price - signal.target, 2)
-
-                                tracked = TrackedPosition(
-                                    order_id=order_id,
-                                    tradingsymbol=signal.tradingsymbol,
-                                    exchange=signal.exchange.value if hasattr(signal.exchange, "value") else str(signal.exchange),
-                                    transaction_type=signal.transaction_type.value,
-                                    quantity=signal.quantity,
-                                    entry_price=fill_price,
-                                    stop_loss=sl_price,
-                                    target=target_price,
-                                    strategy_name=signal.strategy_name or "",
-                                    product=signal.product.value if hasattr(signal.product, "value") else str(signal.product),
-                                    signal=signal,
-                                )
-                                self._apply_exec_plan(tracked, signal, fill_price)
-                                self._tracked_positions[order_id] = tracked
-                                
-                                # 2. Place protective SL + target orders (OCO pair)
-                                if sl_price:
-                                    await self._place_protective_stop_loss(tracked)
-                                if target_price:
-                                    await self._place_protective_target(tracked)
-                                
-                                # 3. Update risk manager
-                                self._risk.update_daily_pnl(0)  # register trade count
-                            
-                            # 4. Call journal callback
-                            if self._on_fill_callback:
-                                try:
-                                    await self._on_fill_callback(
-                                        order_id, broker_order, signal
-                                    )
-                                except Exception as e:
-                                    logger.error("fill_callback_error", error=str(e))
-                            
+                    if broker_order is not None:
+                        await self._handle_order_update(order_id, broker_order)
             except Exception as e:
                 logger.error("fast_reconciliation_error", error=str(e))
-    
+
     async def _slow_reconciliation_loop(self) -> None:
         """Slow reconciliation for historical cleanup and drift detection.
         
@@ -1047,7 +1329,8 @@ class ExecutionEngine:
         """
         while self._running:
             await asyncio.sleep(self._slow_recon_interval)
-            await self.reconcile_orders()
+            if self._pending_orders and self._broker_ready():
+                await self.reconcile_orders()
 
     async def stop_reconciliation_loop(self) -> None:
         self._running = False
@@ -1065,29 +1348,19 @@ class ExecutionEngine:
         return cancelled
 
     async def execute_multi_leg_strategy(self, order_group: CorrectMultiLegOrderGroup) -> bool:
-        """Execute a multi-leg order group with hedge recovery (Fix #1 corrected).
-        
-        Args:
-            order_group: CorrectMultiLegOrderGroup with all legs defined
-            
-        Returns:
-            True if all legs filled as expected, False if emergency hedge triggered
+        """Disabled: ``order_group_corrected`` is not safe to send real orders through.
+
+        Known defects (see the module docstring): hedge / split / recovery orders
+        are hard-coded BUY, fills are checked as "FILLED" where Kite reports
+        "COMPLETE", the fill loops have no exit for cancelled orders, crash
+        recovery restores an empty state and can re-send an order the broker
+        already has. Nothing in the app calls this; it stays disabled until the
+        module is rewritten and tested against the broker.
         """
-        # Pre-execution validation
-        for leg in order_group.legs:
-            is_valid, reason = self._risk.validate_signal(leg.signal)
-            if not is_valid:
-                raise RiskLimitError(f"Leg validation failed for {leg.signal.tradingsymbol}: {reason}")
-
-        # Execute with hedge recovery (CorrectMultiLegOrderGroup uses .execute())
-        success = await order_group.execute(order_group.state.legs.values())
-
-        if success:
-            logger.info("multi_leg_execution_success", group_id=order_group.group_id)
-        else:
-            logger.error("multi_leg_execution_failed", group_id=order_group.group_id)
-
-        return success
+        raise NotImplementedError(
+            "multi-leg execution through order_group_corrected is disabled: the module "
+            "is not safe for live orders (see src/execution/order_group_corrected.py)"
+        )
 
     def get_execution_summary(self) -> dict[str, Any]:
         tracked_open = [p for p in self._tracked_positions.values() if not p.is_closed]

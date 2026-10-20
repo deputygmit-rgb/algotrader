@@ -296,6 +296,33 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy, session);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol, session);
+
+-- Life cycle of each live signal (src/execution/lifecycle.py): one row per
+-- stage - SIGNAL, VALIDATED / BLOCKED, PLACED, PARTIAL, FILLED, PROTECTED,
+-- STOP_FAILED, SCALED, EXITING, CLOSED, ... - with the agent that owns it.
+CREATE TABLE IF NOT EXISTS signal_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    account       TEXT    NOT NULL DEFAULT '',
+    lifecycle_id  TEXT    NOT NULL,
+    ts            TEXT    NOT NULL,
+    stage         TEXT    NOT NULL,
+    agent         TEXT    NOT NULL DEFAULT '',
+    level         TEXT    NOT NULL DEFAULT 'info',
+    data          TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_signal_events_lid ON signal_events(lifecycle_id, id);
+CREATE INDEX IF NOT EXISTS idx_signal_events_account_ts ON signal_events(account, ts);
+
+-- Execution engine state that must survive a restart: entry orders still
+-- working at the broker and open positions with their protective orders.
+CREATE TABLE IF NOT EXISTS engine_state (
+    account       TEXT    NOT NULL DEFAULT '',
+    kind          TEXT    NOT NULL,          -- pending / position
+    order_id      TEXT    NOT NULL,
+    data          TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL,
+    PRIMARY KEY (account, kind, order_id)
+) WITHOUT ROWID;
 """
 
 
@@ -1231,6 +1258,54 @@ class MarketDataStore:
             d = dict(r)
             d["features"] = json.loads(d.get("features") or "{}")
             out.append(d)
+        return out
+
+    # ─── Signal life cycle ──────────────────────────────────────
+
+    def store_signal_event(self, account: str, ev: dict[str, Any]) -> None:
+        core = {"lifecycle_id", "ts", "stage", "agent", "level"}
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO signal_events (account, lifecycle_id, ts, stage, agent, level, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (account, ev["lifecycle_id"], ev["ts"], ev["stage"], ev.get("agent", ""), ev.get("level", "info"),
+             json.dumps({k: v for k, v in ev.items() if k not in core}, default=str)))
+        conn.commit()
+
+    def get_signal_events(self, account: str = "", lifecycle_id: str = "", since: str = "") -> list[dict[str, Any]]:
+        where, args = ["ts >= ?"], [since]
+        if account:
+            where.append("account = ?")
+            args.append(account)
+        if lifecycle_id:
+            where.append("lifecycle_id = ?")
+            args.append(lifecycle_id)
+        conn = self._get_conn()
+        rows = conn.execute(f"SELECT * FROM signal_events WHERE {' AND '.join(where)} ORDER BY id", args).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d.update(json.loads(d.pop("data") or "{}"))
+            out.append(d)
+        return out
+
+    # ─── Execution engine state ─────────────────────────────────
+
+    def save_engine_state(self, account: str, kind: str, order_id: str, data: dict[str, Any]) -> None:
+        conn = self._get_conn()
+        conn.execute("INSERT OR REPLACE INTO engine_state (account, kind, order_id, data, updated_at) VALUES (?, ?, ?, ?, ?)",
+                     (account, kind, order_id, json.dumps(data, default=str), datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+
+    def delete_engine_state(self, account: str, kind: str, order_id: str) -> None:
+        conn = self._get_conn()
+        conn.execute("DELETE FROM engine_state WHERE account = ? AND kind = ? AND order_id = ?", (account, kind, order_id))
+        conn.commit()
+
+    def load_engine_state(self, account: str) -> dict[str, dict[str, dict[str, Any]]]:
+        conn = self._get_conn()
+        out: dict[str, dict[str, dict[str, Any]]] = {"pending": {}, "position": {}}
+        for r in conn.execute("SELECT kind, order_id, data FROM engine_state WHERE account = ?", (account,)):
+            out.setdefault(r["kind"], {})[r["order_id"]] = json.loads(r["data"])
         return out
 
     def purge_old_snapshots(self, days_to_keep: int = 90) -> dict[str, int]:

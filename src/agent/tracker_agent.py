@@ -46,6 +46,56 @@ class TrackerAgent(BaseAgent):
         self._positions: Optional[dict[str, int]] = None  # symbol -> net qty at the last sync
         self._orders: Optional[dict[str, str]] = None     # order_id -> status at the last sync
         self.syncs = 0
+        self.findings: dict[str, dict[str, Any]] = {}     # key -> open cross-check finding
+
+    # broker statuses of a stop order that still protects the position
+    LIVE_STOP_STATUSES = ("OPEN", "TRIGGER PENDING", "OPEN PENDING", "VALIDATION PENDING", "PUT ORDER REQ RECEIVED",
+                          "MODIFY PENDING", "MODIFY VALIDATION PENDING", "MODIFIED", "AMO REQ RECEIVED")
+
+    def cross_check(self, net: list[dict[str, Any]], orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Broker positions against the execution engine's tracked positions.
+
+        * ``untracked``   - the broker holds a position the app is not managing
+          (a manual trade, or a fill the app lost track of);
+        * ``unprotected`` - the app manages a position whose stop order is not
+          live at the broker (the engine's backstop is then the only stop);
+        * ``stale``       - the app manages a position the broker no longer holds.
+
+        Findings are journalled when they appear and when they clear.
+        """
+        engine = getattr(self.service, "_execution", None)
+        tracked = [t for t in (getattr(engine, "_tracked_positions", {}) or {}).values() if not t.is_closed]
+        held: dict[str, int] = {}
+        for p in net:
+            held[str(p.get("tradingsymbol"))] = held.get(str(p.get("tradingsymbol")), 0) + int(p.get("quantity") or 0)
+        status = {str(o.get("order_id")): str(o.get("status")) for o in orders if o.get("order_id")}
+        found: dict[str, dict[str, Any]] = {}
+        managed = {t.tradingsymbol for t in tracked}
+        for sym, qty in held.items():
+            if qty and sym not in managed:
+                found[f"untracked|{sym}"] = {"kind": "untracked", "symbol": sym, "level": "warning",
+                                             "text": f"{sym}: broker holds {qty} the app is not managing (manual trade, "
+                                                     f"or a fill the app lost track of) — no app stop on it"}
+        for t in tracked:
+            if held and held.get(t.tradingsymbol, 0) == 0:
+                found[f"stale|{t.order_id}"] = {"kind": "stale", "symbol": t.tradingsymbol, "level": "warning",
+                                                "text": f"{t.tradingsymbol}: the app manages #{t.order_id} but the broker "
+                                                        f"holds no position"}
+            elif t.current_stop_loss is not None and status.get(t.sl_order_id or "") not in self.LIVE_STOP_STATUSES:
+                found[f"unprotected|{t.order_id}"] = {
+                    "kind": "unprotected", "symbol": t.tradingsymbol, "level": "error",
+                    "text": f"{t.tradingsymbol}: #{t.order_id} has no live stop order at the broker "
+                            f"(stop {t.current_stop_loss}, order {t.sl_order_id or 'none'}: "
+                            f"{status.get(t.sl_order_id or '', 'not found')}) — the engine's backstop is the only stop"}
+        for key in found.keys() - self.findings.keys():
+            f = found[key]
+            self.activity.record("finding", f["text"], f["level"], symbol=f["symbol"], check=f["kind"])
+        for key in self.findings.keys() - found.keys():
+            f = self.findings[key]
+            self.activity.record("finding", f"Resolved: {f['text'].split(' — ')[0]}", "info", symbol=f["symbol"],
+                                 check=f["kind"])
+        self.findings = found
+        return found
 
     def _journal_changes(self, net: list[dict[str, Any]], orders: list[dict[str, Any]]) -> None:
         positions = {f"{p.get('tradingsymbol')}|{p.get('product', '')}": int(p.get("quantity") or 0) for p in net}
@@ -112,6 +162,8 @@ class TrackerAgent(BaseAgent):
                         for p in net if p.get("quantity", 0) != 0
                     ][:20]
                     self._journal_changes(net, orders)
+                    self.activity.set_task("Cross-checking broker positions with the app's tracked positions", "decide")
+                    self.cross_check(net, orders)
                     self.syncs += 1
                     self.activity.work(len(net) + len(orders))
                     try:
@@ -149,4 +201,5 @@ class TrackerAgent(BaseAgent):
             "open_orders_count": self.open_orders_count,
             "open_positions": self.open_positions,
             "syncs": self.syncs,
+            "findings": list(self.findings.values()),
         }

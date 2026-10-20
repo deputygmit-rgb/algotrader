@@ -53,6 +53,8 @@ class BaseAgent:
             return
         if self._telemetry is not None and not self._subscriptions:
             self._subscribe(self._telemetry)
+            # each stage of a signal's life cycle is journalled by the agent that owns it
+            self._listen("lifecycle.", self._on_lifecycle)
         self._alive = True
         self._task = loop.create_task(self._run_loop())
         self._task.add_done_callback(self._on_done)
@@ -82,6 +84,19 @@ class BaseAgent:
 
     def _subscribe(self, telemetry: "Telemetry") -> None:
         """Override to register telemetry handlers via ``self._listen``."""
+
+    def _on_lifecycle(self, topic: str, ev: dict[str, Any]) -> None:
+        """A signal reached a stage this agent owns (see src/execution/lifecycle.py STAGES)."""
+        if ev.get("agent") != self.NAME:
+            return
+        from src.execution.lifecycle import describe
+
+        level = ev.get("level", "info")
+        fields = {k: ev.get(k) for k in ("lifecycle_id", "stage", "symbol", "strategy", "order_id") if ev.get(k)}
+        if level == "debug":
+            self.activity.trace(describe(ev), "debug", kind="lifecycle", **fields)
+        else:
+            self.activity.record("lifecycle", describe(ev), level, **fields)
 
     def _set_state(self, state: str) -> None:
         if state != self._state:

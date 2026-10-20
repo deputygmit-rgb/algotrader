@@ -656,6 +656,7 @@ function connectWS() {
                     updateOverviewCards({});
                 }
             }
+            else if (msg.type === 'lifecycle') { if (typeof AgentsView !== 'undefined') AgentsView.lifecycle(msg.data); }
             else if (msg.type === 'replay_tick') updateReplayTick(msg.data);
             else if (msg.type === 'replay_complete') finishReplay(msg.data);
             else if (msg.type === 'replay_error') replayFailed(msg.data);
