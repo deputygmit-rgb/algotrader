@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from datetime import datetime, time as dtime
 from typing import Any, Callable, Optional
 
@@ -16,6 +17,7 @@ from src.data.models import (
     Signal,
     TransactionType,
 )
+from src.auth.access import RISK, order_origin
 from src.data.exit_plan import exec_spec, execution_spec, levels_from_spec
 from src.execution.order_coordinator import (
     OrderCoordinator,
@@ -35,6 +37,17 @@ logger = get_logger(__name__)
 # ────────────────────────────────────────────────────────────────
 # Tracked Position — internal representation for SL/trailing/exit
 # ────────────────────────────────────────────────────────────────
+
+def _risk_orders(fn: Callable) -> Callable:
+    """Orders placed inside ``fn`` protect or close an open position (origin
+    ``risk``): allowed for trading and agentic accounts alike, so a manual
+    trade keeps its stop-loss, target and square-off (see src/auth/access.py)."""
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with order_origin(RISK):
+            return await fn(*args, **kwargs)
+    return wrapper
+
 
 class TrackedPosition:
     """Tracks a live position for SL monitoring, trailing stop, and MIS square-off."""
@@ -335,6 +348,7 @@ class ExecutionEngine:
                 return tracked
         return None
 
+    @_risk_orders
     async def _place_protective_stop_loss(self, tracked: TrackedPosition) -> Optional[str]:
         """Place a separate SL order to protect an open position.
         
@@ -382,6 +396,7 @@ class ExecutionEngine:
             logger.error("protective_sl_failed", error=str(e), order_id=tracked.order_id)
             return None
 
+    @_risk_orders
     async def _modify_stop_loss_order(self, tracked: TrackedPosition) -> bool:
         """Modify existing SL order to new trailing stop price."""
         if not tracked.sl_order_id or not tracked.current_stop_loss:
@@ -412,6 +427,7 @@ class ExecutionEngine:
             logger.error("trailing_sl_modify_failed", error=str(e), order_id=tracked.sl_order_id)
             return False
 
+    @_risk_orders
     async def _place_protective_target(self, tracked: TrackedPosition) -> Optional[str]:
         """Place a separate profit-target LIMIT order (OCO with the protective SL order).
 
@@ -524,6 +540,7 @@ class ExecutionEngine:
             return True
         return tracked.exit_by is not None and now.time() >= tracked.exit_by
 
+    @_risk_orders
     async def _scale_out(self, tracked: TrackedPosition, price: float) -> None:
         """Book part of the position at market, then protect the rest.
 
@@ -562,6 +579,7 @@ class ExecutionEngine:
             stop=tracked.current_stop_loss,
         )
 
+    @_risk_orders
     async def _resize_protective_orders(self, tracked: TrackedPosition) -> None:
         """Match the SL / target orders to the open quantity (and the SL to the current stop)."""
         side_buffer = (1 - self._slippage_tolerance / 100) if tracked.is_long else (1 + self._slippage_tolerance / 100)
@@ -692,6 +710,7 @@ class ExecutionEngine:
             tracked.realized_pnl + side * (exit_price - tracked.entry_price) * tracked.open_quantity, 2
         )
 
+    @_risk_orders
     async def _squareoff_mis_positions(self) -> None:
         """Square off all MIS positions before 3:20 PM broker auto-square-off."""
         mis_positions = [
@@ -766,6 +785,7 @@ class ExecutionEngine:
             except Exception as e:
                 logger.error("mis_squareoff_error", symbol=tracked.tradingsymbol, error=str(e))
 
+    @_risk_orders
     async def close_position(self, order_id: str, reason: str = "manual") -> Optional[str]:
         """Explicitly close a tracked position by placing a reverse market order."""
         tracked = self._tracked_positions.get(order_id)

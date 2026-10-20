@@ -321,6 +321,16 @@
         .field textarea { width: 100%; padding: 12px 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; outline: none; background: rgba(4, 8, 15, .7); color: var(--text); font: 500 14px "DM Sans", sans-serif; resize: vertical; }
         .field textarea:focus { border-color: rgba(140, 240, 205, .6); box-shadow: 0 0 0 3px rgba(140, 240, 205, .12); }
         .contact-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+        .access-choice { margin: 0 0 16px; padding: 0; border: 0; }
+        .access-choice legend { margin-bottom: 8px; color: #aab6c9; font-size: 11px; font-weight: 600; letter-spacing: .4px; }
+        .choice { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 8px; padding: 12px 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; background: rgba(4, 8, 15, .5); cursor: pointer; transition: border-color .15s ease; }
+        .choice:hover, .choice:has(input:checked) { border-color: rgba(140, 240, 205, .6); }
+        .choice input { margin-top: 3px; accent-color: #8cf0cd; }
+        .choice b { display: block; color: var(--text); font-size: 14px; }
+        .choice small { display: block; margin-top: 2px; color: #8b97ab; font-size: 12.5px; line-height: 1.45; }
+        .contact-note { margin: -6px 0 16px; color: #6f7d92; font-size: 12.5px; }
+        .confirm { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 18px; color: #aab6c9; font-size: 13.5px; cursor: pointer; }
+        .confirm input { margin-top: 3px; accent-color: #8cf0cd; }
         .contact-status { min-height: 20px; margin-top: 12px; font-size: 13px; }
         .contact-status.error { color: #ff9aac; }
         .contact-status.success { color: var(--mint); }
@@ -615,7 +625,16 @@
                     <label class="field"><span>Phone <em>(optional)</em></span><input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
                     <label class="field"><span>Trading ID <em>(optional)</em></span><input name="trading_id" type="text" maxlength="10" style="text-transform:uppercase"></label>
                 </div>
+                <fieldset class="access-choice">
+                    <legend>What access do you want?</legend>
+                    <label class="choice"><input type="radio" name="access_level" value="view" required><span><b>View live trading</b><small>Read-only dashboards, signals and analysis. No orders are placed.</small></span></label>
+                    <label class="choice"><input type="radio" name="access_level" value="trade"><span><b>Trading</b><small>Place and manage your own orders through your broker.</small></span></label>
+                    <label class="choice"><input type="radio" name="access_level" value="agentic"><span><b>Agentic trading</b><small>AI agents place trades for you, within limits you set.</small></span></label>
+                </fieldset>
+                <label class="field"><span>Which broker do you trade with?</span><input name="platform" type="text" maxlength="60" required placeholder="Your broker's name"></label>
+                <p class="contact-note">We'll confirm whether your broker can be connected before setting anything up.</p>
                 <label class="field"><span>How do you trade? <em>(optional)</em></span><textarea name="message" rows="3" maxlength="1000"></textarea></label>
+                <label class="confirm"><input type="checkbox" name="confirm" value="yes" required><span>I confirm the access and trading platform selected above.</span></label>
                 <label class="contact-trap" aria-hidden="true">Website<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
                     <button class="button" type="submit">Request access</button>
                     <div class="contact-status" data-contact-status role="status"></div>
@@ -1055,7 +1074,7 @@
             if (document.body.dataset.loginOnLoad === 'true') open();
         })();
     </script>
-    <script src="/static/js/contact.js" defer></script>
-    <script src="/static/js/metrics.js" defer></script>
+    <script src="/static/js/contact.js?v={{ static_version('js/contact.js') }}" defer></script>
+    <script src="/static/js/metrics.js?v={{ static_version('js/metrics.js') }}" defer></script>
 </body>
 </html>

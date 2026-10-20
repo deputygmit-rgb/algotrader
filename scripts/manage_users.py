@@ -3,13 +3,20 @@
 Run on the server from the app directory as the app user, then restart:
     cd /opt/verquoai/app
     sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py list
-    sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add AB1234 trader@example.com
+    sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add AB1234 trader@example.com --access trade
+    sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py access AB1234 agentic
     sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py update AB1234 [new-email]
     sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py remove AB1234
     sudo systemctl restart verquoai
 
 The Kite API key and secret are asked for at a hidden prompt (never on the
 command line, so they stay out of shell history) and saved encrypted.
+
+Access levels (enforced on every order - see src/auth/access.py):
+    view     live dashboards, signals, analysis, backtests; no real orders
+    trade    + real orders the user places by hand
+    agentic  + orders placed automatically by strategies and agents
+New accounts get 'view' unless --access says otherwise.
 """
 from __future__ import annotations
 
@@ -25,6 +32,8 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)  # the app resolves data/ relative to its directory
 
 from dotenv import load_dotenv  # noqa: E402
+
+from src.auth.access import LEVELS, NEW_ACCOUNT_DEFAULT  # noqa: E402
 
 load_dotenv(os.path.join(ROOT, ".env"))
 
@@ -69,6 +78,11 @@ def main() -> None:
     add = sub.add_parser("add")
     add.add_argument("zerodha_id")
     add.add_argument("email")
+    add.add_argument("--access", choices=LEVELS, default=NEW_ACCOUNT_DEFAULT,
+                     help=f"access level (default: {NEW_ACCOUNT_DEFAULT})")
+    access = sub.add_parser("access", help="change an account's access level")
+    access.add_argument("zerodha_id")
+    access.add_argument("level", choices=LEVELS)
     update = sub.add_parser("update", help="replace the API key/secret, optionally the email")
     update.add_argument("zerodha_id")
     update.add_argument("email", nargs="?")
@@ -91,7 +105,7 @@ def main() -> None:
 
     if args.command == "list":
         for u in users.list_users():
-            print(f"{u['zerodha_id']:<10} {u['email']}")
+            print(f"{u['zerodha_id']:<10} {u['access_level']:<8} {u['email']}")
         return
 
     uid = _zerodha_id(args.zerodha_id)
@@ -102,13 +116,18 @@ def main() -> None:
             sys.exit(f"{uid} already exists - use 'update' to change its credentials.")
         email = _email(args.email)
         api_key, api_secret = _ask_credentials()
-        users.add_user(uid, api_key, api_secret, email)
+        users.add_user(uid, api_key, api_secret, email, access_level=args.access)
+    elif args.command == "access":
+        if not existing:
+            sys.exit(f"{uid} does not exist - use 'add'.")
+        users.set_access_level(uid, args.level)
     elif args.command == "update":
         if not existing:
             sys.exit(f"{uid} does not exist - use 'add'.")
         email = _email(args.email) if args.email else existing.email
         api_key, api_secret = _ask_credentials()
-        users.add_user(uid, api_key, api_secret, email)
+        # new credentials keep the account's access level
+        users.add_user(uid, api_key, api_secret, email, access_level=existing.access_level)
     elif args.command == "remove":
         if not existing or not users.remove_user(uid):
             sys.exit(f"{uid} does not exist.")

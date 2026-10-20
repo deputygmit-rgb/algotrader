@@ -78,7 +78,9 @@ CREATE TABLE IF NOT EXISTS contact_requests (
     user_id     TEXT NOT NULL DEFAULT '',
     ip_hash     TEXT NOT NULL DEFAULT '',
     emailed     INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL DEFAULT 'new'
+    status      TEXT NOT NULL DEFAULT 'new',
+    access_level TEXT NOT NULL DEFAULT '',
+    platform    TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -116,8 +118,25 @@ class MetricsStore:
             os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
             self._ready = True
         return conn
+
+    # Columns added after the first release; existing databases get them on startup.
+    _ADDED_COLUMNS = {
+        "contact_requests": {
+            "access_level": "TEXT NOT NULL DEFAULT ''",
+            "platform": "TEXT NOT NULL DEFAULT ''",
+        },
+    }
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        for table, columns in self._ADDED_COLUMNS.items():
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for column, ddl in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        conn.commit()
 
     def ip_hash(self, ip: str) -> str:
         return hmac.new(self._secret, (ip or "").encode(), hashlib.sha256).hexdigest()[:16] if ip else ""
@@ -184,16 +203,16 @@ class MetricsStore:
                 logger.error("metrics_flush_failed", error=str(e))
 
     def add_contact(self, *, name: str, email: str, phone: str, trading_id: str, message: str, source: str,
-                    visitor_id: str, user_id: str, ip: str) -> int:
+                    visitor_id: str, user_id: str, ip: str, access_level: str = "", platform: str = "") -> int:
         conn = self._connect()
         try:
             with conn:
                 cur = conn.execute(
                     """INSERT INTO contact_requests (ts, name, email, phone, trading_id, message, source, visitor_id,
-                                                     user_id, ip_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                                     user_id, ip_hash, access_level, platform)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (datetime.now(IST).isoformat(timespec="seconds"), name, email, phone, trading_id, message, source,
-                     visitor_id, user_id, self.ip_hash(ip)))
+                     visitor_id, user_id, self.ip_hash(ip), access_level, platform))
                 return int(cur.lastrowid)
         finally:
             conn.close()

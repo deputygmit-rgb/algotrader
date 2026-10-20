@@ -18,6 +18,7 @@ from src.agent.telemetry import Telemetry
 from src.api.client import KiteClient
 from src.api.market_data import MarketDataProvider, PortfolioReporter, _resolve_holding_quantity
 from src.api.ticker import KiteTicker
+from src.auth.access import AGENTIC, MANUAL, TRADE, VIEW, at_least, check_order_allowed, order_origin, require
 from src.auth.authenticator import KiteAuthenticator
 from src.data.backtest import BacktestEngine, WalkForwardOptimizer
 from src.data.bar_aggregator import BarAggregator, bucket_start
@@ -102,13 +103,25 @@ logger = get_logger(__name__)
 class TradingService:
     _instance: Optional[TradingService] = None
 
-    def __init__(self, api_key: str = "", api_secret: str = "", zerodha_id: str = "", demo: bool = False) -> None:
+    def __init__(self, api_key: str = "", api_secret: str = "", zerodha_id: str = "", demo: bool = False,
+                 shared_market: bool = False) -> None:
         self._settings = get_settings()
         self._zerodha_id = zerodha_id
         # Demo sessions run this same service against a simulated broker
         # (src/demo): no Zerodha calls, orders fill in a private sandbox.
         self.is_demo = demo
-        if demo:
+        # View-only accounts without their own Zerodha session read live market
+        # data from the shared source account (src/api/shared_market.py): market
+        # data only, an empty account of their own, no orders.
+        self.is_shared_market = shared_market and not demo
+        if self.is_shared_market:
+            from src.api.shared_market import SharedMarketHub
+
+            hub = SharedMarketHub.get_instance()
+            self._client = hub.client_for(zerodha_id)
+            self._auth = self._client._auth
+            self._ticker = hub.ticker_for(zerodha_id)
+        elif demo:
             from src.demo.broker import DemoKiteClient, DemoTicker
 
             self._client = DemoKiteClient(zerodha_id)
@@ -117,6 +130,8 @@ class TradingService:
         else:
             self._auth = KiteAuthenticator(api_key=api_key, api_secret=api_secret, zerodha_id=zerodha_id)
             self._client = KiteClient(self._auth)
+            # every real order is checked against this account's access level
+            self._client.order_guard = self._order_guard
             self._ticker = KiteTicker(self._auth)
         self._risk = RiskManager()
         self._execution = ExecutionEngine(self._client, self._risk)
@@ -237,6 +252,28 @@ class TradingService:
     @property
     def zerodha_id(self) -> str:
         return self._zerodha_id
+
+    # ── access level (src/auth/access.py) ─────────────────────────
+    @property
+    def access_level(self) -> str:
+        """view | trade | agentic for this account. Demo sessions trade a private
+        simulated broker, so they have full access; an unknown account has the least.
+        Shared-market sessions are view-only whatever the account's level."""
+        if getattr(self, "is_shared_market", False):
+            return VIEW
+        if self.is_demo:
+            return AGENTIC
+        from src.auth.user_config import UserConfigService
+
+        user = UserConfigService.get_instance().get_user(self._zerodha_id) if self._zerodha_id else None
+        return user.access_level if user else VIEW
+
+    def _order_guard(self, origin: str) -> None:
+        check_order_allowed(self.access_level, origin)
+
+    def require_access(self, required: str, action: str) -> None:
+        """Raise AccessDenied unless this account has at least ``required`` access."""
+        require(self.access_level, required, action)
 
     @property
     def is_running(self) -> bool:
@@ -700,6 +737,8 @@ class TradingService:
         """Validate an OI signal via a gated backtest of its mapped F&O strategy,
         then place a REAL broker order for the signal's option leg.
         """
+        if not at_least(self.access_level, TRADE):
+            return {"error": "Your account has view-only access - it cannot place orders."}
         sig = next((s for s in self._oi_strategy._signals_history if s.id == signal_id), None)
         if not sig:
             logger.warning(
@@ -785,7 +824,8 @@ class TradingService:
         )
 
         try:
-            order_id = await self._execution.execute_signal(order_signal)
+            with order_origin(MANUAL):           # the user clicked Execute for this order
+                order_id = await self._execution.execute_signal(order_signal)
         except KillSwitchError as e:
             logger.error("oi_signal_execute_kill_switch", signal_id=signal_id, error=str(e))
             return {"error": "Kill switch is active - cannot place orders."}
@@ -1662,6 +1702,8 @@ class TradingService:
         that set no stop. Quantity defaults to ``risk_amount`` / stop distance.
         The timeframe sets the product: intraday MIS, daily CNC (long-only).
         """
+        if not at_least(self.access_level, TRADE):
+            return {"error": "Your account has view-only access - it cannot place orders."}
         strategy = self._resolve_strategy(strategy_name, strategy_params)
         if isinstance(strategy, dict):
             return strategy
@@ -1741,7 +1783,8 @@ class TradingService:
         })
 
         try:
-            order_id = await self._execution.execute_signal(order_signal)
+            with order_origin(MANUAL):           # the user clicked Execute for this order
+                order_id = await self._execution.execute_signal(order_signal)
         except KillSwitchError as e:
             logger.error("stock_signal_execute_kill_switch", symbol=symbol, error=str(e))
             return {"error": "Kill switch is active - cannot place orders."}
@@ -4005,8 +4048,10 @@ class TradingServiceManager:
             cls._instance = TradingServiceManager()
         return cls._instance
 
-    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "", demo: bool = False) -> TradingService:
-        return self._mcp_driver.get_service(zerodha_id, api_key=api_key, api_secret=api_secret, demo=demo)
+    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "", demo: bool = False,
+                    shared_market: bool = False) -> TradingService:
+        return self._mcp_driver.get_service(zerodha_id, api_key=api_key, api_secret=api_secret, demo=demo,
+                                            shared_market=shared_market)
 
     def has_service(self, zerodha_id: str) -> bool:
         return self._mcp_driver.has_service(zerodha_id)

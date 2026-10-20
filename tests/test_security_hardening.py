@@ -103,7 +103,9 @@ def test_kill_switch_endpoint_requires_bool_and_step_up(monkeypatch, tmp_path):
 
 def test_autotrade_off_needs_no_step_up_but_on_does(monkeypatch, tmp_path):
     calls = []
-    svc = SimpleNamespace(update_board_autotrade=lambda body: calls.append(body) or {"ok": True})
+    # an agentic account: this test is about step-up, not the access level
+    svc = SimpleNamespace(update_board_autotrade=lambda body: calls.append(body) or {"ok": True},
+                          require_access=lambda required, action: None)
     cookies, headers = _logged_in(monkeypatch, tmp_path, svc)
 
     assert _call("POST", "/api/market/day-trade/autotrade", cookies=cookies, headers=headers,

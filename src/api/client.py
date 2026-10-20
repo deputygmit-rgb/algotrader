@@ -4,7 +4,7 @@ import asyncio
 import csv
 import io
 import ssl
-from typing import Any, Optional
+from typing import Callable, Any, Optional
 
 import aiohttp
 import certifi
@@ -42,6 +42,7 @@ from src.utils.exceptions import (
     OrderError,
     RateLimitError,
 )
+from src.auth.access import current_origin
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -57,6 +58,13 @@ class KiteClient:
         self._quote_limiter = AsyncLimiter(self._settings.rate_limit_quote, 1)
         self._historical_limiter = AsyncLimiter(self._settings.rate_limit_historical, 1)
         self._order_limiter = AsyncLimiter(self._settings.rate_limit_orders, 1)
+        # Account access check for every order (installed by TradingService):
+        # called with the order's origin, raises AccessDenied when not allowed.
+        self.order_guard: Optional[Callable[[str], None]] = None
+
+    def _check_order_access(self) -> None:
+        if self.order_guard is not None:
+            self.order_guard(current_origin())
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -211,6 +219,7 @@ class KiteClient:
         return [Trade(**t) for t in data]
 
     async def place_order(self, order: OrderRequest) -> str:
+        self._check_order_access()
         payload: dict[str, Any] = {
             "tradingsymbol": order.tradingsymbol,
             "exchange": order.exchange.value,
@@ -250,6 +259,7 @@ class KiteClient:
         return order_id
 
     async def modify_order(self, request: OrderModifyRequest) -> str:
+        self._check_order_access()
         payload: dict[str, Any] = {}
         if request.order_type is not None:
             payload["order_type"] = request.order_type.value

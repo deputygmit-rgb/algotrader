@@ -7,6 +7,7 @@ from typing import Any, Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 from src.utils.logger import get_logger
+from src.auth.access import AGENTIC, LEGACY_DEFAULT, LEVELS, NEW_ACCOUNT_DEFAULT, normalize_level
 
 logger = get_logger(__name__)
 
@@ -85,11 +86,14 @@ _decrypt = decrypt_secret
 
 
 class UserConfig:
-    def __init__(self, zerodha_id: str, api_key: str, api_secret: str, email: str = "") -> None:
+    def __init__(self, zerodha_id: str, api_key: str, api_secret: str, email: str = "",
+                 access_level: str = LEGACY_DEFAULT) -> None:
         self.zerodha_id = zerodha_id.upper()
         self.api_key = api_key
         self.api_secret = api_secret
         self.email = email
+        # view | trade | agentic - see src/auth/access.py
+        self.access_level = normalize_level(access_level)
 
 
 class UserConfigService:
@@ -120,6 +124,8 @@ class UserConfigService:
                         api_key=api_key,
                         api_secret=api_secret,
                         email=info.get("email", ""),
+                        # accounts saved before access levels existed keep full access
+                        access_level=normalize_level(info.get("access_level"), LEGACY_DEFAULT),
                     )
                 logger.info("users_loaded", count=len(self._users))
                 if needs_migration:
@@ -141,6 +147,7 @@ class UserConfigService:
                     api_key=api_key,
                     api_secret=api_secret,
                     email=default_email,
+                    access_level=AGENTIC,       # the bootstrap account is the owner's
                 )
                 self._save()
                 logger.info("default_user_created", zerodha_id=default_id)
@@ -159,6 +166,7 @@ class UserConfigService:
                     "api_key": _encrypt(uc.api_key),
                     "api_secret": _encrypt(uc.api_secret),
                     "email": uc.email,
+                    "access_level": uc.access_level,
                 }
             with open(USER_CONFIG_FILE, "w") as f:
                 json.dump(data, f, indent=2)
@@ -172,11 +180,24 @@ class UserConfigService:
     def validate_user(self, zerodha_id: str) -> bool:
         return zerodha_id.upper() in self._users
 
-    def add_user(self, zerodha_id: str, api_key: str, api_secret: str, email: str = "") -> UserConfig:
-        uc = UserConfig(zerodha_id=zerodha_id, api_key=api_key, api_secret=api_secret, email=email)
+    def add_user(self, zerodha_id: str, api_key: str, api_secret: str, email: str = "",
+                 access_level: str = NEW_ACCOUNT_DEFAULT) -> UserConfig:
+        uc = UserConfig(zerodha_id=zerodha_id, api_key=api_key, api_secret=api_secret, email=email,
+                        access_level=normalize_level(access_level, NEW_ACCOUNT_DEFAULT))
         self._users[uc.zerodha_id] = uc
         self._save()
-        logger.info("user_added", zerodha_id=uc.zerodha_id)
+        logger.info("user_added", zerodha_id=uc.zerodha_id, access_level=uc.access_level)
+        return uc
+
+    def set_access_level(self, zerodha_id: str, access_level: str) -> UserConfig:
+        uc = self._users.get(zerodha_id.upper())
+        if uc is None:
+            raise KeyError(zerodha_id)
+        if access_level not in LEVELS:
+            raise ValueError(f"access level must be one of {', '.join(LEVELS)}")
+        uc.access_level = access_level
+        self._save()
+        logger.info("user_access_changed", zerodha_id=uc.zerodha_id, access_level=access_level)
         return uc
 
     def remove_user(self, zerodha_id: str) -> bool:
@@ -188,4 +209,5 @@ class UserConfigService:
         return False
 
     def list_users(self) -> list[dict[str, str]]:
-        return [{"zerodha_id": uc.zerodha_id, "email": uc.email} for uc in self._users.values()]
+        return [{"zerodha_id": uc.zerodha_id, "email": uc.email, "access_level": uc.access_level}
+                for uc in self._users.values()]

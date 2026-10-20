@@ -88,10 +88,14 @@ def main() -> None:
         table(rows, ["user", "kind", "first_day", "last_day", "days_active", "requests"])
 
     elif args.report == "contacts":
-        rows = conn.execute("""
-            SELECT id, ts, name, email, phone, trading_id, source, emailed, status, message
+        # read-only: a database the app has not migrated yet lacks the newer columns
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(contact_requests)")}
+        newer = ", ".join(c if c in cols else f"'' AS {c}" for c in ("access_level", "platform"))
+        rows = conn.execute(f"""
+            SELECT id, ts, name, email, phone, trading_id, {newer}, source, emailed, status, message
             FROM contact_requests ORDER BY id DESC""").fetchall()
-        headers = ["id", "time", "name", "email", "phone", "trading_id", "source", "emailed", "status", "message"]
+        headers = ["id", "time", "name", "email", "phone", "trading_id", "access", "platform", "source",
+                   "emailed", "status", "message"]
         if args.csv:
             # Visitors typed these values: stop spreadsheets running them as formulas.
             def safe(v: object) -> object:

@@ -9,6 +9,40 @@ async function responseError(res) {
     }
 }
 
+// ── Account access level (view | trade | agentic; enforced by the server) ──
+// Controls tagged data-requires="trade|agentic" are dimmed and explain
+// themselves when the account's level is lower. The server refuses the
+// action regardless - this only saves a confusing round trip.
+const ACCESS = { level: null, label: '' };
+const ACCESS_RANK = { view: 0, trade: 1, agentic: 2 };
+const ACCESS_NAMES = { trade: 'Trading', agentic: 'Agentic trading' };
+
+function accessAllows(required) {
+    if (!ACCESS.level || !required) return true;
+    return ACCESS_RANK[ACCESS.level] >= ACCESS_RANK[required];
+}
+
+function setAccess(level, label) {
+    if (!level || ACCESS.level === level) return;
+    ACCESS.level = level;
+    ACCESS.label = label || level;
+    document.body.dataset.access = level;
+    const badge = document.getElementById('t-access');
+    if (badge) {
+        badge.hidden = false;
+        badge.textContent = `ACCESS: ${ACCESS.label.toUpperCase()}`;
+        badge.className = `t-access t-access-${level}`;
+    }
+}
+
+document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-requires]');
+    if (!el || accessAllows(el.dataset.requires)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    showToast(`This needs ${ACCESS_NAMES[el.dataset.requires]} access - your account has ${ACCESS.label} access.`, 'error');
+}, true);
+
 const API = {
     async get(url) {
         const res = await fetch(url);
@@ -302,6 +336,7 @@ async function loadStatus() {
 }
 
 function updateStatusBadge(data) {
+    setAccess(data.access_level, data.access_label);
     const statusBadge = document.getElementById('status-badge');
     const btnLogin = document.getElementById('btn-login');
     const btnStart = document.getElementById('btn-start');
@@ -315,6 +350,17 @@ function updateStatusBadge(data) {
         btnStop.style.display = data.running ? '' : 'none';
         return;
     }
+    if (data.market_feed === 'shared') {
+        // View-only: live market data from the shared feed, no account of their own linked yet.
+        statusBadge.textContent = data.running ? 'MARKET · LIVE' : 'MARKET VIEW';
+        statusBadge.className = 'status-badge status-connected';
+        statusBadge.title = 'Live market data, view only - connect your own trading account to see your portfolio.';
+        btnLogin.style.display = '';
+        btnStart.style.display = data.running ? 'none' : '';
+        btnStop.style.display = data.running ? '' : 'none';
+        return;
+    }
+    statusBadge.title = '';
     if (data.running) {
         statusBadge.textContent = 'LIVE';
         statusBadge.className = 'status-badge status-live';
@@ -492,7 +538,7 @@ function updateStrategiesList(strategies) {
                 </span>
             </div>
             <div class="strategy-actions">
-                <button class="btn btn-sm btn-outline" onclick="toggleStrategy('${s.name}')">
+                <button class="btn btn-sm btn-outline" ${s.is_active ? '' : 'data-requires="agentic"'} onclick="toggleStrategy('${s.name}')">
                     ${s.is_active ? 'Pause' : 'Resume'}
                 </button>
                 <button class="btn btn-sm btn-danger" onclick="removeStrategy('${s.name}')">Remove</button>
@@ -1186,7 +1232,7 @@ function renderOIStrategyScanResult(data, index) {
             <td>${s.entry_price ? s.entry_price.toFixed(1) : '--'}</td>
             <td>${s.stop_loss ? s.stop_loss.toFixed(1) : '--'}</td>
             <td>${s.target ? s.target.toFixed(1) : '--'}</td>
-            <td><button class="btn btn-sm btn-primary" onclick="executeOISignal('${s.id}')">Execute</button></td>
+            <td><button class="btn btn-sm btn-primary" data-requires="trade" onclick="executeOISignal('${s.id}')">Execute</button></td>
         </tr>`;
     }).join('');
 }
@@ -6426,7 +6472,7 @@ function displayHealthReport(health, prefix) {
     if (ready && prefix === 'bt') {
         const stratName = document.getElementById('bt-strategy') ? document.getElementById('bt-strategy').value : '';
         if (overallEl) overallEl.innerHTML +=
-            '<div style="margin-bottom:8px"><button class="btn btn-sm btn-primary" onclick="promoteBacktestToLive(\'' + stratName + '\')">⬆ Add to Live Strategies</button>' +
+            '<div style="margin-bottom:8px"><button class="btn btn-sm btn-primary" data-requires="agentic" onclick="promoteBacktestToLive(\'' + stratName + '\')">⬆ Add to Live Strategies</button>' +
             '<span style="font-size:11px;color:var(--text-muted);margin-left:8px">Runs on live ticks once live trading is on; appears in the Strategies tab</span></div>';
     }
 

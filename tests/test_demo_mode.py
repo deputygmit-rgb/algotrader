@@ -25,6 +25,7 @@ def _isolated(tmp_path, monkeypatch):
         def get_service(self, zerodha_id, api_key="", api_secret="", demo=False):
             svc = self.services.setdefault(zerodha_id, SimpleNamespace(
                 zerodha_id=zerodha_id, is_demo=demo, is_authenticated=demo, is_running=False,
+                access_level="agentic",
                 get_strategies_info=lambda: [], get_risk_summary=lambda: {}, get_journal_summary=lambda: {},
                 get_execution_summary=lambda: {}, get_live_ticks=lambda: {},
                 get_login_url=lambda: "https://kite.example/login",

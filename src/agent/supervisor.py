@@ -137,13 +137,15 @@ class TradingServiceSupervisorAgent:
     def __init__(self) -> None:
         self._agents: dict[str, TradingServiceAgent] = {}
 
-    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "", demo: bool = False) -> "TradingService":
+    def get_service(self, zerodha_id: str, api_key: str = "", api_secret: str = "", demo: bool = False,
+                    shared_market: bool = False) -> "TradingService":
         from src.api.service import TradingService  # local import avoids circular import at load time
 
         uid = zerodha_id.upper()
         agent = self._agents.get(uid)
         if agent is None:
-            service = TradingService(api_key=api_key, api_secret=api_secret, zerodha_id=uid, demo=demo)
+            service = TradingService(api_key=api_key, api_secret=api_secret, zerodha_id=uid, demo=demo,
+                                     shared_market=shared_market)
             agent = TradingServiceAgent(uid, service)
             agent.start_supervision()
             self._agents[uid] = agent

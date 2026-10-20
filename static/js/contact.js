@@ -14,6 +14,9 @@
             const data = Object.fromEntries(new FormData(form).entries());
             if (!String(data.name || '').trim()) return say('error', 'Please tell us your name.');
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(data.email || '').trim())) return say('error', 'Please enter a valid email address.');
+            if (!data.access_level) return say('error', 'Please choose the access you want.');
+            if (!String(data.platform || '').trim()) return say('error', 'Please tell us which broker you trade with.');
+            if (data.confirm !== 'yes') return say('error', 'Please confirm the access and platform you selected.');
             data.source = form.dataset.contactForm || 'landing';
             button?.setAttribute('aria-busy', 'true');
             if (button) button.disabled = true;

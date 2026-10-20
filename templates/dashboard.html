@@ -20,12 +20,13 @@
         <div class="header-right">
             <span class="t-head-meta"><span data-t-session></span><span class="t-clock" data-t-clock></span></span>
             <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
+            <span id="t-access" class="t-access" hidden title="Your account's access level"></span>
             <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and financial reports (Alt+P)">MASK: ON</button>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
             <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
             <button id="btn-stop" class="btn btn-danger btn-sm" style="display:none" onclick="stopLive()">Stop Live</button>
-            <button class="btn btn-primary btn-sm" onclick="showModal('modal-add-strategy')">+ Strategy</button>
+            <button class="btn btn-primary btn-sm" data-requires="agentic" onclick="showModal('modal-add-strategy')">+ Strategy</button>
             {% if demo_kind == 'public' %}
             <button class="btn btn-outline btn-sm" onclick="logoutUser()" style="margin-left:8px;border-color:#ff5252;color:#ff5252">Exit demo</button>
             {% else %}
@@ -2569,7 +2570,16 @@
                     <label>Phone (optional)<input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
                     <label>Trading ID (optional)<input name="trading_id" type="text" maxlength="10" style="text-transform:uppercase"></label>
                 </div>
+                <fieldset class="t-access">
+                    <legend>What access do you want?</legend>
+                    <label class="t-choice"><input type="radio" name="access_level" value="view" required><span><b>View live trading</b><small>Read-only dashboards, signals and analysis. No orders are placed.</small></span></label>
+                    <label class="t-choice"><input type="radio" name="access_level" value="trade"><span><b>Trading</b><small>Place and manage your own orders through your broker.</small></span></label>
+                    <label class="t-choice"><input type="radio" name="access_level" value="agentic"><span><b>Agentic trading</b><small>AI agents place trades for you, within limits you set.</small></span></label>
+                </fieldset>
+                <label>Which broker do you trade with?<input name="platform" type="text" maxlength="60" required placeholder="Your broker's name"></label>
+                <p class="t-contact-note">We'll confirm whether your broker can be connected before setting anything up.</p>
                 <label>How do you trade? (optional)<textarea name="message" rows="3" maxlength="1000"></textarea></label>
+                <label class="t-confirm"><input type="checkbox" name="confirm" value="yes" required> I confirm the access and trading platform selected above.</label>
                 <label class="t-contact-trap" aria-hidden="true">Website<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
                 <button class="btn btn-primary" type="submit">Send request</button>
                 <div class="contact-status" data-contact-status role="status"></div>
@@ -2620,7 +2630,7 @@
             </div>
             <div style="display:flex;gap:8px;justify-content:flex-end">
                 <button class="btn btn-outline" onclick="hideModal('modal-add-strategy')">Cancel</button>
-                <button class="btn btn-primary" onclick="addStrategy()">Add Strategy</button>
+                <button class="btn btn-primary" data-requires="agentic" onclick="addStrategy()">Add Strategy</button>
             </div>
         </div>
     </div>
@@ -2706,7 +2716,7 @@
                 </div>
                 <p style="font-size:11px;color:#ff9100;margin-bottom:8px">This places a REAL broker order (real money) with ATR-based protective stop-loss/target orders.</p>
                 <div style="display:flex;gap:8px;justify-content:flex-end">
-                    <button class="btn btn-primary" style="background:#ff9100" onclick="confirmExecuteStockSignal()">Execute Real Order</button>
+                    <button class="btn btn-primary" style="background:#ff9100" data-requires="trade" onclick="confirmExecuteStockSignal()">Execute Real Order</button>
                 </div>
             </div>
         </div>

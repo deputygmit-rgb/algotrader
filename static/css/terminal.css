@@ -115,6 +115,16 @@ button, input, select, textarea { font-family: inherit; }
 }
 .t-contact input:focus, .t-contact textarea:focus { outline: none; border-color: var(--t-c); }
 .t-contact-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+.t-access { margin: 0; padding: 0; border: 0; display: grid; gap: 6px; }
+.t-access legend { margin-bottom: 4px; color: var(--t-dim); font-size: 11px; letter-spacing: .04em; }
+.t-contact .t-choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--t-line-2); cursor: pointer; }
+.t-contact .t-choice:hover, .t-contact .t-choice:has(input:checked) { border-color: var(--t-c); }
+.t-choice input { margin-top: 2px; accent-color: var(--t-c); }
+.t-choice b { display: block; color: var(--t-txt); font-size: 12px; letter-spacing: 0; }
+.t-choice small { display: block; color: var(--t-dim); font-size: 11px; line-height: 1.45; letter-spacing: 0; }
+.t-contact-note { margin: 0; color: var(--t-mute); font-size: 11px; }
+.t-contact .t-confirm { display: flex; gap: 8px; align-items: flex-start; color: var(--t-txt); font-size: 12px; letter-spacing: 0; cursor: pointer; }
+.t-confirm input { margin-top: 2px; accent-color: var(--t-c); }
 .contact-status { min-height: 18px; font-size: 12px; }
 .contact-status.error { color: var(--t-r); }
 .contact-status.success { color: var(--t-g); }
@@ -529,3 +539,10 @@ tr.sector-detail td { background: rgba(56,214,255,.03) !important; padding: 8px 
 @keyframes ag-fresh { from { background: rgba(56,214,255,.16); } to { background: transparent; } }
 .ag-jump { position: absolute; right: 18px; bottom: 12px; background: var(--t-c); color: #031018; border: 0; border-radius: 3px;
     font: 800 10px var(--t-font); letter-spacing: 1.5px; padding: 6px 10px; cursor: pointer; box-shadow: 0 4px 18px rgba(56,214,255,.35); }
+
+/* ── access level ─────────────────────────────────────────────── */
+.t-access { padding: 3px 8px; border: 1px solid var(--t-line-2); border-radius: 3px; font: 700 10px var(--t-font); letter-spacing: 1px; color: var(--t-dim); }
+.t-access-trade { border-color: var(--t-c); color: var(--t-c); }
+.t-access-agentic { border-color: var(--t-g); color: var(--t-g); }
+body[data-access="view"] [data-requires],
+body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-allowed; }

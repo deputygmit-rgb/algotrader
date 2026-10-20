@@ -136,6 +136,9 @@ const DayTrade = (() => {
         $('dt-auto-short').checked = (a.sides || []).includes('SHORT');
         $('dt-auto-preflight').checked = a.require_preflight !== false;
         $('dt-auto-toggle').textContent = a.enabled ? 'DISABLE' : 'ENABLE';
+        // switching auto-trade on needs agentic access; switching it off never does
+        if (a.enabled) delete $('dt-auto-toggle').dataset.requires;
+        else $('dt-auto-toggle').dataset.requires = 'agentic';
         $('dt-auto-toggle').classList.toggle('danger', !a.enabled);
         const live = a.live_trading === undefined ? null : a.live_trading;
         $('dt-auto-status').innerHTML = a.enabled

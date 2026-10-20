@@ -33,6 +33,8 @@ from starlette.routing import Match
 from src.agent.mcp_driver import MCPDriverSupervisorAgent
 from src.analysis.nifty_contribution import DemoQuoteSimulator, compute_nifty_contribution
 from src.analysis.fno_flow import DemoFnoSimulator, FlowHistory, compute_fno_flow
+from src.api.shared_market import SharedMarketHub, shared_market_id
+from src.auth.access import AGENTIC, LEVEL_LABELS, VIEW, AccessDenied
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
@@ -82,6 +84,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="VerquoAI", version="2.0", lifespan=_lifespan)
+@app.exception_handler(AccessDenied)
+async def _access_denied(request: Request, exc: AccessDenied) -> JSONResponse:
+    """An action the account's access level does not allow (src/auth/access.py)."""
+    logger.warning("access_denied", path=request.url.path, reason=str(exc))
+    return JSONResponse({"success": False, "error": str(exc), "access_denied": True}, status_code=403)
+
+
 # The market-flow snapshot covers ~500 stocks and is polled every few seconds.
 app.add_middleware(GZipMiddleware, minimum_size=2048)
 
@@ -122,9 +131,34 @@ def _service_for_session(token: str) -> TradingService:
     real = _real_service(zerodha_id)
     if real.is_authenticated:
         return real
+    shared = _shared_market_service(zerodha_id, real)
+    if shared is not None:
+        return shared
     demo_id = user_demo_id(zerodha_id)
     demo_sessions.touch(demo_id)
     return mgr.get_service(demo_id, demo=True)
+
+
+def _shared_market_service(zerodha_id: str, real: TradingService) -> TradingService | None:
+    """View-only accounts read live market data from the shared source account
+    while it is logged in to Zerodha (src/api/shared_market.py)."""
+    if real.access_level != VIEW or not SharedMarketHub.get_instance().available_for(zerodha_id):
+        return None
+    return TradingServiceManager.get_instance().get_service(shared_market_id(zerodha_id), shared_market=True)
+
+
+async def _end_shared_market(zerodha_id: str) -> None:
+    """The user connected their own Zerodha account: drop their shared-market session."""
+    mgr, uid = TradingServiceManager.get_instance(), shared_market_id(zerodha_id)
+    if not mgr.has_service(uid):
+        return
+    svc = mgr.get_service(uid, shared_market=True)
+    try:
+        if svc.is_running:
+            await svc.stop_live()
+    except Exception as e:
+        logger.warning("shared_market_stop_failed", error=str(e))
+    mgr.remove_service(uid)
 
 
 def get_user_service(request: Request) -> TradingService:
@@ -374,6 +408,113 @@ def _clean(value: Any, limit: int, multiline: bool = False) -> str:
     return text.strip()[:limit]
 
 
+# What a requester can ask for (keys are stored; labels go in the emails).
+ACCESS_LEVELS: dict[str, str] = {
+    "view": "View live trading - read-only dashboards, signals and analysis; no orders",
+    "trade": "Trading - place and manage your own orders through your broker",
+    "agentic": "Agentic trading - AI agents place trades for you within limits you set",
+}
+# The broker is asked as free text: public pages do not name the broker we
+# integrate with. This recognises it from what the requester typed.
+SUPPORTED_BROKER = re.compile(r"zerodha|kite", re.IGNORECASE)
+SUPPORTED_BROKER_LABEL = "Zerodha (Kite Connect API)"
+
+
+def _public_url() -> str:
+    """Site address used in outgoing email. Configured, never taken from the request's
+    Host header (which a client controls), so links in our emails cannot be spoofed."""
+    return (os.environ.get("PUBLIC_URL") or "https://verquoai.com").rstrip("/")
+
+
+# What the requester should expect, per access level (what they asked for; the
+# level is confirmed when the workspace is set up).
+_ACCESS_FOLLOW_UP: dict[str, str] = {
+    "view": (
+        "You asked for read-only access: live dashboards, signals, Market Flow, stock\n"
+        "analysis, backtests and paper trading. View-only accounts cannot place real orders -\n"
+        "this is enforced on every order. You can ask to upgrade your access at any time."
+    ),
+    "trade": (
+        "You asked for trading access: you place and manage your own orders through your\n"
+        "broker account. Every order is checked against risk limits (daily loss, position\n"
+        "size, exposure) before it is sent, and the Kill Switch in your workspace stops all\n"
+        "trading at once. Orders placed automatically by strategies or agents need agentic\n"
+        "trading access."
+    ),
+    "agentic": (
+        "You asked for agentic trading: AI agents place trades for you. Agentic trading stays\n"
+        "OFF until you switch it on. Before enabling it you set how much to risk per trade, a\n"
+        "maximum order value and a maximum number of orders per day; the agents trade only\n"
+        "within those limits. You can switch it off, or use the Kill Switch, at any time.\n"
+        "We recommend reviewing the strategies' backtest and paper-trading results first."
+    ),
+}
+
+
+def _access_confirmation(contact_id: int, access_level: str, supported: bool) -> str:
+    """Follow-up email to the requester: summary, next steps and what to prepare.
+
+    Fixed text only - none of the visitor's free-text fields - so the form cannot
+    be used to send arbitrary content to someone else's address."""
+    site = _public_url()
+    if supported:
+        prepare = (
+            "WHAT TO PREPARE\n"
+            "  1. An active Zerodha account. Your Trading ID is your Zerodha client ID.\n"
+            "  2. A Kite Connect developer app - create one at https://developers.kite.trade\n"
+            "     (Kite Connect is a paid subscription billed by Zerodha; live market data\n"
+            "     for your workspace comes through it). When creating the app, enter:\n"
+            f"       Redirect URL:  {site}/api/auth/callback\n"
+            f"       Postback URL:  {site}/api/auth/postback   (optional)\n"
+            "  3. Keep the app's API key and API secret ready. Please do NOT send the API\n"
+            "     secret by email - we will arrange a secure way for you to enter it.\n"
+            "  4. Zerodha requires a fresh broker login every trading day: once set up, use\n"
+            "     \"Login to Zerodha\" in your workspace each morning before trading.\n"
+        )
+        platform_line = SUPPORTED_BROKER_LABEL
+    else:
+        prepare = (
+            "ABOUT YOUR BROKER\n"
+            "  We currently connect Zerodha accounts only. We have noted the broker you use and\n"
+            "  will let you know if we add support for it. If you also hold a Zerodha account,\n"
+            "  reply to this email and we can set your workspace up with that.\n"
+        )
+        platform_line = "Another broker - we will confirm whether it can be connected"
+    return (
+        "Hello,\n\n"
+        "Thank you for your interest in VerquoAI. We have received your request.\n\n"
+        "REQUEST SUMMARY\n"
+        f"  Reference:         #{contact_id}\n"
+        f"  Access requested:  {ACCESS_LEVELS[access_level]}\n"
+        f"  Trading platform:  {platform_line}\n\n"
+        "ABOUT THE ACCESS YOU CHOSE\n"
+        + "".join(f"  {line}\n" for line in _ACCESS_FOLLOW_UP[access_level].split("\n"))
+        + "\n"
+        "WHAT HAPPENS NEXT\n"
+        + (
+            "  1. We review your request and reply from this address with your setup details.\n"
+            "  2. We set up your private workspace, linked to your Trading ID.\n"
+            f"  3. You sign in at {site} with your Trading ID and email address. Each sign-in\n"
+            "     uses a one-time code sent to your email - there is no password to remember.\n\n"
+            if supported else
+            "  1. We review your request and reply from this address.\n"
+            "  2. A live workspace needs a broker account we can connect (see below); until then\n"
+            "     the demo below shows everything VerquoAI does.\n\n"
+        )
+        + prepare
+        + "\n"
+        "IN THE MEANTIME\n"
+        f"  - Explore the full workspace on a simulated market: open {site} and choose\n"
+        "    \"Try the demo\" (no account needed, nothing real at stake).\n"
+        "  - Questions? Simply reply to this email.\n\n"
+        f"Please quote #{contact_id} in any reply. If you did not make this request, you can\n"
+        "ignore this email - nothing will be set up without you.\n\n"
+        "Important: trading involves substantial risk, including possible loss of capital.\n"
+        "VerquoAI provides analytical and workflow tools, not investment advice.\n\n"
+        "- The VerquoAI team\n"
+    )
+
+
 @app.post("/contact")
 async def contact(request: Request) -> Any:
     """Access requests from prospective customers (landing page and demo)."""
@@ -395,6 +536,8 @@ async def contact(request: Request) -> Any:
     trading_id = _clean(body.get("trading_id"), 10).upper()
     message = _clean(body.get("message"), 1000, multiline=True)
     source = body.get("source") if body.get("source") in ("landing", "login", "demo") else "landing"
+    access_level = str(body.get("access_level") or "")
+    platform = _clean(body.get("platform"), 60)
     if not name:
         return JSONResponse({"success": False, "message": "Please tell us your name."}, status_code=400)
     if not _EMAIL.match(email):
@@ -403,12 +546,21 @@ async def contact(request: Request) -> Any:
         return JSONResponse({"success": False, "message": "Please enter a valid phone number."}, status_code=400)
     if trading_id and not re.fullmatch(r"[A-Z0-9]{4,10}", trading_id):
         return JSONResponse({"success": False, "message": "Trading ID should be 4-10 letters or digits."}, status_code=400)
+    if access_level not in ACCESS_LEVELS:
+        return JSONResponse({"success": False, "message": "Please choose the access you want."}, status_code=400)
+    if not platform:
+        return JSONResponse({"success": False, "message": "Please tell us which broker you trade with."}, status_code=400)
+    if body.get("confirm") not in (True, "yes", "on", "true"):
+        return JSONResponse({"success": False, "message": "Please confirm the access and platform you selected."},
+                            status_code=400)
+    supported = bool(SUPPORTED_BROKER.search(platform))
 
     user_id, kind = _session_identity(request)
     visitor = getattr(request.state, "visitor_id", "")
     contact_id = await asyncio.to_thread(
         metrics.add_contact, name=name, email=email, phone=phone, trading_id=trading_id, message=message,
         source=source, visitor_id=visitor, user_id=user_id, ip=ip,
+        access_level=access_level, platform=platform,
     )
     _track(request, "contact_submitted", source=source)
     logger.info("contact_request_received", contact_id=contact_id, source=source)
@@ -418,13 +570,24 @@ async def contact(request: Request) -> Any:
         text = (
             f"New access request #{contact_id} from the {source}{' (demo session)' if kind == 'demo' else ''}.\n\n"
             f"Name:       {name}\nEmail:      {email}\nPhone:      {phone or '-'}\nTrading ID: {trading_id or '-'}\n\n"
+            f"Access requested: {ACCESS_LEVELS[access_level]}\n"
+            f"Trading platform: {platform}"
+            + (" - supported\n" if supported else " - NOT supported yet (only Zerodha accounts can be connected)\n")
+            + "  The requester confirmed both choices.\n\n"
             f"Message:\n{message or '-'}\n\n"
             "To give them access, run on the server:\n"
-            f"  sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add {trading_id or '<TRADING_ID>'} {email}\n"
+            f"  sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add {trading_id or '<TRADING_ID>'} {email} --access {access_level}\n"
             "  sudo systemctl restart verquoai\n"
         )
         if await asyncio.to_thread(send_mail, admin, f"VerquoAI access request: {name}", text, email):
             await asyncio.to_thread(metrics.mark_emailed, contact_id)
+    # tell the requester what they asked for, so they have a record of it
+    copied = await asyncio.to_thread(
+        send_mail, email, f"Your VerquoAI access request #{contact_id} - next steps",
+        _access_confirmation(contact_id, access_level, supported), admin or None,
+    )
+    if copied:
+        return {**thanks, "message": "Thanks! We've emailed you a copy of your request and will get back to you."}
     return thanks
 
 
@@ -611,6 +774,11 @@ def _static_version(rel_path: str) -> str:
         return "1"
 
 
+# nginx caches /static for days: templates version their assets with
+# {{ static_version('js/x.js') }} so a deploy reaches browsers immediately.
+templates.env.globals["static_version"] = _static_version
+
+
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
@@ -676,8 +844,12 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
     result = {
         "authenticated": svc.is_authenticated,
         "demo": demo_kind(svc),
+        # live prices from the shared feed; never says whose account serves it
+        "market_feed": "shared" if getattr(svc, "is_shared_market", False) else "",
         "running": svc.is_running,
         "zerodha_id": svc.zerodha_id,
+        "access_level": svc.access_level,
+        "access_label": LEVEL_LABELS[svc.access_level],
         "strategies": svc.get_strategies_info(),
         "risk": svc.get_risk_summary(),
         "journal": svc.get_journal_summary(),
@@ -732,6 +904,7 @@ async def auth_callback(request: Request):
         svc = get_real_user_service(request)
         await svc.authenticate(request_token)
         await demo_sessions.end(user_demo_id(svc.zerodha_id))
+        await _end_shared_market(svc.zerodha_id)
         _track(request, "account_linked")
         mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/app?auth=success")
@@ -753,6 +926,7 @@ async def auth_callback_bare(request: Request):
         svc = get_real_user_service(request)
         await svc.authenticate(request_token)
         await demo_sessions.end(user_demo_id(svc.zerodha_id))
+        await _end_shared_market(svc.zerodha_id)
         _track(request, "account_linked")
         mcp_driver.wake_agent(svc.zerodha_id)
         return RedirectResponse("/app?auth=success")
@@ -897,7 +1071,10 @@ async def add_strategy(request: Request) -> dict[str, Any]:
     body = await request.json()
     name = body.get("name", "")
     params = body.get("params")
-    return get_user_service(request).add_strategy(name, params)
+    svc = get_user_service(request)
+    # live strategies place orders on their own
+    svc.require_access(AGENTIC, "Running a strategy in live trading")
+    return svc.add_strategy(name, params)
 
 
 @app.post("/api/strategies/promote-from-backtest")
@@ -905,7 +1082,9 @@ async def promote_strategy_from_backtest(request: Request) -> dict[str, Any]:
     body = await request.json()
     name = body.get("name", "")
     params = body.get("params")
-    return await get_user_service(request).promote_backtest_to_live(name, params)
+    svc = get_user_service(request)
+    svc.require_access(AGENTIC, "Running a strategy in live trading")
+    return await svc.promote_backtest_to_live(name, params)
 
 
 @app.post("/api/strategies/remove")
@@ -917,7 +1096,12 @@ async def remove_strategy(request: Request) -> dict[str, Any]:
 @app.post("/api/strategies/toggle")
 async def toggle_strategy(request: Request) -> dict[str, Any]:
     body = await request.json()
-    return get_user_service(request).toggle_strategy(body.get("name", ""))
+    svc = get_user_service(request)
+    name = body.get("name", "")
+    # pausing is always allowed; resuming lets the strategy trade again
+    if any(s.name == name and not s.is_active for s in svc._strategies):
+        svc.require_access(AGENTIC, "Resuming a live strategy")
+    return svc.toggle_strategy(name)
 
 
 @app.get("/api/instruments/search")
@@ -1868,6 +2052,8 @@ async def set_day_trade_autotrade(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object expected")
     svc = get_user_service(request)
+    if body.get("enabled") is True:
+        svc.require_access(AGENTIC, "Auto-trading the Day Trade board")
     # Switching auto-trade off is always allowed; anything else can send orders.
     if body != {"enabled": False}:
         _require_step_up(request, svc)

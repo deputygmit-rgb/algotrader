@@ -170,7 +170,12 @@ def _execute_fixture(drop_last=False):
     async def noop(*a, **k):
         return None
 
+    from src.auth.user_config import UserConfigService
+
     svc = TradingService.__new__(TradingService)
+    svc.is_demo, svc._zerodha_id = False, "AB1234"          # an account with trading access
+    patch.object(UserConfigService, "get_instance",
+                 staticmethod(lambda: SimpleNamespace(get_user=lambda z: SimpleNamespace(access_level="trade")))).start()
     svc._execution = Exec()
     svc._client = SimpleNamespace(get_historical_data=lambda **kw: asyncio.sleep(0, candles))
     svc.resolve_instrument_token = lambda s, e: asyncio.sleep(0, 7)
@@ -181,6 +186,7 @@ def _execute_fixture(drop_last=False):
     svc._resolve_strategy = lambda name, params=None: strategy
     with patch("src.api.service.market_open", return_value=True):
         result = asyncio.run(svc.execute_stock_strategy_signal("ABC", "scripted", "5minute"))
+    patch.stopall()
     return result, executed
 
 

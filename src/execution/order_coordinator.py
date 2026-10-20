@@ -37,6 +37,7 @@ from src.data.models import (
     TransactionType,
 )
 from src.utils.logger import get_logger
+from src.auth.access import current_origin, order_origin
 
 logger = get_logger(__name__)
 
@@ -354,6 +355,9 @@ class QueuedOrder:
     priority: int = 0  # Lower = higher priority. 0=hedge, 1=risk, 2=normal
     enqueued_at: float = field(default_factory=time.time)
     signal: Optional[Signal] = None
+    # where the order came from (manual / risk / automated); the worker that
+    # sends it runs in another task, so the origin travels with the order
+    origin: str = field(default_factory=current_origin)
 
 
 class ExecutionQueue:
@@ -462,7 +466,8 @@ class ExecutionQueue:
 
                 # Place order
                 try:
-                    order_id = await self._client.place_order(queued.order)
+                    with order_origin(queued.origin):
+                        order_id = await self._client.place_order(queued.order)
                     queued.future.set_result(order_id)
                 except Exception as e:
                     if not queued.future.done():
