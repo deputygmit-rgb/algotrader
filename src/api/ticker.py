@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import struct
 from datetime import datetime
 from typing import Any, Callable, Coroutine, Optional
 
+import certifi
 import websockets
 from websockets.asyncio.client import ClientConnection as WebSocketClientProtocol
 from websockets.protocol import State
@@ -64,17 +66,35 @@ class KiteTicker:
     def get_cached_tick(self, token: int) -> Optional[Tick]:
         return self._tick_cache.get(token)
 
+    @staticmethod
+    def _ssl_context() -> ssl.SSLContext:
+        """TLS for the ticker with certifi's CA bundle, as the REST client uses.
+
+        Without it the WebSocket fell back to the system store, which the
+        python.org builds on macOS ship empty: every connect failed with
+        CERTIFICATE_VERIFY_FAILED and strategies never received a price.
+        Verification is never switched off here (DISABLE_SSL_VERIFY is not
+        honoured): the connection carries the access token.
+        """
+        return ssl.create_default_context(cafile=certifi.where())
+
     async def connect(self) -> None:
+        """Connect and keep the feed up while running: retries back off to one a minute
+        and never stop (a feed that gave up after 50 tries left live trading running
+        without prices); a long outage is logged once as critical."""
         self._running = True
-        while self._running and self._reconnect_attempts < self._max_reconnect_attempts:
+        long_outage_logged = False
+        while self._running:
             try:
                 ws_url = (
                     f"{self._settings.kite_ws_url}"
                     f"?api_key={self._auth.api_key}"
                     f"&access_token={self._auth.access_token}"
                 )
-                self._ws = await websockets.connect(ws_url, ping_interval=20, ping_timeout=10)
+                self._ws = await websockets.connect(ws_url, ping_interval=20, ping_timeout=10,
+                                                    ssl=self._ssl_context())
                 self._reconnect_attempts = 0
+                long_outage_logged = False
 
                 logger.info("websocket_connected")
                 if self.on_connect:
@@ -96,6 +116,10 @@ class KiteTicker:
 
             if self._running:
                 self._reconnect_attempts += 1
+                if self._reconnect_attempts >= self._max_reconnect_attempts and not long_outage_logged:
+                    long_outage_logged = True
+                    logger.critical("websocket_feed_down", attempts=self._reconnect_attempts,
+                                    note="still retrying every 60s; strategies get no prices until it reconnects")
                 delay = min(self._reconnect_delay * self._reconnect_attempts, 60)
                 logger.info("websocket_reconnecting", attempt=self._reconnect_attempts, delay=delay)
                 await asyncio.sleep(delay)

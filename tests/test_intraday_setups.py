@@ -181,3 +181,10 @@ def test_session_stats_leave_out_replayed_signals():
 def test_empty_input_is_safe():
     assert analyze_session([], atr=2.0)["signals"] == []
     assert analyze_session(bars_from(OPENING), atr=None)["signals"] == []
+
+
+def test_the_entry_cut_off_applies_to_the_signal_time():
+    # breakout bar starting 14:45 closes at 14:50 - after the 14:45 cut-off (the board would not trade it)
+    assert analyze_session(bars_from(OPENING + [BREAKOUT], start=datetime(2026, 10, 16, 14, 30)), atr=ATR)["signals"] == []
+    early = analyze_session(bars_from(OPENING + [BREAKOUT], start=datetime(2026, 10, 16, 14, 25)), atr=ATR)["signals"]
+    assert [s["time"] for s in early] == ["14:45"]

@@ -271,7 +271,8 @@ def analyze_session(
             if trade["status"] not in OPEN_STATUSES:
                 trade = None
                 last_exit_index = i
-        if trade or _hhmm(b) > LAST_ENTRY_TIME or len(signals) >= MAX_TRADES_PER_DAY:
+        # the cut-off applies to the signal time (the bar's close), as the board's auto-trade does
+        if trade or _bar_close_time(b) > LAST_ENTRY_TIME or len(signals) >= MAX_TRADES_PER_DAY:
             continue
         if last_exit_index is not None and i - last_exit_index < COOLDOWN_BARS:
             continue
