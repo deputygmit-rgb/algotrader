@@ -24,7 +24,6 @@ JournalStore tables.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import sqlite3
 import threading
@@ -32,8 +31,9 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date, timedelta
 from typing import Any, Optional
+from src.utils.logger import get_logger
 
-logger = logging.getLogger("trade_data_store")
+logger = get_logger("trade_data_store")
 
 _DB_PATH = os.path.join("data", "journal.db")
 

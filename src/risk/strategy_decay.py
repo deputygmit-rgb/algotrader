@@ -19,13 +19,13 @@ event is recorded.
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import Any, Optional, Callable
+from src.utils.logger import get_logger
 
-logger = logging.getLogger("strategy_decay")
+logger = get_logger("strategy_decay")
 
 
 @dataclass

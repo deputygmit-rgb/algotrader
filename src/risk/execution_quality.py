@@ -15,13 +15,13 @@ Scores are stored per trade in the journal store for later analytics.
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any, Optional
+from src.utils.logger import get_logger
 
-logger = logging.getLogger("execution_quality")
+logger = get_logger("execution_quality")
 
 
 @dataclass

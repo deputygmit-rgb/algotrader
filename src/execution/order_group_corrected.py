@@ -11,7 +11,6 @@ This module implements production-ready multi-leg execution with:
 
 import asyncio
 import json
-import logging
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -30,8 +29,9 @@ from src.data.models import (
     Signal,
     TransactionType,
 )
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def _get_latest_order_status(client, order_id: str) -> dict:

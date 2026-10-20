@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# Before anything reads the clock or logs: run on exchange time (IST) and
+# configure logging. Under systemd uvicorn imports this module directly, so
+# main.py's setup is not on that path.
+from src.utils.clock import use_exchange_timezone
+from src.utils.logger import setup_logging
+
+use_exchange_timezone()
+setup_logging()
+
 import asyncio
 import hashlib
 import hmac

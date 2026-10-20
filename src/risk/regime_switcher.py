@@ -22,13 +22,13 @@ through the OI → FNO bridge or F&O builder.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
+from src.utils.logger import get_logger
 
-logger = logging.getLogger("regime_switcher")
+logger = get_logger("regime_switcher")
 
 
 class MarketDirection(str, Enum):

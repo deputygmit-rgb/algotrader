@@ -214,6 +214,10 @@ class TradingService:
             self._day_trade.load_state(self._board.load(datetime.now()), datetime.now())
         except Exception as e:
             logger.warning("board_restore_failed", error=str(e))
+        # live strategies survive restarts and deploys (data/users/<id>/live_strategies.json)
+        self._strategy_keys: dict[str, str] = {}      # strategy.name -> registry name it was added under
+        self._restoring_strategies = False
+        self._restore_strategies()
 
     @staticmethod
     def _task_exception_handler(task: asyncio.Task) -> None:
@@ -968,6 +972,8 @@ class TradingService:
             if iv == interval:
                 strategy.update_bar_data(token, df)
         self._strategies.append(strategy)
+        self._strategy_keys[strategy.name] = name
+        self._save_strategies()
         if self._running and self._subscribed_tokens and not any(iv == interval for iv, _ in self._live_bars):
             try:
                 task = asyncio.get_running_loop().create_task(
@@ -1073,6 +1079,8 @@ class TradingService:
 
     def remove_strategy(self, name: str) -> dict[str, Any]:
         self._strategies = [s for s in self._strategies if s.name != name]
+        self._strategy_keys.pop(name, None)
+        self._save_strategies()
         return {"success": True, "removed": name}
 
     def toggle_strategy(self, name: str) -> dict[str, Any]:
@@ -1082,14 +1090,77 @@ class TradingService:
                     s.deactivate()
                 else:
                     s.activate()
+                self._save_strategies()
                 return {"name": name, "is_active": s.is_active}
         return {"error": f"Strategy {name} not found"}
+
+    # ── live strategy persistence ─────────────────────────────────
+    def _strategies_file(self) -> str | None:
+        """Per-user file holding the live strategy list (None for demo / anonymous services)."""
+        if self.is_demo or not self._zerodha_id:
+            return None
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return os.path.join(base, "data", "users", self._zerodha_id.upper(), "live_strategies.json")
+
+    def _save_strategies(self) -> None:
+        path = self._strategies_file()
+        if not path or self._restoring_strategies:
+            return
+        records = [
+            {"name": self._strategy_keys.get(s.name, s.name), "params": s.params, "is_active": s.is_active}
+            for s in self._strategies
+        ]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(records, f, indent=2, default=str)
+            os.replace(tmp, path)        # atomic: a crash never leaves a half-written list
+        except OSError as e:
+            logger.warning("strategies_save_failed", error=str(e))
+
+    def _restore_strategies(self) -> None:
+        path = self._strategies_file()
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                records = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("strategies_restore_failed", error=str(e))
+            return
+        self._restoring_strategies = True
+        restored = []
+        try:
+            for rec in records if isinstance(records, list) else []:
+                result = self.add_strategy(rec.get("name", ""), rec.get("params") or {})
+                if "error" in result:
+                    logger.warning("strategy_restore_skipped", name=rec.get("name"), error=result["error"])
+                    continue
+                if rec.get("is_active") is False:
+                    self._strategies[-1].deactivate()
+                restored.append(result.get("name"))
+        finally:
+            self._restoring_strategies = False
+        logger.info("strategies_restored", count=len(restored), names=restored)
+
+    def _strategy_tokens(self) -> list[int]:
+        """Instruments live strategies were set up for (promoted strategies carry them
+        in tradingsymbol_map), so a restart subscribes them again."""
+        tokens: set[int] = set()
+        for s in self._strategies:
+            for key in (s.params or {}).get("tradingsymbol_map", {}) or {}:
+                if str(key).isdigit():
+                    tokens.add(int(key))
+        return sorted(tokens)
 
     async def start_live(self, tokens: list[int], mode: str = "quote") -> dict[str, Any]:
         if self._running:
             return {"error": "Already running"}
 
         self._running = True
+        # also the instruments restored strategies were promoted on
+        tokens = list(dict.fromkeys([*tokens, *self._strategy_tokens()]))
         self._subscribed_tokens = tokens
 
         self._ticker.on_ticks = self._on_ticks
