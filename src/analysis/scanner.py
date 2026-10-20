@@ -199,6 +199,25 @@ class StockScanner:
     # Main Scan Engine
     # ────────────────────────────────────────────────────────────
 
+    def _analyse(self, symbol: str, token: int, sector: str, df: pd.DataFrame) -> dict[str, Any]:
+        """Indicators and screens for one stock. CPU-bound: callers run it in a
+        worker thread so the event loop keeps serving requests."""
+        indicators = compute_all_indicators(df, self._benchmark_data)
+        super_perf = self._check_super_performance(df, indicators)
+        result = {
+            "symbol": symbol,
+            "token": token,
+            "sector": sector,
+            **indicators,
+            "super_performance": super_perf,
+            "triggers": self._detect_triggers(df, indicators),
+            "accumulation": self._check_accumulation(df, indicators),
+            "trend_score": self._compute_trend_score(indicators, super_perf),
+            "analyzed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        # numpy types and NaN values -> JSON-safe
+        return _sanitize_numpy(result)
+
     async def run_scan(self, client: Any, symbols: Optional[list[str]] = None,
                         universe: str = "nifty50",
                         on_progress: Optional[Any] = None) -> dict[str, Any]:
@@ -269,6 +288,10 @@ class StockScanner:
             auth_failures = 0
             total_symbols = len(scan_symbols)
             for i, symbol in enumerate(scan_symbols, start=1):
+                # Let other requests run between stocks: history from the demo
+                # market or the cache never waits on I/O, so without this a
+                # 500-stock scan holds the server for its whole length.
+                await asyncio.sleep(0)
                 token = token_map.get(symbol)
                 if not token:
                     logger.warning("token_not_found", symbol=symbol)
@@ -280,36 +303,17 @@ class StockScanner:
                     if df is None or len(df) < 10:
                         continue
 
-                    # Enhanced: pass benchmark data for RS rating
-                    indicators = compute_all_indicators(df, self._benchmark_data)
-                    super_perf = self._check_super_performance(df, indicators)
-                    triggers = self._detect_triggers(df, indicators)
-                    accumulation = self._check_accumulation(df, indicators)
-
-                    result = {
-                        "symbol": symbol,
-                        "token": token,
-                        "sector": SECTOR_MAP.get(symbol, "Other"),
-                        **indicators,
-                        "super_performance": super_perf,
-                        "triggers": triggers,
-                        "accumulation": accumulation,
-                        "trend_score": self._compute_trend_score(indicators, super_perf),
-                        "analyzed_at": datetime.now().isoformat(timespec="seconds"),
-                    }
-
-                    # Sanitize numpy types and NaN values for JSON serialization
-                    result = _sanitize_numpy(result)
-
+                    result = await asyncio.to_thread(
+                        self._analyse, symbol, token, SECTOR_MAP.get(symbol, "Other"), df,
+                    )
                     results[symbol] = result
                     # commit immediately: a scan cancelled part-way keeps what it analysed
                     self._analysis_cache[symbol] = result
                     auth_failures = 0
                     if on_progress:
                         await on_progress(i, total_symbols, symbol)
-                    # No extra sleep here - the KiteClient's AsyncLimiter (rate_limit_historical,
+                    # No throttling sleep here - the KiteClient's AsyncLimiter (rate_limit_historical,
                     # 3 req/s) already throttles every get_historical_data() call centrally.
-                    # An additional fixed sleep here just doubled the total scan time.
 
                 except Exception as e:
                     err_str = str(e)
@@ -448,23 +452,7 @@ class StockScanner:
                 pass
 
             # Run full analysis
-            indicators = compute_all_indicators(df, self._benchmark_data)
-            super_perf = self._check_super_performance(df, indicators)
-            triggers = self._detect_triggers(df, indicators)
-            accumulation = self._check_accumulation(df, indicators)
-
-            result = {
-                "symbol": symbol,
-                "token": token,
-                "sector": get_sector(symbol),
-                **indicators,
-                "super_performance": super_perf,
-                "triggers": triggers,
-                "accumulation": accumulation,
-                "trend_score": self._compute_trend_score(indicators, super_perf),
-                "analyzed_at": datetime.now().isoformat(timespec="seconds"),
-            }
-            result = _sanitize_numpy(result)
+            result = await asyncio.to_thread(self._analyse, symbol, token, get_sector(symbol), df)
             self._analysis_cache[symbol] = result
             return {**self.get_deep_profile(symbol), "cache": "refreshed"}
 

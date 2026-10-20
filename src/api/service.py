@@ -100,6 +100,19 @@ import pandas as pd
 logger = get_logger(__name__)
 
 
+# Demo sessions share one scanner and its recent full-universe reports.
+DEMO_SCAN_REUSE_SECONDS = 170.0          # just under the scanner agent's 180 s cycle
+_DEMO_SCANNER: Optional[StockScanner] = None
+_DEMO_SCAN_REPORTS: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _shared_demo_scanner() -> StockScanner:
+    global _DEMO_SCANNER
+    if _DEMO_SCANNER is None:
+        _DEMO_SCANNER = StockScanner()
+    return _DEMO_SCANNER
+
+
 class TradingService:
     _instance: Optional[TradingService] = None
 
@@ -156,16 +169,19 @@ class TradingService:
         self._options_oi = OptionsOIAnalyzer()
         self._oi_strategy = OIStrategyEngine()
         self._oi_fno_bridge = OIFnOBridge()
-        self._scanner = StockScanner()
+        # Demo sessions all trade the same simulated market, so they share one
+        # scanner (market analysis only - nothing about a session's account).
+        self._scanner = _shared_demo_scanner() if demo else StockScanner()
         # Analysis survives restarts: reload the last snapshot (stocks analysed
         # today are served instantly; older ones refresh on first use).
         self._snapshot_saved_mono = 0.0
         self._snapshot_dirty = False
         self._refresh_tasks: dict[str, asyncio.Task] = {}   # background re-analysis, one per symbol
-        try:
-            self._scanner.load_snapshot(self._analysis_snapshot_path())
-        except Exception as e:
-            logger.warning("scanner_snapshot_load_failed", error=str(e))
+        if not demo:
+            try:
+                self._scanner.load_snapshot(self._analysis_snapshot_path())
+            except Exception as e:
+                logger.warning("scanner_snapshot_load_failed", error=str(e))
         self._strategies: list[BaseStrategy] = []
         # Live strategies run on completed bars built from ticks, each on its own
         # timeframe (see live_interval) so live matches the bars it was tested on.
@@ -2531,12 +2547,34 @@ class TradingService:
             })
 
         self._emit("scan.started", universe=universe)
-        result = await self._scanner.run_scan(
-            self._client, symbols, universe=universe, on_progress=_on_progress
-        )
+        if getattr(self, "is_demo", False):
+            result = await self._shared_demo_scan(symbols, universe, _on_progress)
+        else:
+            result = await self._scanner.run_scan(
+                self._client, symbols, universe=universe, on_progress=_on_progress
+            )
         self._emit("scan.completed", universe=universe, report=result)
         self._snapshot_dirty = True
         await self.persist_analysis(force=True)
+        return result
+
+    async def _shared_demo_scan(self, symbols: Optional[list[str]], universe: str,
+                                on_progress: Any) -> dict[str, Any]:
+        """One scan serves every demo session: wait for a scan another session is
+        running, and reuse a recent full-universe scan instead of repeating it."""
+        scanner = self._scanner
+        while True:
+            if not symbols:
+                hit = _DEMO_SCAN_REPORTS.get(universe)
+                if hit and time.monotonic() - hit[0] < DEMO_SCAN_REUSE_SECONDS:
+                    return hit[1]
+            if not scanner.is_scanning:
+                break
+            await asyncio.sleep(1.0)
+        # nothing awaited between the check and run_scan marking itself busy
+        result = await scanner.run_scan(self._client, symbols, universe=universe, on_progress=on_progress)
+        if not symbols and not result.get("error"):
+            _DEMO_SCAN_REPORTS[universe] = (time.monotonic(), result)
         return result
 
     def get_analysis_results(self, universe: str = "nifty50") -> dict[str, Any]:
@@ -2579,6 +2617,8 @@ class TradingService:
 
     async def persist_analysis(self, min_interval_s: float = 60.0, force: bool = False) -> bool:
         """Write the analysis snapshot in a worker thread, at most every ``min_interval_s``."""
+        if getattr(self, "is_demo", False):
+            return False                 # shared demo analysis: rebuilt by the next scan
         if not (force or self._snapshot_dirty):
             return False
         if not force and time.monotonic() - self._snapshot_saved_mono < min_interval_s:
