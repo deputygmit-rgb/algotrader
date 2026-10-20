@@ -317,7 +317,7 @@ class ScannerStrategy(BaseStrategy):
         close = df["close"]
         p = self.params
 
-        # ── MACD crossover (periods are day-equivalents scaled to timeframe) ──
+        # ── MACD crossover (periods in bars, see BaseStrategy.scale_period) ──
         if len(close) >= self.scale_period(27):
             try:
                 m = compute_macd(
@@ -335,7 +335,7 @@ class ScannerStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # ── EMA 9/21 crossover (day-equivalent spans scaled to timeframe) ──
+        # ── EMA 9/21 crossover (spans in bars) ──
         if len(close) >= self.scale_period(22):
             try:
                 fast = ema(close, self.scale_period(9))
@@ -356,7 +356,7 @@ class ScannerStrategy(BaseStrategy):
             elif rsi_val > p["rsi_overbought"]:
                 triggers.append({"type": "bearish", "signal": f"RSI Overbought ({rsi_val:.1f})", "weight": TRIGGER_WEIGHTS["rsi_overbought"]})
 
-        # ── Golden / Death Cross (50/200 day-equivalent SMAs scaled) ──
+        # ── Golden / Death Cross (50/200-bar SMAs) ──
         if len(close) >= self.scale_period(201):
             try:
                 sma50 = sma(close, self.scale_period(50))

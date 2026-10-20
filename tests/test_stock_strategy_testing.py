@@ -27,16 +27,13 @@ def test_stock_test_runs_only_the_required_timeframe():
     async def token(sym, exch):
         return 7
 
-    async def imported(**kw):
-        fetched.append(kw["interval"])
-
     async def rows(token, interval, days):
+        fetched.append(interval)     # _resolve_ohlcv_rows brings the cache up to date, then reads it
         t0 = datetime(2026, 9, 1, 9, 15)
         return [{"ts": (t0 + timedelta(minutes=5 * i)).isoformat(), "open": 100, "high": 101,
                  "low": 99, "close": 100, "volume": 1000} for i in range(60)]
 
     svc.resolve_instrument_token = token
-    svc.import_historical_data = imported
     svc._resolve_ohlcv_rows = rows
 
     result = asyncio.run(svc.test_stock_strategy("ABC", "day_trade_setups"))

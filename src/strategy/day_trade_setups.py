@@ -21,6 +21,7 @@ import pandas as pd
 
 from src.analysis.intraday_setups import (
     BAR_MINUTES,
+    DEFAULT_SETUPS,
     LAST_EXIT_TIME,
     MAX_HOLD_BARS,
     MAX_RISK_ATR,
@@ -29,7 +30,6 @@ from src.analysis.intraday_setups import (
     SLIPPAGE_PCT,
     TARGET1_R,
     TARGET2_R,
-    SETUP_LABEL,
     analyze_session,
 )
 from src.analysis.money_flow import ATR_PERIOD, average_true_range
@@ -52,6 +52,7 @@ def _daily_context(prior: pd.DataFrame, days: pd.Series) -> dict[str, Any]:
         "atr": average_true_range(candles) if len(candles) >= 2 else None,
         "prev_high": float(daily["high"].iloc[-1]),
         "prev_low": float(daily["low"].iloc[-1]),
+        "prev_close": float(daily["close"].iloc[-1]),
     }
 
 
@@ -122,7 +123,7 @@ class DayTradeSetupsStrategy(BaseStrategy):
             "quantity": 1,
             "exchange": "NSE",
             "product": "MIS",
-            "setups": list(SETUP_LABEL),      # subset to trade, e.g. ["ORB", "PD_BREAK"]
+            "setups": list(DEFAULT_SETUPS),   # subset to trade, e.g. ["ORB", "PD_BREAK"]
             "min_quality": MIN_QUALITY,       # 0-100; same floor as the Day Trade panel
             "tradingsymbol_map": {},
             "use_dma200_filter": False,       # intraday setups; the daily regime filter would starve them
@@ -147,11 +148,11 @@ class DayTradeSetupsStrategy(BaseStrategy):
             return None
         result = analyze_session(
             inputs["bars"], atr=inputs["atr"], prev_high=inputs["prev_high"], prev_low=inputs["prev_low"],
-            min_quality=float(self.params.get("min_quality") or 0),
+            prev_close=inputs["prev_close"], min_quality=float(self.params.get("min_quality") or 0),
+            setups=self.params.get("setups") or None,
         )
         last_bar = inputs["bars"][-1]["t"]
-        allowed = set(self.params.get("setups") or SETUP_LABEL)
-        fresh = [s for s in result["signals"] if s["bar_time"] == last_bar and s["setup"] in allowed]
+        fresh = [s for s in result["signals"] if s["bar_time"] == last_bar]
         if not fresh:
             return None
         s = fresh[-1]
@@ -217,7 +218,8 @@ def build_order_signal(
     )
 
 
-def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESSIONS) -> dict[str, Any]:
+def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESSIONS,
+                    setups: Optional[list[str]] = None) -> dict[str, Any]:
     """Run the setups over every session in ``data`` (5-minute bars, oldest first).
 
     Each session uses only the sessions before it for its daily ATR and
@@ -242,7 +244,8 @@ def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESS
         if not inputs or not inputs["atr"]:
             continue
         result = analyze_session(inputs["bars"], atr=inputs["atr"], prev_high=inputs["prev_high"],
-                                 prev_low=inputs["prev_low"], min_quality=MIN_QUALITY)
+                                 prev_low=inputs["prev_low"], prev_close=inputs["prev_close"],
+                                 min_quality=MIN_QUALITY, setups=setups)
         day_signals = [{**s, "date": day} for s in result["signals"]]
         signals.extend(day_signals)
         days.append({"date": day, **session_stats(day_signals)})

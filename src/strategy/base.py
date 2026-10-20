@@ -45,10 +45,10 @@ class BaseStrategy(abc.ABC):
     def set_timeframe(self, timeframe: str) -> None:
         """Record the bar interval the strategy is being driven on.
 
-        Called by BacktestEngine / PaperTradingEngine / replay with the run's
-        interval so day-based lookback params can be scaled to the active bar
-        interval via scale_period(). Set param ``scale_periods_to_timeframe``
-        to False to disable scaling entirely.
+        Called by BacktestEngine / PaperTradingEngine / replay / live with the
+        run's interval. Lookback periods count bars of this interval (RSI 14 =
+        14 bars on any chart); set param ``scale_periods_to_timeframe`` to True
+        to treat them as days and scale them up on intraday charts instead.
         """
         self._timeframe = (timeframe or "").strip() or None
 
@@ -58,14 +58,19 @@ class BaseStrategy(abc.ABC):
         return self._BARS_PER_DAY.get(tf, 1.0)
 
     def scale_period(self, days: float, min_bars: int = 1) -> int:
-        """Convert a DAY-based lookback into the number of bars for the active
-        interval. On daily/unknown timeframes this returns ``days`` unchanged
-        (rounded), so default behavior is preserved. On intraday it scales up
-        (e.g. 14 "days" of RSI on 60-minute bars -> ~88 hourly bars).
+        """Number of bars for a lookback period on the active interval.
+
+        By default periods are bar counts on every timeframe, the convention
+        indicators are defined in (RSI 14, EMA 9/21, 200-period average).
+        Scaling them as days made intraday tests meaningless: on 5-minute bars
+        EMA 9/21 became 675/1575 bars, a 200-DMA filter needed 15,000 bars and a
+        50-"day" warm-up 3,750 bars, so most strategies produced no signals.
+        With param ``scale_periods_to_timeframe`` True, ``days`` is scaled by
+        bars per day (14 "days" on 60-minute bars -> ~88 bars).
 
         Returns at least ``min_bars``.
         """
-        if not self.params.get("scale_periods_to_timeframe", True):
+        if not self.params.get("scale_periods_to_timeframe", False):
             return max(min_bars, int(round(days)))
         bpd = self._bars_per_day()
         if bpd <= 1.0:
@@ -124,8 +129,8 @@ class BaseStrategy(abc.ABC):
         """
         if not self.params.get("use_dma200_filter", True):
             return True
-        # Scale the 200-DMA lookback to the active timeframe (no-op on daily):
-        # on 60-minute bars the 200-DAY average is ~1250 bars, not 200.
+        # A 200-bar average of the active timeframe (the 200-DMA on daily bars);
+        # with scale_periods_to_timeframe it is the 200-DAY average in bars.
         dma_period = self.scale_period(200)
         if data is None or "close" not in data.columns or len(data) < dma_period:
             logger.debug(

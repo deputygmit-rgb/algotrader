@@ -70,8 +70,7 @@ class RSIStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        # rsi_period is a DAY-equivalent lookback; scale_period converts it to
-        # the right number of bars on the active timeframe (no-op on daily).
+        # rsi_period counts bars of the active timeframe (see BaseStrategy.scale_period)
         period = self.scale_period(self.params["rsi_period"])
         if len(data) < period + 1:
             return None

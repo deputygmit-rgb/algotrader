@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from src.analysis.intraday_setups import MAX_HOLD_BARS
 from src.api.day_trade import DayTradeTracker
 from src.data.backtest import BacktestEngine
 from src.data.bar_aggregator import Bar
@@ -34,7 +35,7 @@ def _session(day, rows):
              "open": o, "high": h, "low": l, "close": c, "volume": v} for i, (o, h, l, c, v) in enumerate(rows)]
 
 
-QUIET = [(100, 102, 98, 100, 1000)] * 6                 # daily range 4 -> ATR 4
+QUIET = [(100, 101.25, 98.75, 100, 1000)] * 6           # daily range 2.5 -> ATR 2.5 (ORB stop inside 0.5-1.2 ATR)
 TODAY_ROWS = [(100, 101, 99, 100.5, 1000), (100.5, 100.9, 99.5, 100, 1000), (100, 100.8, 99.6, 100.4, 1000),
               (100.4, 101.6, 100.3, 101.5, 3000),          # 09:30 bar closes above the opening range
               (101.7, 104, 101.6, 103.8, 1500),            # gaps up 0.2 at the open, reaches T1
@@ -78,7 +79,8 @@ def test_panel_signal_is_the_reference(panel_signal):
 
 def test_replay_matches_panel(panel_signal):
     sig = [x for x in replay_sessions(_data())["signals"] if x["date"] == TODAY][0]
-    for key in ("id", "time", "entry", "stop", "target1", "target2", "status", "exit_time", "gross_r", "result_r"):
+    assert f"ABC:{sig['id']}" == panel_signal["id"]
+    for key in ("time", "entry", "stop", "target1", "target2", "status", "exit_time", "gross_r", "result_r"):
         assert sig[key] == panel_signal[key], key
 
 
@@ -126,7 +128,8 @@ def test_live_bar_close_emits_the_same_signal_and_engine_builds_the_same_levels(
     asyncio.run(svc._on_bar_close("5minute", 7, bar))
     assert len(emitted) == 1
     sig = emitted[0]
-    assert sig.metadata["signal_id"] == panel_signal["id"]
+    # the board prefixes the symbol (ids must be unique across stocks); the engine id is the rest
+    assert f"ABC:{sig.metadata['signal_id']}" == panel_signal["id"]
 
     # live fill = the next bar's open (+ slippage); the engine rebuilds the plan from it
     fill = panel_signal["entry"]
@@ -137,7 +140,7 @@ def test_live_bar_close_emits_the_same_signal_and_engine_builds_the_same_levels(
     assert tracked.scale_at == pytest.approx(panel_signal["target1"], abs=0.01)
     assert tracked.target == pytest.approx(panel_signal["target2"], abs=0.01)
     assert tracked.trailing_active is False
-    assert tracked.max_hold_seconds == 13 * 5 * 60                    # close of the 12th bar after the fill bar
+    assert tracked.max_hold_seconds == (MAX_HOLD_BARS + 1) * 5 * 60   # close of the last held bar after the fill bar
 
 
 def test_every_path_tests_and_runs_on_the_same_timeframe():

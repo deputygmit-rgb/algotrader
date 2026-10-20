@@ -12,7 +12,6 @@ from src.api.service import TradingService
 async def test_test_stock_strategy_uses_dma200_warmup_for_trend_strategies() -> None:
     service = TradingService()
     service.resolve_instrument_token = AsyncMock(return_value=12345)
-    service.import_historical_data = AsyncMock()
 
     rows = []
     ts = datetime(2024, 1, 1, 9, 15)
@@ -39,5 +38,4 @@ async def test_test_stock_strategy_uses_dma200_warmup_for_trend_strategies() -> 
         result = await service.test_stock_strategy("RELIANCE", "golden_death_cross")
 
     assert result["overall_passed"] is True
-    assert service.import_historical_data.await_args_list[0].kwargs["days"] == 107
     assert service._resolve_ohlcv_rows.await_args_list[0].kwargs["days"] == 107

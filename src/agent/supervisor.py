@@ -82,6 +82,12 @@ class TradingServiceAgent:
         while self._alive:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
             self.last_heartbeat_at = datetime.now().isoformat(timespec="seconds")
+            record = getattr(self.service, "ensure_session_recording", None)
+            if record is not None:
+                try:
+                    record()      # flow snapshots + signal ledger all session (market hours only)
+                except Exception as e:
+                    logger.warning("session_recording_start_failed", zerodha_id=self.zerodha_id, error=str(e))
             try:
                 logger.debug(
                     "agent_heartbeat",

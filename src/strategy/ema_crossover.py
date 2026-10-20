@@ -61,8 +61,8 @@ class EMACrossoverStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        # fast/slow_period are DAY-equivalent EMA spans scaled to the timeframe
-        # (no-op on daily bars). Scale the min-bars gate by the slow period.
+        # fast/slow_period count bars of the active timeframe (see BaseStrategy.scale_period);
+        # the min-bars gate follows the slow period.
         fast_p = self.scale_period(self.params["fast_period"])
         slow_p = self.scale_period(self.params["slow_period"])
         if len(data) < slow_p:

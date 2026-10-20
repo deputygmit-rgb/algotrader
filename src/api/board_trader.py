@@ -9,6 +9,10 @@ bars. This module adds what the board itself does not keep:
 * **Journal** - board changes are published on the telemetry bus
   (``board.track``, ``board.signal``, ``board.status``, ``board.order``); the
   Executor agent records them in its log.
+* **Signal ledger** - with a ``store``, every signal is also written to the
+  ``signals`` table (one row per signal: plan, money-flow context, features,
+  outcome and auto-trade decision), the queryable record efficacy reports and
+  strategy tests are built on.
 * **Auto-trade (opt-in, off by default)** - a new signal on the latest closed
   bar can be sent as a real order. This module only decides *whether* and
   *how many*; the service's ``send`` callback builds the same order signal the
@@ -50,9 +54,11 @@ SEND_WINDOW_MINUTES = BAR_MINUTES + 1   # a signal must be acted on within one b
 
 
 class BoardTrader:
-    def __init__(self, emit: Emit, state_dir: Optional[str] = None) -> None:
+    def __init__(self, emit: Emit, state_dir: Optional[str] = None, store: Any = None, account: str = "") -> None:
         self._emit = emit
         self._dir = state_dir
+        self._store = store          # MarketDataStore (signals ledger); None = no ledger
+        self._account = account
         self.settings: dict[str, Any] = dict(DEFAULT_SETTINGS)
         self._session = ""
         self._known: dict[str, str] = {}             # signal id -> last journaled status
@@ -194,6 +200,7 @@ class BoardTrader:
                            result_r=s.get("result_r"), exit_time=s.get("exit_time"))
             self._known[sid] = status
             self._dirty = True
+            self._ledger(s)
 
     def eligibility(self, s: dict[str, Any], now: datetime) -> Optional[str]:
         """Why this signal must not be sent (None = eligible to size and send)."""
@@ -240,7 +247,36 @@ class BoardTrader:
         self._orders[s["id"]] = rec
         self._dirty = True
         self._emit("board.order", **rec, signal_id=s["id"], time=s.get("time"))
+        if self._store is not None:
+            try:
+                self._store.set_signal_decision(self.ledger_key(s["id"]), decision, extra.get("reason") or "",
+                                                str(extra.get("order_id") or ""), rec["at"])
+            except Exception as e:   # the ledger must never break the board
+                logger.warning("signal_ledger_failed", signal_id=s["id"], error=str(e))
         return rec
+
+    def ledger_key(self, signal_id: str) -> str:
+        return f"board|{self._account}|day_trade_setups|{signal_id}"
+
+    def _ledger(self, s: dict[str, Any]) -> None:
+        """Write the signal's current plan / status / outcome to the signals table."""
+        if self._store is None:
+            return
+        row = {
+            "source": "board", "account": self._account, "strategy": "day_trade_setups",
+            "symbol": s.get("symbol"), "timeframe": f"{BAR_MINUTES}minute",
+            "session": str(s.get("bar_time") or "")[:10], "bar_time": str(s.get("bar_time") or "")[:16],
+            "signal_time": s.get("time"), "side": s.get("side"), "setup": s.get("setup"),
+            **{k: s.get(k) for k in ("quality", "entry", "stop", "target1", "target2", "risk_pct", "status",
+                                      "entry_time", "exit_time", "bars_held", "mfe_r", "mae_r", "gross_r",
+                                      "cost_r", "result_r", "backfilled", "flow_bias", "flow_score")},
+            "skipped": s.get("skipped") or "",
+            "features": s.get("features") or {},
+        }
+        try:
+            self._store.upsert_signal(self.ledger_key(s["id"]), row, datetime.now().isoformat(timespec="seconds"))
+        except Exception as e:   # the ledger must never break the board
+            logger.warning("signal_ledger_failed", signal_id=s.get("id"), error=str(e))
 
     async def process(self, snap: dict[str, Any], now: datetime, send: Optional[Sender] = None) -> None:
         """Journal board changes; with ``send`` and auto-trade on, act on new signals."""

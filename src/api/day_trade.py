@@ -211,14 +211,30 @@ class DayTradeTracker:
             result = analyze_session(
                 bars or [], atr=inputs["atr"] if inputs else None,
                 prev_high=inputs["prev_high"] if inputs else None, prev_low=inputs["prev_low"] if inputs else None,
+                prev_close=inputs["prev_close"] if inputs else None,
                 ltp=r.get("ltp"), direction=bias, min_quality=MIN_QUALITY,
             )
             last_bar = bars[-1] if bars else None
             for s in result["signals"]:
                 s["symbol"] = sym
+                # the engine's id is per stock (bar time + setup + side): two stocks firing the same
+                # setup on the same bar would otherwise share one journal / order / quality entry
+                s["id"] = f"{sym}:{s['id']}"
                 s["quality"] = self._quality.setdefault(s["id"], s["quality"])
                 # what an order for this signal needs (same inputs as the live strategy)
                 s["atr"] = inputs["atr"] if inputs else None
+                # money-flow context the stock was picked in, and the features the setup fired on
+                # (the ledger keeps the values from the signal's first appearance)
+                s["flow_bias"] = bias
+                s["flow_score"] = r.get("flow_score")
+                s["features"] = {
+                    "trigger": s.get("trigger"), "natural_stop": s.get("natural_stop"), "atr": s["atr"],
+                    "prev_close": inputs["prev_close"] if inputs else None, "sector": r.get("sector"),
+                    "source": meta["source"], "tracked_since": meta.get("since_at"),
+                    "vol_ratio": r.get("vol_ratio"), "change_pct": r.get("change_pct"),
+                    "vwap_dev_pct": r.get("vwap_dev_pct"), "oi_change_pct": r.get("oi_change_pct"),
+                    "buildup": r.get("buildup"), "score": r.get("score"),
+                }
                 s["is_latest_bar"] = bool(last_bar) and s["bar_time"] == last_bar["t"]
                 s["bar_close"] = last_bar["c"] if last_bar else None
                 # compare full date + time: a previous session's signals are always replayed

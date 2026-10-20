@@ -23,8 +23,11 @@ bar's open, moved against the trade by ``SLIPPAGE_PCT``. Until that bar
 exists the signal is PENDING with an estimated entry.
 
 Risk: the setup's natural stop (opening-range midpoint, breakout bar low,
-box low, ...) bounded to 0.15-0.6 daily ATR from the fill. Targets at 1.5R
-and 3R. At T1 half the position is booked and the stop on the rest moves to
+box low, ...) bounded to 0.5-1.2 daily ATR from the fill. Targets at 1.5R
+and 3R. (A replay of 862 trades over 37 stocks, May-Oct 2026, found the
+setups' gross edge near zero at every stop width and target tested; stops
+under 0.5 ATR mostly bought round-trip costs of ~0.25R a trade. Wider stops
+cut that to ~0.09R. ``scripts/day_trade_efficacy.py`` reruns the study.) At T1 half the position is booked and the stop on the rest moves to
 breakeven, so a trade that reaches T1 earns 0.75R plus half the remainder's R.
 A trade still open after ``MAX_HOLD_BARS`` or at 15:15 exits at that bar's
 close. If a bar touches both the stop and a target, the stop is assumed to
@@ -49,7 +52,13 @@ Selectivity (to avoid over-trading in choppy sessions):
   * no new entry for ``COOLDOWN_BARS`` bars after an exit;
   * VWAP reclaims need >= ``RECLAIM_VOL`` x volume;
   * signals below ``min_quality`` are not taken;
-  * each setup fires at most once per side per session.
+  * each setup fires at most once per side per session;
+  * with ``prev_close``, a long needs the close above the previous session's
+    close (a short, below): signals against the day's move lost before costs
+    in both halves of the replay (-0.11R and -0.09R gross);
+  * only ``setups`` are detected, ``DEFAULT_SETUPS`` unless given. PULLBACK is
+    off by default: it lost before costs in both halves of the replay
+    (-0.03R gross) and was 37% of all signals.
 """
 
 from __future__ import annotations
@@ -63,9 +72,9 @@ BREAKOUT_VOL = 1.3
 SQUEEZE_VOL = 1.5
 SQUEEZE_BARS = 6
 SQUEEZE_MAX_ATR = 0.35
-MIN_RISK_ATR, MAX_RISK_ATR = 0.15, 0.6
+MIN_RISK_ATR, MAX_RISK_ATR = 0.5, 1.2
 TARGET1_R, TARGET2_R = 1.5, 3.0
-MAX_HOLD_BARS = 12           # one hour
+MAX_HOLD_BARS = 36           # three hours (the 15:15 exit still applies)
 LAST_EXIT_TIME = "15:15"     # flatten before the close
 LAST_ENTRY_TIME = "14:45"
 SLIPPAGE_PCT = 0.0003        # 0.03% against the trade on market fills (all engines)
@@ -83,6 +92,7 @@ SETUP_LABEL = {
     "PULLBACK": "Trend pullback to EMA 20 / VWAP",
     "SQUEEZE": "Squeeze breakout",
 }
+DEFAULT_SETUPS = ("ORB", "PD_BREAK", "VWAP_RECLAIM", "SQUEEZE")   # PULLBACK: see the module docstring
 
 
 def _ema(values: list[float], period: int) -> list[float]:
@@ -127,6 +137,7 @@ def _detect(
     i: int, bars: list[dict[str, Any]], ind: dict[str, list[float]], *,
     orh: float | None, orl: float | None, prev_high: float | None, prev_low: float | None,
     atr: float, fired: set[tuple[str, int]], allowed_side: int | None = None,
+    prev_close: float | None = None, setups: frozenset[str] = frozenset(DEFAULT_SETUPS),
 ) -> tuple[str, int, float, str] | None:
     """(setup, side, natural stop, trigger description) for a signal on bar ``i``, if any."""
     b, p = bars[i], bars[i - 1]
@@ -173,8 +184,13 @@ def _detect(
                 candidates.append(("SQUEEZE", -1, top, f"break below {SQUEEZE_BARS}-bar box {bottom:.2f}-{top:.2f}"))
 
     for setup, side, stop, why in candidates:
-        if (setup, side) not in fired and (allowed_side is None or side == allowed_side):
-            return setup, side, stop, why
+        if setup not in setups or (setup, side) in fired:
+            continue
+        if allowed_side is not None and side != allowed_side:
+            continue
+        if prev_close and side * (b["c"] - prev_close) <= 0:
+            continue   # against the day's move
+        return setup, side, stop, why
     return None
 
 
@@ -215,11 +231,14 @@ def analyze_session(
     prev_high: float | None = None, prev_low: float | None = None,
     ltp: float | None = None,
     direction: str | None = None, min_quality: float = 0,
+    prev_close: float | None = None, setups: Any = None,
 ) -> dict[str, Any]:
     """Replay completed 5-minute bars ``[{t, o, h, l, c, v}, ...]`` (oldest first).
 
     ``direction`` ("LONG" / "SHORT") restricts the session to that side;
     ``min_quality`` skips weaker setups (they are not taken at all).
+    ``prev_close`` enables the with-the-day's-move filter; ``setups`` limits
+    detection to those setups (``DEFAULT_SETUPS`` when None).
 
     Returns indicators, the opening range, every signal of the session with
     its outcome, the open trade (marked to ``ltp``) and the levels a new
@@ -236,6 +255,7 @@ def analyze_session(
     trade: dict[str, Any] | None = None          # pending or open
     locked_side = {"LONG": 1, "SHORT": -1}.get(direction or "")
     last_exit_index: int | None = None
+    allowed_setups = frozenset(setups) if setups else frozenset(DEFAULT_SETUPS)
 
     for i in range(1, len(bars)):
         b = bars[i]
@@ -256,7 +276,8 @@ def analyze_session(
         if last_exit_index is not None and i - last_exit_index < COOLDOWN_BARS:
             continue
         found = _detect(i, bars, ind, orh=orh, orl=orl, prev_high=prev_high, prev_low=prev_low,
-                        atr=atr, fired=fired, allowed_side=locked_side)
+                        atr=atr, fired=fired, allowed_side=locked_side,
+                        prev_close=prev_close, setups=allowed_setups)
         if not found:
             continue
         setup, side, natural_stop, why = found
@@ -307,6 +328,7 @@ def analyze_session(
         watch.append({"side": "LONG", "setup": "PD_BREAK", "level": round(prev_high, 2), "text": f"long above previous-day high {prev_high:.2f}"})
     if prev_low and ("PD_BREAK", -1) not in fired and bars[last]["c"] > prev_low:
         watch.append({"side": "SHORT", "setup": "PD_BREAK", "level": round(prev_low, 2), "text": f"short below previous-day low {prev_low:.2f}"})
+    watch = [w for w in watch if w["setup"] in allowed_setups]
     if locked_side is not None:
         watch = [w for w in watch if (w["side"] == "LONG") == (locked_side > 0)]
     if len(signals) >= MAX_TRADES_PER_DAY:

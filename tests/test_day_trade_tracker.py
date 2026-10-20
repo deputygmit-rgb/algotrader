@@ -107,8 +107,10 @@ def test_snapshot_flags_backfilled_signals_and_marks_to_ltp():
     sig = out["feed"][0]
     # signal fired at the 09:35 close, before tracking started at 10:02
     assert sig["symbol"] == "A" and sig["setup"] == "ORB" and sig["time"] == "09:35" and sig["backfilled"] is True
-    # ATR comes from the earlier 5-minute sessions (daily range 2): risk capped at 0.6 x 2
-    assert out["tracked"][0]["active"]["current_r"] == pytest.approx((102.25 - 101.53) / 1.2, abs=0.01)
+    # ATR comes from the earlier 5-minute sessions (daily range 2): the 1.5-point natural stop
+    # (opening-range midpoint 100) sits inside the 0.5-1.2 ATR band, so it is kept
+    assert sig["stop"] == pytest.approx(100.0)
+    assert out["tracked"][0]["active"]["current_r"] == pytest.approx((102.25 - 101.53) / 1.53, abs=0.01)
     # replayed signals are not counted as tradeable
     assert out["stats"]["open"] == 0 and out["stats"]["replayed"] == 1 and out["last_bar"] == "09:35"
 
@@ -157,3 +159,23 @@ def test_previous_session_signals_are_backfilled_after_midnight():
     tracker.update_selection(_snapshot({"A": 40}), datetime(2026, 10, 19, 0, 30))
     meta = tracker._tracked["A"]
     assert meta["since_at"] == "2026-10-19T00:30" and meta["bias"] == "LONG"
+
+
+def test_signal_ids_are_unique_across_symbols():
+    # two stocks firing the same setup on the same bar must not share a journal / order / quality entry
+    rows = [(100, 101, 99, 100.5, 1000), (100.5, 100.9, 99.5, 100, 1000), (100, 100.8, 99.6, 100.4, 1000),
+            (100.4, 101.6, 100.3, 101.5, 3000), (101.5, 101.9, 101.2, 101.6, 900)]
+    t0 = datetime(2026, 10, 16, 9, 15)
+    bars = [{"t": (t0 + timedelta(minutes=5 * i)).strftime("%Y-%m-%dT%H:%M:00+05:30"),
+             "o": o, "h": h, "l": l, "c": c, "v": v} for i, (o, h, l, c, v) in enumerate(rows)]
+
+    async def fetch(sym):
+        return _with_history(bars)
+
+    tracker = DayTradeTracker(fetch)
+    snap = _snapshot({"A": 40, "B": 30})
+    tracker.update_selection(snap, NOW)
+    asyncio.run(tracker.refresh(NOW))
+    feed = tracker.snapshot(snap, NOW)["feed"]
+    assert len(feed) == 2 and len({s["id"] for s in feed}) == 2
+    assert {s["id"].split(":")[0] for s in feed} == {"A", "B"}

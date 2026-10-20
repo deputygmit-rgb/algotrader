@@ -16,7 +16,7 @@ def _session(day, rows):
 
 
 def _data():
-    quiet = [(100, 102, 98, 100, 1000)] * 6          # earlier sessions: daily range 4 -> ATR 4
+    quiet = [(100, 101.25, 98.75, 100, 1000)] * 6    # earlier sessions: daily range 2.5 -> ATR 2.5
     today = [(100, 101, 99, 100.5, 1000), (100.5, 100.9, 99.5, 100, 1000), (100, 100.8, 99.6, 100.4, 1000),
              (100.4, 101.6, 100.3, 101.5, 3000),       # 09:30 bar closes above the opening range
              (101.5, 104, 101.4, 103.8, 1500),         # reaches T1
@@ -35,8 +35,8 @@ def _data():
 
 def test_session_inputs_split_today_from_history():
     inp = session_inputs(_data())
-    assert len(inp["bars"]) == 6 and inp["atr"] == pytest.approx(4.0)
-    assert (inp["prev_high"], inp["prev_low"]) == (102, 98)
+    assert len(inp["bars"]) == 6 and inp["atr"] == pytest.approx(2.5)
+    assert (inp["prev_high"], inp["prev_low"], inp["prev_close"]) == (101.25, 98.75, 100)
 
 
 def test_strategy_signal_carries_the_panel_plan():
@@ -52,7 +52,9 @@ def test_strategy_signal_carries_the_panel_plan():
 
 def test_backtest_follows_the_same_trade_as_the_panel():
     data = _data()
-    panel = analyze_session(session_inputs(data)["bars"], atr=4.0, prev_high=102, prev_low=98)["signals"][0]
+    inp = session_inputs(data)
+    panel = analyze_session(inp["bars"], atr=inp["atr"], prev_high=inp["prev_high"], prev_low=inp["prev_low"],
+                            prev_close=inp["prev_close"])["signals"][0]
     result = BacktestEngine(DayTradeSetupsStrategy({"quantity": 10}), use_indian_costs=False, slippage_pct=0.0).run(
         data, 7, "ABC", timeframe="5minute")
     assert result["execution_model"] == "exit_plan"

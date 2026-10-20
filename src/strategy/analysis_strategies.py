@@ -81,9 +81,8 @@ class SingleTriggerStrategy(BaseStrategy):
         self._benchmark_data = benchmark_df
 
     def _min_bars(self) -> int:
-        """Minimum bars gate, scaled to the active timeframe (no-op on daily).
-        min_bars is a DAY-equivalent span: e.g. 210 for golden-cross means ~210
-        trading days, which is ~1313 bars on a 60-minute chart."""
+        """Minimum bars before a signal: ``min_bars`` bars of the active timeframe
+        (days only with ``scale_periods_to_timeframe``; see BaseStrategy.scale_period)."""
         return self.scale_period(self.params.get("min_bars", 50))
 
     async def on_tick(self, ticks: list[Tick]) -> list[Signal]:

@@ -374,6 +374,33 @@ class KiteClient:
         )
         return {key: LTPQuote(**val) for key, val in data.items()}
 
+    # Longest range Kite serves in one historical request, per interval (days).
+    # A longer request fails with "interval exceeds max limit".
+    HISTORICAL_MAX_DAYS: dict[str, int] = {
+        "minute": 60, "3minute": 100, "5minute": 100, "10minute": 100,
+        "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000,
+    }
+
+    @classmethod
+    def historical_chunks(cls, interval: Interval, from_date: str, to_date: str) -> list[tuple[str, str]]:
+        """Split ``from_date``..``to_date`` (YYYY-MM-DD[ HH:MM:SS]) into ranges Kite accepts."""
+        from datetime import datetime, timedelta
+
+        def parse(value: str, end: bool) -> datetime:
+            value = str(value).strip().replace("T", " ")[:19]
+            if len(value) == 10:
+                value += " 23:59:59" if end else " 00:00:00"
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+
+        start, stop = parse(from_date, False), parse(to_date, True)
+        span = timedelta(days=cls.HISTORICAL_MAX_DAYS.get(interval.value, 60)) - timedelta(seconds=1)
+        chunks: list[tuple[str, str]] = []
+        while start <= stop:
+            end = min(start + span, stop)
+            chunks.append((start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")))
+            start = end + timedelta(seconds=1)
+        return chunks
+
     async def get_historical_data(
         self,
         instrument_token: int,
@@ -383,29 +410,34 @@ class KiteClient:
         continuous: bool = False,
         oi: bool = False,
     ) -> list[HistoricalCandle]:
+        """Candles for any range: requests are split into the per-interval
+        maximum Kite allows (``HISTORICAL_MAX_DAYS``), oldest first, and the
+        results joined without duplicates."""
         endpoint = f"/instruments/historical/{instrument_token}/{interval.value}"
-        params: dict[str, Any] = {"from": from_date, "to": to_date}
-        if continuous:
-            params["continuous"] = 1
-        if oi:
-            params["oi"] = 1
-
-        data = await self._request(
-            "GET", endpoint, limiter=self._historical_limiter, params=params
-        )
-        candles = data.get("candles", []) if isinstance(data, dict) else []
         result: list[HistoricalCandle] = []
-        for c in candles:
-            candle = HistoricalCandle(
-                timestamp=c[0],
-                open=c[1],
-                high=c[2],
-                low=c[3],
-                close=c[4],
-                volume=c[5],
-                oi=c[6] if len(c) > 6 else None,
+        seen: set[str] = set()
+        for chunk_from, chunk_to in self.historical_chunks(interval, from_date, to_date):
+            params: dict[str, Any] = {"from": chunk_from, "to": chunk_to}
+            if continuous:
+                params["continuous"] = 1
+            if oi:
+                params["oi"] = 1
+            data = await self._request(
+                "GET", endpoint, limiter=self._historical_limiter, params=params
             )
-            result.append(candle)
+            for c in data.get("candles", []) if isinstance(data, dict) else []:
+                if str(c[0]) in seen:
+                    continue
+                seen.add(str(c[0]))
+                result.append(HistoricalCandle(
+                    timestamp=c[0],
+                    open=c[1],
+                    high=c[2],
+                    low=c[3],
+                    close=c[4],
+                    volume=c[5],
+                    oi=c[6] if len(c) > 6 else None,
+                ))
         return result
 
     async def place_gtt(self, gtt: GTTRequest) -> int:

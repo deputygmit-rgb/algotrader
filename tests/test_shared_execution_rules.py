@@ -202,3 +202,23 @@ def test_execute_uses_the_strategys_own_stop_and_risk_sizing_on_fresh_data():
 def test_execute_refuses_when_the_latest_closed_bar_is_missing():
     result, executed = _execute_fixture(drop_last=True)
     assert "not current" in result["error"] and executed == []
+
+
+def test_no_intraday_entry_on_bars_that_close_at_the_square_off():
+    from src.data.exit_plan import entry_allowed
+
+    assert entry_allowed("5minute", "15:05") and not entry_allowed("5minute", "15:10")
+    assert not entry_allowed("5minute", "15:25") and not entry_allowed("15minute", "15:00")
+    assert entry_allowed("day", "00:00")
+    # real sessions run to 15:25: a BUY on the 15:20 bar must not open a trade at 15:25
+    data = _bars("2026-10-16 14:50:00", 8, 5)                    # 14:50 ... 15:25
+    for engine in ("backtest", "paper"):
+        strategy = ScriptedStrategy({6: "BUY"})                   # 15:20 bar
+        if engine == "backtest":
+            trades = _closed(BacktestEngine(strategy, use_indian_costs=False, slippage_pct=0.0).run(
+                data, 1, "ABC", timeframe="5minute"))
+        else:
+            paper = PaperTradingEngine(strategy=strategy)
+            paper.run(data, 1, "ABC", timeframe="5minute")
+            trades = paper.get_trades()
+        assert trades == [], engine

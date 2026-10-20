@@ -29,8 +29,9 @@ trading (``execution_spec``); a strategy's own ``exec`` entries override them:
 * the stop trails by its initial distance, the target is ``signal.target``
   or 2R;
 * the timeframe sets the product: intraday bars trade MIS - shorts allowed,
-  flat by 15:15 - and daily bars trade CNC (delivery), which is long-only, so
-  a SELL signal there only closes a long.
+  flat by 15:15, no new entry on a bar that closes at or after 15:15
+  (``entry_allowed``) - and daily bars trade CNC (delivery), which is
+  long-only, so a SELL signal there only closes a long.
 
 Within a bar the order is: stop (assumed first if the bar also reaches a
 target), scale-out, final target, time exit; the trailing stop then moves
@@ -79,6 +80,21 @@ def execution_spec(signal: Any, timeframe: str | None) -> dict[str, Any]:
         spec.update(exit_by=INTRADAY_SQUAREOFF, bar_minutes=TIMEFRAME_MINUTES[timeframe])
     spec.update(exec_spec(signal))
     return spec
+
+
+def entry_allowed(timeframe: str | None, bar_start_hhmm: str) -> bool:
+    """Whether a new position may open on the bar starting at ``bar_start_hhmm``.
+
+    Intraday (MIS) entries need a bar that closes before the 15:15 square-off:
+    a position opened later would be closed by the square-off on the same bar
+    - all costs, no trade - and the broker refuses new MIS orders near the
+    close anyway. Real sessions do have 15:15-15:25 bars, so signals there
+    must not open a trade. Daily (delivery) entries are always allowed.
+    """
+    if not is_intraday(timeframe) or not bar_start_hhmm:
+        return True
+    hh, mm = int(bar_start_hhmm[:2]), int(bar_start_hhmm[3:5]) + TIMEFRAME_MINUTES[timeframe]
+    return f"{hh + mm // 60:02d}:{mm % 60:02d}" < INTRADAY_SQUAREOFF
 
 
 def fills_next_open(signal: Any, timeframe: str | None = None) -> bool:

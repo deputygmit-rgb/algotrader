@@ -59,7 +59,7 @@ class MeanReversionStrategy(BaseStrategy):
         return [signal] if signal else []
 
     def generate_signal(self, data: pd.DataFrame, instrument_token: int) -> Optional[Signal]:
-        # lookback_period is a DAY-equivalent lookback scaled to the timeframe.
+        # lookback_period counts bars (see BaseStrategy.scale_period)
         lookback = self.scale_period(self.params["lookback_period"])
         if len(data) < lookback:
             return None

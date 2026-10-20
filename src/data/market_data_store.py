@@ -14,6 +14,10 @@ Tables:
   instruments   — Instrument master rows
   meta          — Key-value metadata (last refresh timestamps, etc.)
   tested_strategies — Strategies that passed backtest/paper-trade gate
+  flow_snapshots — Money-flow state of every stock at each 5-minute bar close
+                   (the inputs the Day Trade board selects and filters on)
+  signals        — One row per strategy signal: plan, context, features and
+                   final outcome, from every path (board, live, paper, backtest)
 """
 
 from __future__ import annotations
@@ -220,6 +224,78 @@ CREATE TABLE IF NOT EXISTS oi_bias_history (
     reasons          TEXT    NOT NULL DEFAULT '[]',
     PRIMARY KEY (underlying, ts)
 ) WITHOUT ROWID;
+
+-- Money-flow snapshot per stock, taken at each 5-minute bar close so it lines
+-- up with the 5-minute candles: a backtest can see exactly what the board saw
+-- (bias, score, picks) when a bar closed. ``picks`` lists the pick lists the
+-- stock was on, e.g. "nifty50:long,fno:long_watch".
+CREATE TABLE IF NOT EXISTS flow_snapshots (
+    ts            TEXT    NOT NULL,          -- bar close, YYYY-MM-DDTHH:MM (IST)
+    symbol        TEXT    NOT NULL,
+    sector        TEXT    NOT NULL DEFAULT '',
+    universes     TEXT    NOT NULL DEFAULT '',
+    ltp           REAL,
+    prev_close    REAL,
+    change_pct    REAL,
+    vwap_dev_pct  REAL,
+    atr_pct       REAL,
+    oi_change_pct REAL,
+    buildup       TEXT    NOT NULL DEFAULT '',
+    vol_ratio     REAL,
+    turnover_cr   REAL,
+    money_flow_cr REAL,
+    imbalance     REAL,
+    flow_score    REAL,
+    score         REAL,
+    bias          TEXT    NOT NULL DEFAULT '',
+    picks         TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (ts, symbol)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_flow_symbol_ts ON flow_snapshots(symbol, ts);
+
+-- Signal ledger: one row per signal from any path, updated as it plays out,
+-- so efficacy can be queried by setup, side, hour, flow bias, quality, ...
+-- ``signal_key`` = source|account|strategy|symbol|signal id.
+CREATE TABLE IF NOT EXISTS signals (
+    signal_key    TEXT    PRIMARY KEY,
+    source        TEXT    NOT NULL,          -- board / live / paper / backtest
+    account       TEXT    NOT NULL DEFAULT '',
+    strategy      TEXT    NOT NULL,
+    symbol        TEXT    NOT NULL,
+    timeframe     TEXT    NOT NULL DEFAULT '',
+    session       TEXT    NOT NULL,          -- trading date of the signal bar
+    bar_time      TEXT    NOT NULL,          -- start of the signal bar
+    signal_time   TEXT    NOT NULL DEFAULT '',  -- HH:MM the bar closed (signal known)
+    side          TEXT    NOT NULL,
+    setup         TEXT    NOT NULL DEFAULT '',
+    quality       REAL,
+    entry         REAL,
+    stop          REAL,
+    target1       REAL,
+    target2       REAL,
+    risk_pct      REAL,
+    status        TEXT    NOT NULL DEFAULT '',
+    entry_time    TEXT,
+    exit_time     TEXT,
+    bars_held     INTEGER,
+    mfe_r         REAL,
+    mae_r         REAL,
+    gross_r       REAL,
+    cost_r        REAL,
+    result_r      REAL,
+    backfilled    INTEGER NOT NULL DEFAULT 0,   -- replayed from before tracking: not tradeable
+    skipped       TEXT    NOT NULL DEFAULT '',  -- why the portfolio cap skipped it
+    decision      TEXT    NOT NULL DEFAULT '',  -- auto-trade: sent / blocked / skipped / failed
+    decision_reason TEXT  NOT NULL DEFAULT '',
+    order_id      TEXT    NOT NULL DEFAULT '',
+    flow_bias     TEXT    NOT NULL DEFAULT '',  -- money-flow bias the stock was picked for
+    flow_score    REAL,
+    features      TEXT    NOT NULL DEFAULT '{}',
+    first_seen    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy, session);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol, session);
 """
 
 
@@ -1062,6 +1138,101 @@ class MarketDataStore:
                 del d[json_field]
         return d
 
+    # ─── Money-flow snapshots ───────────────────────────────────
+
+    FLOW_COLUMNS = ("sector", "ltp", "prev_close", "change_pct", "vwap_dev_pct", "atr_pct", "oi_change_pct",
+                    "buildup", "vol_ratio", "turnover_cr", "money_flow_cr", "imbalance", "flow_score", "score", "bias")
+
+    def store_flow_snapshot(self, ts: str, rows: list[dict[str, Any]], picks: dict[str, Any] | None = None) -> int:
+        """Store one money-flow snapshot (all stocks) at bar close ``ts`` (YYYY-MM-DDTHH:MM)."""
+        if not rows:
+            return 0
+        on_lists: dict[str, list[str]] = {}
+        for universe, lists in (picks or {}).items():
+            for name, symbols in (lists or {}).items():
+                for sym in symbols or []:
+                    on_lists.setdefault(sym, []).append(f"{universe}:{name}")
+        text = {"sector", "buildup", "bias"}
+        values = [
+            (ts, r["symbol"], ",".join(r.get("universes") or []),
+             *[(r.get(c) or "") if c in text else r.get(c) for c in self.FLOW_COLUMNS],
+             ",".join(on_lists.get(r["symbol"], [])))
+            for r in rows if r.get("symbol")
+        ]
+        cols = ("ts", "symbol", "universes", *self.FLOW_COLUMNS, "picks")
+        conn = self._get_conn()
+        conn.executemany(
+            f"INSERT OR REPLACE INTO flow_snapshots ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", values)
+        conn.commit()
+        return len(values)
+
+    def get_flow_snapshots(self, symbol: str = "", from_ts: str = "", to_ts: str = "9999") -> list[dict[str, Any]]:
+        conn = self._get_conn()
+        if symbol:
+            rows = conn.execute("SELECT * FROM flow_snapshots WHERE symbol = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+                                (symbol, from_ts, to_ts)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM flow_snapshots WHERE ts >= ? AND ts <= ? ORDER BY ts, symbol",
+                                (from_ts, to_ts)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ─── Signal ledger ──────────────────────────────────────────
+
+    SIGNAL_COLUMNS = ("source", "account", "strategy", "symbol", "timeframe", "session", "bar_time", "signal_time",
+                      "side", "setup", "quality", "entry", "stop", "target1", "target2", "risk_pct", "status",
+                      "entry_time", "exit_time", "bars_held", "mfe_r", "mae_r", "gross_r", "cost_r", "result_r",
+                      "backfilled", "skipped", "flow_bias", "flow_score", "features")
+    _SIGNAL_DECISION = ("decision", "decision_reason", "order_id")
+
+    def upsert_signal(self, key: str, row: dict[str, Any], now: str) -> None:
+        """Insert a signal or update its plan / status / outcome. Kept from the first
+        insert: first_seen, the auto-trade decision and the context the signal was
+        taken in (flow bias / score, features), so later polls cannot rewrite it."""
+        text = {"source", "account", "strategy", "symbol", "timeframe", "session", "bar_time", "signal_time",
+                "side", "setup", "status", "skipped", "flow_bias"}
+        values = []
+        for c in self.SIGNAL_COLUMNS:
+            v = row.get(c)
+            if c == "features":
+                v = json.dumps(v or {}, default=str)
+            elif c == "backfilled":
+                v = int(bool(v))
+            elif c in text:
+                v = "" if v is None else str(v)
+            values.append(v)
+        cols = ("signal_key", *self.SIGNAL_COLUMNS, "first_seen", "updated_at")
+        frozen = {"flow_bias", "flow_score", "features"}
+        updates = ", ".join(f"{c} = excluded.{c}" for c in (*self.SIGNAL_COLUMNS, "updated_at") if c not in frozen)
+        conn = self._get_conn()
+        conn.execute(
+            f"INSERT INTO signals ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
+            f"ON CONFLICT(signal_key) DO UPDATE SET {updates}",
+            (key, *values, now, now))
+        conn.commit()
+
+    def set_signal_decision(self, key: str, decision: str, reason: str = "", order_id: str = "", now: str = "") -> None:
+        conn = self._get_conn()
+        conn.execute("UPDATE signals SET decision = ?, decision_reason = ?, order_id = ?, updated_at = ? "
+                     "WHERE signal_key = ?", (decision, reason or "", order_id or "", now, key))
+        conn.commit()
+
+    def get_signals(self, strategy: str = "", source: str = "", account: str = "",
+                    from_session: str = "", to_session: str = "9999") -> list[dict[str, Any]]:
+        where, args = ["session >= ?", "session <= ?"], [from_session, to_session]
+        for col, val in (("strategy", strategy), ("source", source), ("account", account)):
+            if val:
+                where.append(f"{col} = ?")
+                args.append(val)
+        conn = self._get_conn()
+        rows = conn.execute(f"SELECT * FROM signals WHERE {' AND '.join(where)} ORDER BY session, bar_time",
+                            args).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["features"] = json.loads(d.get("features") or "{}")
+            out.append(d)
+        return out
+
     def purge_old_snapshots(self, days_to_keep: int = 90) -> dict[str, int]:
         """Delete quote/order/position snapshots older than N days."""
         conn = self._get_conn()
@@ -1070,8 +1241,12 @@ class MarketDataStore:
         o_cnt = conn.execute("DELETE FROM orders_log WHERE ts < ?", (cutoff,)).rowcount
         p_cnt = conn.execute("DELETE FROM positions_log WHERE ts < ?", (cutoff,)).rowcount
         oi_cnt = conn.execute("DELETE FROM oi_snapshots WHERE ts < ?", (cutoff,)).rowcount
+        # flow snapshots back-test the board's selection, so they are kept longer (2x)
+        flow_cutoff = (datetime.now() - __import__("datetime").timedelta(days=days_to_keep * 2)).strftime("%Y-%m-%d")
+        f_cnt = conn.execute("DELETE FROM flow_snapshots WHERE ts < ?", (flow_cutoff,)).rowcount
         conn.commit()
-        return {"quotes_purged": q_cnt, "orders_purged": o_cnt, "positions_purged": p_cnt, "oi_snapshots_purged": oi_cnt}
+        return {"quotes_purged": q_cnt, "orders_purged": o_cnt, "positions_purged": p_cnt, "oi_snapshots_purged": oi_cnt,
+                "flow_snapshots_purged": f_cnt}
 
 
 # ─── Singleton Instance ─────────────────────────────────────────

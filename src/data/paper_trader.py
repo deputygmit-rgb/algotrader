@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from src.data.exit_plan import DEFAULT_SLIPPAGE_PCT, ExitPlan, allows_short, fills_next_open, is_intraday
+from src.data.exit_plan import DEFAULT_SLIPPAGE_PCT, ExitPlan, allows_short, entry_allowed, fills_next_open, is_intraday
 from src.data.models import Order, TransactionType, OrderType, ProductType, Exchange
 from src.utils.serialization import sanitize_for_json
 from src.utils.logger import get_logger
@@ -434,7 +434,7 @@ class PaperTradingEngine:
             if pending_exit:
                 close_all(float(bar["open"]), bar_ts)
             pending_exit = False
-            if pending_entry is not None and position_qty() == 0:
+            if pending_entry is not None and position_qty() == 0 and entry_allowed(timeframe, hhmm):
                 enter(pending_entry, float(bar["open"]), i, bar_ts)
             pending_entry = None
 
@@ -464,7 +464,7 @@ class PaperTradingEngine:
                     if can_open and pending_entry is None:
                         if next_open:
                             pending_entry = signal
-                        else:
+                        elif entry_allowed(timeframe, hhmm):
                             enter(signal, price, i, bar_ts)
                 elif not plan_strategy and (side > 0) != (current_qty > 0):
                     # opposite signal: close, and reverse into it where allowed
@@ -473,7 +473,7 @@ class PaperTradingEngine:
                         pending_entry = signal if can_open else None
                     else:
                         close_all(price, bar_ts)
-                        if can_open:
+                        if can_open and entry_allowed(timeframe, hhmm):
                             enter(signal, price, i, bar_ts)
 
             self.update_prices({tradingsymbol: price})
@@ -539,15 +539,21 @@ class PaperTradingEngine:
         Place a paper order. Returns PaperTrade on success, None if blocked by risk.
         price is the QUOTED price; fill includes slippage.
         """
-        if not self._circuit_open:
-            logger.warning("paper_order_blocked_circuit_breaker", symbol=tradingsymbol)
-            return None
-
-        # Pre-trade risk checks
-        rejection = self._check_risk(tradingsymbol, transaction_type, quantity, price)
-        if rejection:
-            logger.warning("paper_order_rejected", reason=rejection, symbol=tradingsymbol)
-            return None
+        # The circuit breaker and pre-trade risk limits stop NEW exposure. An order
+        # that only reduces the open position (stop, target, time exit, square-off)
+        # always goes through: blocking it would leave a losing trade open exactly
+        # when a limit was hit (a winner that grew past the size limit, too).
+        pos = self._positions.get(tradingsymbol)
+        held = pos.quantity if pos else 0
+        reducing = held != 0 and (held > 0) != (transaction_type == TransactionType.BUY) and quantity <= abs(held)
+        if not reducing:
+            if not self._circuit_open:
+                logger.warning("paper_order_blocked_circuit_breaker", symbol=tradingsymbol)
+                return None
+            rejection = self._check_risk(tradingsymbol, transaction_type, quantity, price)
+            if rejection:
+                logger.warning("paper_order_rejected", reason=rejection, symbol=tradingsymbol)
+                return None
 
         is_buy  = transaction_type == TransactionType.BUY
         # a limit order fills at its price; market orders pay slippage

@@ -25,7 +25,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from src.data.exit_plan import Exit, ExitPlan, allows_short, fills_next_open, is_intraday, product_for
+from src.data.exit_plan import Exit, ExitPlan, allows_short, entry_allowed, fills_next_open, is_intraday, product_for
 from src.data.models import BacktestResult, Signal, TransactionType
 from src.strategy.base import BaseStrategy
 from src.utils.logger import get_logger
@@ -344,7 +344,7 @@ class BacktestEngine:
                 apply_exits([Exit("SIGNAL_EXIT", float(bar["open"]), plan.remaining, True)])
                 record_close(i, float(bar["open"]))
             pending_exit = False
-            if pending_entry is not None and plan is None:
+            if pending_entry is not None and plan is None and entry_allowed(timeframe, hhmm):
                 open_position(pending_entry, float(bar["open"]), i)
             pending_entry = None
 
@@ -370,7 +370,7 @@ class BacktestEngine:
                     if can_open and pending_entry is None:
                         if next_open:
                             pending_entry = signal
-                        else:
+                        elif entry_allowed(timeframe, hhmm):
                             open_position(signal, float(bar["close"]), i)
                 elif not plan_strategy and side != plan.side:
                     # opposite signal: close, and reverse into it where allowed
@@ -380,7 +380,7 @@ class BacktestEngine:
                     else:
                         apply_exits([Exit("SIGNAL_EXIT", float(bar["close"]), plan.remaining, True)])
                         record_close(i, float(bar["close"]))
-                        if can_open:
+                        if can_open and entry_allowed(timeframe, hhmm):
                             open_position(signal, float(bar["close"]), i)
 
             mtm = capital

@@ -132,3 +132,37 @@ def _parse_ts(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value.replace(tzinfo=None)
     return datetime.fromisoformat(str(value)[:19])
+
+
+SESSION_CLOSE = dtime(15, 30)
+_INTERVAL_MINUTES = {"minute": 1, "3minute": 3, "5minute": 5, "10minute": 10,
+                     "15minute": 15, "30minute": 30, "60minute": 60}
+
+
+def completed_candles(rows: list[dict[str, Any]], interval: str, now: datetime) -> list[dict[str, Any]]:
+    """Drop the bar still forming at ``now`` from historical rows (``ts`` or ``timestamp``).
+
+    A historical fetch during market hours includes the current, half-built
+    bar (and today's daily candle). Stored as if complete it would be
+    back-tested on; it is left out and fetched again once it has closed.
+    An intraday bar is complete once its interval has passed; a daily bar once
+    the session has closed. The last 60-minute bar of a session (15:15) closes
+    at 15:30 with the market.
+    """
+    minutes = _INTERVAL_MINUTES.get(interval)
+    out = []
+    for r in rows:
+        stamp = str(r.get("ts") or r.get("timestamp") or "").replace(" ", "T")[:16]
+        try:
+            start = datetime.fromisoformat(stamp)
+        except ValueError:
+            out.append(r)
+            continue
+        if minutes is None:   # daily (or longer) bars
+            done = start.date() < now.date() or (start.date() == now.date() and now.time() >= SESSION_CLOSE)
+        else:
+            end = min(start + timedelta(minutes=minutes), datetime.combine(start.date(), SESSION_CLOSE))
+            done = end <= now
+        if done:
+            out.append(r)
+    return out

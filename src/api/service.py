@@ -5,14 +5,14 @@ import json
 import re
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from typing import Any, Optional
 
 from src.analysis.scanner import StockScanner
 from src.analysis.indicators import compute_all_indicators
 from src.analysis.nifty_contribution import compute_nifty_contribution, nifty_quote_instruments
 from src.analysis.fno_flow import FlowHistory, build_universe, compute_fno_flow, quote_keys
-from src.api.day_trade import DayTradeTracker, market_open
+from src.api.day_trade import DayTradeTracker, bar_bucket, market_open
 from src.analysis.nifty500 import NIFTY_500_SYMBOLS, get_sector
 from src.agent.telemetry import Telemetry
 from src.api.client import KiteClient
@@ -21,8 +21,8 @@ from src.api.ticker import KiteTicker
 from src.auth.access import AGENTIC, MANUAL, TRADE, VIEW, at_least, check_order_allowed, order_origin, require
 from src.auth.authenticator import KiteAuthenticator
 from src.data.backtest import BacktestEngine, WalkForwardOptimizer
-from src.data.bar_aggregator import BarAggregator, bucket_start
-from src.data.exit_plan import TIMEFRAME_MINUTES, allows_short, product_for
+from src.data.bar_aggregator import BarAggregator, bucket_start, completed_candles
+from src.data.exit_plan import TIMEFRAME_MINUTES, allows_short, entry_allowed, product_for
 from src.data.journal import TradeJournal
 from src.data.market_data_store import MarketDataStore, get_market_data_store
 from src.data.models import (
@@ -231,11 +231,13 @@ class TradingService:
         self._day_trade = DayTradeTracker(self._fetch_day_bars)
         self._day_trade_task: Optional[asyncio.Task] = None
         self._day_trade_last_request = 0.0
+        self._flow_snapshot_at = ""     # bar close of the last stored flow snapshot
         # board persistence, signal journal and opt-in auto-trade (src/api/board_trader.py)
         from src.api.board_trader import BoardTrader
 
         base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self._board = BoardTrader(self._emit, os.path.join(base, "data", "day_trade", self._zerodha_id or "default"))
+        self._board = BoardTrader(self._emit, os.path.join(base, "data", "day_trade", self._zerodha_id or "default"),
+                                  store=self._market_store, account=self._zerodha_id or "default")
         self._board_preflight: Any = None
         # per-minute OI-bias history (own analyser so manual scans aren't disturbed)
         self._oi_bias_analyzer = OptionsOIAnalyzer()
@@ -1357,37 +1359,30 @@ class TradingService:
         from_date: str | None = None,
         to_date: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Historical OHLCV rows for backtest/paper-trade: locally cached data first
-        (populated by ``import_historical_data`` or a prior run), live Kite fetch as
-        fallback - which is itself cached for next time.
+        """Historical OHLCV rows for backtests, paper trades, stock tests and replays.
+
+        The local cache is first brought up to date for the requested range
+        (``import_historical_data``: missing older history and the bars since
+        the last cached one, in Kite-sized requests, completed bars only), then
+        read. Without a broker session the cache is used as it is. Before this,
+        any cached rows were returned as they were, so a 365-day request could
+        silently run on the 30 days some earlier fetch had stored.
         """
         from datetime import timedelta
         to_dt = datetime.now()
         to_date_s = (to_date or to_dt.strftime("%Y-%m-%d"))[:10]
         from_date_s = (from_date or (to_dt - timedelta(days=days)).strftime("%Y-%m-%d"))[:10]
 
-        cached = self._market_store.get_candles(instrument_token, interval, from_date_s, to_date_s)
-        if cached:
-            return cached
-
-        from_dt_full = from_date or (to_dt - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        to_dt_full = to_date or to_dt.strftime("%Y-%m-%d %H:%M:%S")
-        candles = await self._client.get_historical_data(
-            instrument_token=instrument_token,
-            interval=Interval(interval),
-            from_date=from_dt_full,
-            to_date=to_dt_full,
-        )
-        rows = [
-            {"ts": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
-             "close": c.close, "volume": c.volume}
-            for c in candles
-        ] if candles else []
-        if rows:
-            try:
-                self._market_store.store_candles(instrument_token, interval, rows)
-            except Exception as e:
-                logger.warning("ohlcv_cache_store_failed", token=instrument_token, error=str(e))
+        error = None
+        if getattr(self, "_auth", None) is not None and self.is_authenticated:
+            result = await self.import_historical_data(
+                instrument_token, str(instrument_token), interval, days, from_date, to_date)
+            error = result.get("error")
+            if error:
+                logger.warning("ohlcv_refresh_failed", token=instrument_token, interval=interval, error=error)
+        rows = self._market_store.get_candles(instrument_token, interval, from_date_s, to_date_s)
+        if not rows and error:
+            raise RuntimeError(error)
         return rows
 
     async def import_historical_data(
@@ -1425,8 +1420,10 @@ class TradingService:
             # Nothing cached yet - fetch the full requested range.
             fetch_ranges.append((requested_from_s, to_date_s))
         else:
-            if requested_from_s < cached_min:
-                # Backfill older history the cache doesn't have yet.
+            # Backfill older history the cache doesn't have yet. A few days of slack:
+            # the first session after the requested start can be days later
+            # (weekend, holiday), which is not missing data worth a request each run.
+            if requested_from_s < (datetime.fromisoformat(cached_min) - timedelta(days=5)).strftime("%Y-%m-%d"):
                 fetch_ranges.append((requested_from_s, cached_min))
             if cached_max <= to_date_s:
                 # Top up from the last cached bar (re-fetches that day too,
@@ -1442,11 +1439,11 @@ class TradingService:
                     from_date=f"{range_from} 00:00:00",
                     to_date=f"{range_to} 23:59:59",
                 )
-                rows = [
+                rows = completed_candles([
                     {"ts": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
                      "close": c.close, "volume": c.volume}
                     for c in candles
-                ] if candles else []
+                ] if candles else [], interval, datetime.now())
                 if rows:
                     stored += self._market_store.store_candles(instrument_token, interval, rows)
         except Exception as e:
@@ -1644,9 +1641,7 @@ class TradingService:
         for interval, days in timeframes:
             fetch_days = self._with_dma200_warmup(strategy, interval, days, None)
             try:
-                await self.import_historical_data(
-                    instrument_token=token, tradingsymbol=symbol, interval=interval, days=fetch_days,
-                )
+                # brings the cache up to date for the window, then reads it
                 rows = await self._resolve_ohlcv_rows(token, interval, days=fetch_days)
                 if not rows or len(rows) < 30:
                     timeframe_results[interval] = {"passed": False, "error": "Insufficient historical data"}
@@ -2244,65 +2239,113 @@ class TradingService:
             "price": signal.price, "timeframe": timeframe, "confidence": signal.confidence,
         }
         self._emit("signal.received", **sig_info, exit=is_exit)
-        open_pos = self._execution.open_position_for(signal.tradingsymbol, signal.strategy_name)
-        if open_pos is not None:
-            # a signal carrying its own exit plan (metadata["exec"]) is managed by that plan
-            plan_managed = getattr(strategy, "uses_exit_plans", False) or bool(signal.metadata.get("exec"))
-            if open_pos.is_long == (side > 0) or plan_managed:
-                logger.info("signal_ignored_position_open", strategy=signal.strategy_name, symbol=signal.tradingsymbol)
-                self._emit("signal.ignored", **sig_info, reason="position already open in that direction")
-                return
-            await self._execution.close_position(open_pos.order_id, reason="signal_exit")
-            self._emit("order.close", **sig_info, order_id=open_pos.order_id, reason="opposite signal")
-        if not can_open:
-            if not is_exit:
-                self._emit("signal.ignored", **sig_info, reason=f"shorting not allowed on {timeframe} (delivery)")
-            return
-
-        signal_data = {
-            "timestamp": datetime.now().isoformat(),
-            "strategy": signal.strategy_name,
-            "tradingsymbol": signal.tradingsymbol,
-            "transaction_type": signal.transaction_type.value,
-            "quantity": signal.quantity,
-            "price": signal.price,
-            "confidence": signal.confidence,
-            "metadata": signal.metadata,
-        }
-        self._signal_log.append(signal_data)
-        await self._broadcast_ws({"type": "signal", "data": signal_data})
-
+        outcome: dict[str, Any] = {"decision": "", "reason": "", "order_id": ""}
         try:
-            order_id = await self._execution.execute_signal(signal)
-            if order_id:
-                self._emit("order.placed", **sig_info, order_id=order_id)
-            else:
-                self._emit("order.failed", **sig_info, error="execution engine returned no order id")
-            if order_id:
-                self._journal.record_trade(
-                    strategy=signal.strategy_name,
-                    tradingsymbol=signal.tradingsymbol,
-                    exchange=signal.exchange.value,
-                    transaction_type=signal.transaction_type.value,
-                    quantity=signal.quantity,
-                    price=signal.price or 0.0,
-                    order_id=order_id,
-                    status="PLACED",
-                    metadata=signal.metadata,
-                )
-        except KillSwitchError:
-            logger.critical("kill_switch_triggered")
-            self._emit("risk.kill_switch", **sig_info)
-            for s in self._strategies:
-                s.deactivate()
-        except RiskLimitError as e:
-            logger.warning("risk_limit_hit", error=str(e))
-            self._emit("risk.blocked", **sig_info, error=str(e))
-        except Exception as e:
-            logger.error("signal_processing_error", error=str(e))
-            self._emit("order.failed", **sig_info, error=str(e))
-            return None
-        return order_id or None
+            open_pos = self._execution.open_position_for(signal.tradingsymbol, signal.strategy_name)
+            if open_pos is not None:
+                # a signal carrying its own exit plan (metadata["exec"]) is managed by that plan
+                plan_managed = getattr(strategy, "uses_exit_plans", False) or bool(signal.metadata.get("exec"))
+                if open_pos.is_long == (side > 0) or plan_managed:
+                    logger.info("signal_ignored_position_open", strategy=signal.strategy_name, symbol=signal.tradingsymbol)
+                    self._emit("signal.ignored", **sig_info, reason="position already open in that direction")
+                    outcome.update(decision="ignored", reason="position already open in that direction")
+                    return
+                await self._execution.close_position(open_pos.order_id, reason="signal_exit")
+                self._emit("order.close", **sig_info, order_id=open_pos.order_id, reason="opposite signal")
+            # a live market order fills now, on the bar that is forming: inside the session,
+            # no new intraday entry once that bar would close at / after the 15:15 square-off
+            now_t = datetime.now().time()
+            if (can_open and dtime(9, 15) <= now_t < dtime(15, 30)
+                    and not entry_allowed(timeframe, now_t.strftime("%H:%M"))):
+                self._emit("signal.ignored", **sig_info, reason="too close to the 15:15 intraday square-off")
+                outcome.update(decision="ignored", reason="too close to the 15:15 intraday square-off")
+                return
+            if not can_open:
+                if not is_exit:
+                    self._emit("signal.ignored", **sig_info, reason=f"shorting not allowed on {timeframe} (delivery)")
+                outcome.update(decision="exit" if is_exit or open_pos is not None else "ignored",
+                               reason="closed the open position" if open_pos is not None else
+                               "exit signal" if is_exit else f"shorting not allowed on {timeframe} (delivery)")
+                return
+
+            signal_data = {
+                "timestamp": datetime.now().isoformat(),
+                "strategy": signal.strategy_name,
+                "tradingsymbol": signal.tradingsymbol,
+                "transaction_type": signal.transaction_type.value,
+                "quantity": signal.quantity,
+                "price": signal.price,
+                "confidence": signal.confidence,
+                "metadata": signal.metadata,
+            }
+            self._signal_log.append(signal_data)
+            await self._broadcast_ws({"type": "signal", "data": signal_data})
+
+            order_id = None
+            try:
+                order_id = await self._execution.execute_signal(signal)
+                outcome.update(decision="sent" if order_id else "failed", order_id=order_id or "",
+                               reason="" if order_id else "execution engine returned no order id")
+                if order_id:
+                    self._emit("order.placed", **sig_info, order_id=order_id)
+                else:
+                    self._emit("order.failed", **sig_info, error="execution engine returned no order id")
+                if order_id:
+                    self._journal.record_trade(
+                        strategy=signal.strategy_name,
+                        tradingsymbol=signal.tradingsymbol,
+                        exchange=signal.exchange.value,
+                        transaction_type=signal.transaction_type.value,
+                        quantity=signal.quantity,
+                        price=signal.price or 0.0,
+                        order_id=order_id,
+                        status="PLACED",
+                        metadata=signal.metadata,
+                    )
+            except KillSwitchError:
+                logger.critical("kill_switch_triggered")
+                outcome.update(decision="blocked", reason="kill switch")
+                self._emit("risk.kill_switch", **sig_info)
+                for s in self._strategies:
+                    s.deactivate()
+            except RiskLimitError as e:
+                logger.warning("risk_limit_hit", error=str(e))
+                outcome.update(decision="blocked", reason=str(e))
+                self._emit("risk.blocked", **sig_info, error=str(e))
+            except Exception as e:
+                logger.error("signal_processing_error", error=str(e))
+                outcome.update(decision="failed", reason=str(e))
+                self._emit("order.failed", **sig_info, error=str(e))
+                return None
+            return order_id or None
+        finally:
+            self._ledger_live_signal(signal, timeframe, outcome)
+
+    def _ledger_live_signal(self, signal: Signal, timeframe: str, outcome: dict[str, Any]) -> None:
+        """Record a live strategy signal and what became of it in the signals ledger."""
+        try:
+            minutes = self.LIVE_INTERVAL_MINUTES.get(timeframe, 5)
+            now = datetime.now()
+            bar = bucket_start(now - timedelta(minutes=minutes), minutes) if minutes < 375 else now.replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            bar_time = bar.strftime("%Y-%m-%dT%H:%M")
+            side = "LONG" if signal.transaction_type == TransactionType.BUY else "SHORT"
+            meta = signal.metadata or {}
+            key = f"live|{self._zerodha_id or ''}|{signal.strategy_name}|{signal.tradingsymbol}|{bar_time}|{side}"
+            stamp = now.isoformat(timespec="seconds")
+            self._market_store.upsert_signal(key, {
+                "source": "live", "account": self._zerodha_id or "", "strategy": signal.strategy_name,
+                "symbol": signal.tradingsymbol, "timeframe": timeframe, "session": bar_time[:10],
+                "bar_time": bar_time, "signal_time": now.strftime("%H:%M"), "side": side,
+                "setup": meta.get("setup") or meta.get("trigger") or "", "quality": signal.confidence,
+                "entry": signal.price, "stop": None, "status": outcome.get("decision") or "",
+                "features": {k: v for k, v in meta.items() if k != "exec"},
+            }, stamp)
+            if outcome.get("decision"):
+                self._market_store.set_signal_decision(key, outcome["decision"], outcome.get("reason") or "",
+                                                       str(outcome.get("order_id") or ""), stamp)
+        except Exception as e:   # the ledger must never break order routing
+            logger.warning("signal_ledger_failed", strategy=signal.strategy_name, error=str(e))
 
     # ────────────────────────────────────────────────────────────
     # Paper Trading
@@ -2429,7 +2472,7 @@ class TradingService:
         })
 
         engine = PaperTradingEngine(strategy=strategy, initial_capital=capital)
-        result = await asyncio.to_thread(engine.run, df, instrument_token=0, tradingsymbol=tradingsymbol, timeframe="5min")
+        result = await asyncio.to_thread(engine.run, df, instrument_token=0, tradingsymbol=tradingsymbol, timeframe="5minute")
         result_dict = result.to_dict_safe()
         result_dict["generated_at"] = datetime.now().isoformat()
         self._paper_results[strategy_name] = result_dict
@@ -2806,7 +2849,22 @@ class TradingService:
             result["baseline_loading"] = bool(self._fno_baseline_task and not self._fno_baseline_task.done())
             self._fno_history.record(result, now)
             self._fno_cache = (time.monotonic(), result)
+            self._record_flow_snapshot(result, now)
             return result
+
+    def _record_flow_snapshot(self, flow: dict[str, Any], now: datetime) -> None:
+        """Persist the flow once per 5-minute bar close, stamped with that close
+        (HH:MM), so back-tests see exactly what the board saw when a bar closed."""
+        if not market_open(now) or flow.get("baseline_loading") or not flow.get("rows"):
+            return
+        stamp = bar_bucket(now).strftime("%Y-%m-%dT%H:%M")    # the bar that just closed ends here
+        if stamp == self._flow_snapshot_at:
+            return
+        self._flow_snapshot_at = stamp
+        try:
+            self._market_store.store_flow_snapshot(stamp, flow["rows"], flow.get("picks"))
+        except Exception as e:
+            logger.warning("flow_snapshot_store_failed", error=str(e))
 
     def get_fno_flow_history(self, minutes: int = 60) -> list[dict[str, Any]]:
         return self._fno_history.since(minutes, datetime.now())
@@ -2833,9 +2891,9 @@ class TradingService:
             for k in candles
         ]
         try:   # keep the bars, so board sessions (and filter / exit changes) can be replayed later
-            self._market_store.store_candles(contract.cash_token, "5minute", [
+            self._market_store.store_candles(contract.cash_token, "5minute", completed_candles([
                 {"ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"], "volume": b["v"]} for b in bars
-            ])
+            ], "5minute", datetime.now()))
         except Exception as e:
             logger.warning("day_trade_bars_store_failed", symbol=symbol, error=str(e))
         return bars
@@ -2861,6 +2919,14 @@ class TradingService:
             except Exception as e:
                 logger.warning("day_trade_refresh_failed", error=str(e))
             await asyncio.sleep(self.DAY_TRADE_POLL_S)
+
+    def ensure_session_recording(self) -> None:
+        """During market hours keep the board loop running for a real account even
+        when nobody has the Day Trade tab open, so every session's flow snapshots
+        and signal ledger are complete (the data the board is back-tested on)."""
+        if self.is_demo or not self.is_authenticated or not market_open(datetime.now()):
+            return
+        self._ensure_day_trade_loop()
 
     def _ensure_day_trade_loop(self) -> None:
         self._day_trade_last_request = time.monotonic()
@@ -3416,7 +3482,7 @@ class TradingService:
             is_intraday=is_intraday,
         )
 
-        result = await asyncio.to_thread(engine.run, df, instrument_token, tradingsymbol)
+        result = await asyncio.to_thread(engine.run, df, instrument_token, tradingsymbol, timeframe=interval)
         result["generated_at"] = datetime.now().isoformat()
         if fetch_days != days:
             result["warmup_note"] = (
