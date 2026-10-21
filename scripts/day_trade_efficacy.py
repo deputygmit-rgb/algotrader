@@ -90,13 +90,17 @@ def replay(db: str, setups: list[str] | None, split: str | None) -> list[dict[st
     from scripts.strategy_benchmark import symbol_names
 
     names = symbol_names(db)
+    from src.analysis.market_regime import MarketBiasHistory
+    from src.data.market_data_store import MarketDataStore
+
+    market = MarketBiasHistory(MarketDataStore(db_path=db))
     trades: list[dict[str, Any]] = []
     sessions = 0
     for token in tokens:
         df = pd.read_sql("SELECT ts AS timestamp, open, high, low, close, volume FROM candles "
                          "WHERE interval='5minute' AND instrument_token=? ORDER BY ts", con, params=(token,))
         df["timestamp"] = pd.to_datetime(df["timestamp"])
-        result = replay_sessions(df, setups=setups)
+        result = replay_sessions(df, setups=setups, market_bias=market.at)
         sessions += result["sessions"]
         for s in result["signals"]:
             if s.get("result_r") is not None:
@@ -120,6 +124,10 @@ def replay(db: str, setups: list[str] | None, split: str | None) -> list[dict[st
     breakdown("exit", trades, lambda t: t["status"])
     breakdown("signal hour", trades, lambda t: t["time"][:2], halves)
     breakdown("quality", trades, lambda t: f"{t['quality'] // 10 * 10}-{t['quality'] // 10 * 10 + 9}", halves)
+    breakdown("index OI bias at the signal", trades,
+              lambda t: "no reading" if not t.get("market_bias") else
+              "with the market" if (t.get("market_adj") or 0) > 0 else
+              "against the market" if (t.get("market_adj") or 0) < 0 else "market neutral")
     mfe = [t["mfe_r"] for t in trades]
     print(f"\n  excursion: median MFE {statistics.median(mfe):+.2f}R · median MAE "
           f"{statistics.median(t['mae_r'] for t in trades):+.2f}R · reached 1R {sum(m >= 1 for m in mfe) / len(mfe):.0%}"

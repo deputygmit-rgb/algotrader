@@ -27,6 +27,10 @@ logger = get_logger(__name__)
 
 SESSION_OPEN = dtime(9, 15)
 SESSION_CLOSE = dtime(15, 30)
+# Automatic picks are made from live money flow only once the first 5-minute bar
+# has closed: earlier, the quotes are the previous session's close (overnight) or
+# a minute of trading (the open). The trade direction is fixed at the pick.
+AUTO_SELECT_FROM = dtime(9, 20)
 AUTO_PER_SIDE = 6            # best longs / shorts taken from each universe
 WATCH_PER_SIDE = 2           # plus the top of each watchlist
 MAX_AUTO = 30
@@ -102,6 +106,8 @@ class DayTradeTracker:
         self._quality: dict[str, int] = {}
         self._daily_cache: dict[str, dict] = {}    # per-symbol cache for session_inputs
         self._lock = asyncio.Lock()
+        # index OI bias at a bar close (market_regime.MarketBiasHistory.at); None = not used
+        self.market_bias: Callable[[str], Any] | None = None
 
     # ── persistence ─────────────────────────────────────────────────
     def to_state(self) -> dict[str, Any]:
@@ -136,7 +142,25 @@ class DayTradeTracker:
             self._daily_cache.clear()
 
     def update_selection(self, snapshot: dict[str, Any], now: datetime) -> None:
+        """Add the flow's best longs / shorts to the working list (sticky for the session).
+
+        Picks are made only between AUTO_SELECT_FROM and the close of a trading
+        day. Automatic picks made before today's selection window - the list
+        used to be filled at midnight from the previous session's closing flow,
+        with that stale direction fixed for the whole day - are dropped first.
+        """
         self._roll_session(now)
+        if not (market_open(now) and now.time() >= AUTO_SELECT_FROM):
+            return
+        window = datetime.combine(now.date(), AUTO_SELECT_FROM).strftime("%Y-%m-%dT%H:%M")
+        # a stale pick that already produced a signal keeps its place: its trade is followed to the end
+        has_signal = {k.split(":", 1)[0] for k in self._quality}
+        stale = [s for s, v in self._tracked.items()
+                 if v["source"] == "auto" and (v.get("since_at") or "") < window and s not in has_signal]
+        for sym in stale:
+            self.remove(sym)
+        if stale:
+            logger.warning("day_trade_stale_picks_dropped", count=len(stale), before=window)
         rows = {r["symbol"]: r for r in snapshot.get("rows", [])}
         auto = [s for s, v in self._tracked.items() if v["source"] == "auto"]
         for sym in select_auto_symbols(snapshot):
@@ -213,6 +237,7 @@ class DayTradeTracker:
                 prev_high=inputs["prev_high"] if inputs else None, prev_low=inputs["prev_low"] if inputs else None,
                 prev_close=inputs["prev_close"] if inputs else None,
                 ltp=r.get("ltp"), direction=bias, min_quality=MIN_QUALITY,
+                market_bias=self.market_bias,
             )
             last_bar = bars[-1] if bars else None
             for s in result["signals"]:
@@ -234,6 +259,11 @@ class DayTradeTracker:
                     "vol_ratio": r.get("vol_ratio"), "change_pct": r.get("change_pct"),
                     "vwap_dev_pct": r.get("vwap_dev_pct"), "oi_change_pct": r.get("oi_change_pct"),
                     "buildup": r.get("buildup"), "score": r.get("score"),
+                    # market-wide options-OI bias when the signal appeared (NIFTY / SENSEX), and
+                    # what the NIFTY bias at the signal bar's close did to its quality
+                    "market_oi_bias": flow.get("market_oi"),
+                    "base_quality": s.get("base_quality"), "market_bias": s.get("market_bias"),
+                    "market_adj": s.get("market_adj"),
                 }
                 s["is_latest_bar"] = bool(last_bar) and s["bar_time"] == last_bar["t"]
                 s["bar_close"] = last_bar["c"] if last_bar else None

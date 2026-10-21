@@ -99,7 +99,7 @@ const DayTrade = (() => {
             <th>${esc(s.symbol)}</th>
             <td><span class="dt-side ${s.side === 'LONG' ? 'long' : 'short'}">${s.side}</span></td>
             <td class="dt-setup">${esc(s.label)}</td>
-            <td class="num">${s.quality}</td>
+            <td class="num" title="${esc(qualityTip(s))}">${s.quality}${s.market_adj ? `<small style="color:var(${s.market_adj > 0 ? '--t-g' : '--t-r'})"> ${s.market_adj > 0 ? '+' : ''}${s.market_adj}</small>` : ''}</td>
             <td class="num">${num(s.entry)}</td>
             <td class="num">${num(s.stop)}</td>
             <td class="num">${num(s.target1)}</td>
@@ -107,6 +107,13 @@ const DayTrade = (() => {
             <td class="num ${rCls}" title="${esc(rTitle(s))}">${r === null ? '—' : `${sgn(r)}R`}${s.status === 'PENDING' ? '<i>est</i>' : ''}</td>
             <td>${orderCell(s.order)}</td>
         </tr>`;
+    }
+
+    // quality = the setup's own score (bars) + the index OI bias at the signal bar's close
+    function qualityTip(s) {
+        if (s.base_quality == null) return '';
+        const mkt = s.market_bias ? `NIFTY OI ${s.market_bias}: ${s.market_adj > 0 ? '+' : ''}${s.market_adj}` : 'no NIFTY OI reading at the signal: no adjustment';
+        return `Setup ${s.base_quality} · ${mkt}`;
     }
 
     // Auto-trade decision for a signal (only signals that were candidates get one)

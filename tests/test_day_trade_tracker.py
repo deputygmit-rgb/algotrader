@@ -154,11 +154,25 @@ def test_portfolio_cap_skips_signals_while_five_trades_are_open():
     assert [s.get("skipped") for s in feed] == [None] * 5 + ["portfolio full"]
 
 
-def test_previous_session_signals_are_backfilled_after_midnight():
+def test_no_automatic_picks_before_the_first_bar_closes():
+    """The list used to be filled at midnight from the previous session's closing
+    flow, with that stale direction fixed for the whole day."""
     tracker = DayTradeTracker(lambda s: None)
-    tracker.update_selection(_snapshot({"A": 40}), datetime(2026, 10, 19, 0, 30))
-    meta = tracker._tracked["A"]
-    assert meta["since_at"] == "2026-10-19T00:30" and meta["bias"] == "LONG"
+    for t in (datetime(2026, 10, 19, 0, 30), datetime(2026, 10, 19, 9, 16), datetime(2026, 10, 19, 15, 45)):
+        tracker.update_selection(_snapshot({"A": 40}), t)
+        assert tracker.symbols == []
+    tracker.update_selection(_snapshot({"A": 40}), datetime(2026, 10, 19, 9, 20))
+    assert tracker._tracked["A"]["since_at"] == "2026-10-19T09:20"
+
+
+def test_stale_picks_are_dropped_at_the_open_unless_they_already_have_a_signal():
+    tracker = DayTradeTracker(lambda s: None)
+    stale = {"source": "auto", "since": "00:21", "since_at": "2026-10-19T00:21", "bias": "SHORT"}
+    tracker.load_state({"session": "2026-10-19", "quality": {"B:2026-10-19T09:25-ORB-L": 80},
+                        "tracked": {"A": dict(stale), "B": dict(stale), "M": {**stale, "source": "manual"}}},
+                       datetime(2026, 10, 19, 9, 0))
+    tracker.update_selection(_snapshot({"C": 50}), datetime(2026, 10, 19, 9, 25))
+    assert set(tracker.symbols) == {"B", "M", "C"}           # A dropped; B keeps its open trade; manual stays
 
 
 def test_signal_ids_are_unique_across_symbols():

@@ -56,6 +56,10 @@ Selectivity (to avoid over-trading in choppy sessions):
   * with ``prev_close``, a long needs the close above the previous session's
     close (a short, below): signals against the day's move lost before costs
     in both halves of the replay (-0.11R and -0.09R gross);
+  * with ``market_bias`` (index options-OI bias at each bar close, see
+    ``market_regime``), quality gains up to ``MARKET_WEIGHT`` points with the
+    market and loses as many against it, so a marginal setup against a clearly
+    bearish / bullish market falls below ``min_quality``;
   * only ``setups`` are detected, ``DEFAULT_SETUPS`` unless given. PULLBACK is
     off by default: it lost before costs in both halves of the replay
     (-0.03R gross) and was 37% of all signals.
@@ -63,7 +67,9 @@ Selectivity (to avoid over-trading in choppy sessions):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, Optional
+
+from src.analysis.market_regime import MARKET_WEIGHT, market_adjustment
 
 BAR_MINUTES = 5
 ORB_BARS = 3                 # 09:15-09:30 opening range
@@ -232,13 +238,15 @@ def analyze_session(
     ltp: float | None = None,
     direction: str | None = None, min_quality: float = 0,
     prev_close: float | None = None, setups: Any = None,
+    market_bias: Optional[Callable[[str], Optional[str]]] = None, market_weight: float = MARKET_WEIGHT,
 ) -> dict[str, Any]:
     """Replay completed 5-minute bars ``[{t, o, h, l, c, v}, ...]`` (oldest first).
 
     ``direction`` ("LONG" / "SHORT") restricts the session to that side;
     ``min_quality`` skips weaker setups (they are not taken at all).
     ``prev_close`` enables the with-the-day's-move filter; ``setups`` limits
-    detection to those setups (``DEFAULT_SETUPS`` when None).
+    detection to those setups (``DEFAULT_SETUPS`` when None). ``market_bias``
+    maps a bar close ("YYYY-MM-DDTHH:MM") to the index OI bias at that time.
 
     Returns indicators, the opening range, every signal of the session with
     its outcome, the open trade (marked to ``ltp``) and the levels a new
@@ -282,7 +290,10 @@ def analyze_session(
         if not found:
             continue
         setup, side, natural_stop, why = found
-        quality = _quality(i, side, bars, ind)
+        base_quality = _quality(i, side, bars, ind)
+        mkt = market_bias(f"{str(b['t'])[:10]}T{_bar_close_time(b)}") if market_bias else None
+        mkt_adj = market_adjustment(side, mkt, market_weight)
+        quality = max(0, min(100, base_quality + mkt_adj))
         if quality < min_quality:
             continue
         fired.add((setup, side))
@@ -296,6 +307,9 @@ def analyze_session(
             "side": "LONG" if side > 0 else "SHORT",
             "trigger": why,
             "quality": quality,
+            "base_quality": base_quality,       # from the bars alone
+            "market_bias": mkt,                 # index OI bias at the signal bar's close (None: no reading)
+            "market_adj": mkt_adj,
             "status": "PENDING",
             "entry_time": None,
             "bars_held": 0,

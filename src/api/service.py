@@ -226,6 +226,10 @@ class TradingService:
                                           account=zerodha_id or "")
         self._execution.set_event_sink(self._lifecycle.event)
         self._execution.attach_state_store(self._market_store, zerodha_id or "")
+        # the board scores signals with the index OI bias at each bar close (market_regime)
+        from src.analysis.market_regime import MarketBiasHistory
+
+        self._market_bias = MarketBiasHistory(self._market_store)
         self._replay_task: Optional[asyncio.Task] = None
         self._replay_state: dict[str, Any] = {"status": "idle", "running": False}
         self._nifty_contrib_cache: tuple[float, dict[str, Any]] | None = None
@@ -238,6 +242,7 @@ class TradingService:
         self._fno_lock = asyncio.Lock()
         self._fno_history = FlowHistory()
         self._day_trade = DayTradeTracker(self._fetch_day_bars)
+        self._day_trade.market_bias = self._market_bias.at
         self._day_trade_task: Optional[asyncio.Task] = None
         self._day_trade_last_request = 0.0
         self._flow_snapshot_at = ""     # bar close of the last stored flow snapshot
@@ -2978,6 +2983,12 @@ class TradingService:
             logger.warning("day_trade_bars_store_failed", symbol=symbol, error=str(e))
         return bars
 
+    def _with_market_oi(self, flow: dict[str, Any]) -> dict[str, Any]:
+        """The flow plus the latest market-wide options-OI bias (recorded once a minute)."""
+        latest = self.__dict__.get("last_oi_bias") or {}
+        return {**flow, "market_oi": {u: {"bias": r.get("bias"), "pcr_oi": r.get("pcr_oi"), "ts": r.get("ts")}
+                                      for u, r in latest.items()}}
+
     async def _day_trade_loop(self) -> None:
         """Keep the tracked list and its bars current through the session."""
         while self.is_authenticated:
@@ -2989,6 +3000,7 @@ class TradingService:
             try:
                 flow = await self.get_fno_flow(max_age_s=5.0)
                 if not flow.get("error"):
+                    flow = self._with_market_oi(flow)
                     self._day_trade.update_selection(flow, now)
                     await self._day_trade.refresh(now)
                     # journal every signal / status change and (if opted in) act on new ones,
@@ -3020,6 +3032,7 @@ class TradingService:
         flow = await self.get_fno_flow(max_age_s=5.0)
         if flow.get("error"):
             return {"error": flow["error"]}
+        flow = self._with_market_oi(flow)
         now = datetime.now()
         self._day_trade.update_selection(flow, now)
         snap = self._day_trade.snapshot(flow, now)
@@ -3154,7 +3167,7 @@ class TradingService:
                 per_symbol[sym] = {"error": f"history fetch failed: {e}"}
                 continue
             df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
-            result = replay_sessions(df)
+            result = replay_sessions(df, market_bias=self._market_bias.at)
             for sig in result["signals"]:
                 sig["symbol"] = sym
             combined.extend(result["signals"])

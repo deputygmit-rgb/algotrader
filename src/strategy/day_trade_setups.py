@@ -32,6 +32,7 @@ from src.analysis.intraday_setups import (
     TARGET2_R,
     analyze_session,
 )
+from src.analysis.market_regime import MARKET_WEIGHT, MarketBiasHistory
 from src.analysis.money_flow import ATR_PERIOD, average_true_range
 
 # Earlier sessions needed before a session is traded: a full ATR window plus
@@ -127,10 +128,25 @@ class DayTradeSetupsStrategy(BaseStrategy):
             "min_quality": MIN_QUALITY,       # 0-100; same floor as the Day Trade panel
             "tradingsymbol_map": {},
             "use_dma200_filter": False,       # intraday setups; the daily regime filter would starve them
+            # index options-OI bias at each signal bar's close adds to / takes from quality
+            # (src/analysis/market_regime.py); read from the stored oi_bias_history
+            "use_market_bias": True,
+            "market_weight": MARKET_WEIGHT,
         }
         super().__init__("day_trade_setups", {**defaults, **(params or {})})
         self._emitted: set[tuple[int, str]] = set()
         self._daily: dict[int, dict] = {}
+        self._market: Optional[MarketBiasHistory] = None
+
+    def _market_bias(self):
+        """Point-in-time index OI bias from the shared store (None when switched off)."""
+        if not self.params.get("use_market_bias", True):
+            return None
+        if self._market is None:
+            from src.data.market_data_store import get_market_data_store
+
+            self._market = MarketBiasHistory(get_market_data_store())
+        return self._market.at
 
     async def on_tick(self, ticks: list[Tick]) -> list[Signal]:
         return []   # setups are evaluated on closed bars only
@@ -149,7 +165,8 @@ class DayTradeSetupsStrategy(BaseStrategy):
         result = analyze_session(
             inputs["bars"], atr=inputs["atr"], prev_high=inputs["prev_high"], prev_low=inputs["prev_low"],
             prev_close=inputs["prev_close"], min_quality=float(self.params.get("min_quality") or 0),
-            setups=self.params.get("setups") or None,
+            setups=self.params.get("setups") or None, market_bias=self._market_bias(),
+            market_weight=float(self.params.get("market_weight", MARKET_WEIGHT)),
         )
         last_bar = inputs["bars"][-1]["t"]
         fresh = [s for s in result["signals"] if s["bar_time"] == last_bar]
@@ -197,6 +214,9 @@ def build_order_signal(
             "signal_id": s["id"],
             "trigger": s["trigger"],
             "signal_time": s["time"],
+            "base_quality": s.get("base_quality"),
+            "market_bias": s.get("market_bias"),
+            "market_adj": s.get("market_adj"),
             "exec": {
                 "fill": "next_open",
                 "trail": False,
@@ -219,7 +239,7 @@ def build_order_signal(
 
 
 def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESSIONS,
-                    setups: Optional[list[str]] = None) -> dict[str, Any]:
+                    setups: Optional[list[str]] = None, market_bias: Any = None) -> dict[str, Any]:
     """Run the setups over every session in ``data`` (5-minute bars, oldest first).
 
     Each session uses only the sessions before it for its daily ATR and
@@ -245,7 +265,7 @@ def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESS
             continue
         result = analyze_session(inputs["bars"], atr=inputs["atr"], prev_high=inputs["prev_high"],
                                  prev_low=inputs["prev_low"], prev_close=inputs["prev_close"],
-                                 min_quality=MIN_QUALITY, setups=setups)
+                                 min_quality=MIN_QUALITY, setups=setups, market_bias=market_bias)
         day_signals = [{**s, "date": day} for s in result["signals"]]
         signals.extend(day_signals)
         days.append({"date": day, **session_stats(day_signals)})
