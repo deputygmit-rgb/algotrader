@@ -31,6 +31,7 @@
             <button class="btn btn-outline btn-sm" onclick="logoutUser()" style="margin-left:8px;border-color:#ff5252;color:#ff5252">Exit demo</button>
             {% else %}
             <button class="btn btn-outline btn-sm" onclick="logoutUser()" style="margin-left:8px;border-color:#ff5252;color:#ff5252">Logout</button>
+            {% if is_admin %}<a class="btn btn-outline btn-sm" href="/admin" data-track="open-admin">Admin</a>{% endif %}
             <button class="btn btn-outline btn-sm" onclick="logoutAllDevices()" title="End your sessions on every browser and device" style="border-color:#ff5252;color:#ff5252">Logout all devices</button>
             {% endif %}
         </div>

@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_day ON events(day, event);
 CREATE INDEX IF NOT EXISTS events_user ON events(user_id, day);
 
+CREATE TABLE IF NOT EXISTS admin_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    admin       TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    target      TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '{}',
+    ip_hash     TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS contact_requests (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          TEXT NOT NULL,
@@ -87,6 +97,7 @@ CREATE TABLE IF NOT EXISTS contact_requests (
 """
 
 EVENT_NAME = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+CONTACT_STATUSES = ("new", "contacted", "approved", "rejected")
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -233,6 +244,50 @@ class MetricsStore:
         try:
             with conn:
                 conn.execute("UPDATE contact_requests SET emailed = 1 WHERE id = ?", (contact_id,))
+        finally:
+            conn.close()
+
+    # ── admin panel: audit trail and access requests ─────────────────────
+    def add_audit(self, admin: str, action: str, target: str, detail: dict[str, Any], ip: str) -> None:
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO admin_audit (ts, admin, action, target, detail, ip_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                    (datetime.now(IST).isoformat(timespec="seconds"), admin, action, target,
+                     json.dumps(detail, default=str), self.ip_hash(ip)))
+        finally:
+            conn.close()
+
+    def list_audit(self, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT ts, admin, action, target, detail FROM admin_audit ORDER BY id DESC LIMIT ?",
+                                (limit,)).fetchall()
+        finally:
+            conn.close()
+        return [{"ts": r[0], "admin": r[1], "action": r[2], "target": r[3], "detail": json.loads(r[4] or "{}")}
+                for r in rows]
+
+    def list_contacts(self, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """SELECT id, ts, name, email, phone, trading_id, message, source, emailed, status,
+                          access_level, platform FROM contact_requests ORDER BY id DESC LIMIT ?""", (limit,)).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def set_contact_status(self, contact_id: int, status: str) -> bool:
+        if status not in CONTACT_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(CONTACT_STATUSES)}")
+        conn = self._connect()
+        try:
+            with conn:
+                return conn.execute("UPDATE contact_requests SET status = ? WHERE id = ?",
+                                    (status, contact_id)).rowcount == 1
         finally:
             conn.close()
 

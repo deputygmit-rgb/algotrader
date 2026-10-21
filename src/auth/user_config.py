@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -101,6 +102,8 @@ class UserConfigService:
 
     def __init__(self) -> None:
         self._users: dict[str, UserConfig] = {}
+        self._mtime = 0.0
+        self._checked = 0.0
         self._load()
 
     @classmethod
@@ -109,24 +112,54 @@ class UserConfigService:
             cls._instance = UserConfigService()
         return cls._instance
 
+    @staticmethod
+    def _read_file() -> tuple[dict[str, UserConfig], bool]:
+        """Users on disk, and whether any secret is still stored in plain text.
+        Raises when the file cannot be read or decrypted."""
+        with open(USER_CONFIG_FILE, "r") as f:
+            data = json.load(f)
+        users: dict[str, UserConfig] = {}
+        needs_migration = False
+        for uid, info in data.items():
+            api_key, legacy_key = _decrypt(info.get("api_key", ""))
+            api_secret, legacy_secret = _decrypt(info.get("api_secret", ""))
+            needs_migration = needs_migration or legacy_key or legacy_secret
+            users[uid.upper()] = UserConfig(
+                zerodha_id=uid.upper(),
+                api_key=api_key,
+                api_secret=api_secret,
+                email=info.get("email", ""),
+                # accounts saved before access levels existed keep full access
+                access_level=normalize_level(info.get("access_level"), LEGACY_DEFAULT),
+            )
+        return users, needs_migration
+
+    def reload(self) -> None:
+        """Re-read users.json (picks up scripts/manage_users.py edits). Raises on
+        failure and keeps the users already in memory."""
+        if not os.path.exists(USER_CONFIG_FILE):
+            return
+        users, _ = self._read_file()
+        self._users = users
+        self._mtime = os.path.getmtime(USER_CONFIG_FILE)
+
+    def _maybe_reload(self) -> None:
+        now = time.monotonic()
+        if now - self._checked < 5:
+            return
+        self._checked = now
+        try:
+            if os.path.exists(USER_CONFIG_FILE) and os.path.getmtime(USER_CONFIG_FILE) != self._mtime:
+                self.reload()
+                logger.info("users_reloaded", count=len(self._users))
+        except Exception as e:
+            logger.error("user_config_reload_failed", error=str(e))
+
     def _load(self) -> None:
         if os.path.exists(USER_CONFIG_FILE):
             try:
-                with open(USER_CONFIG_FILE, "r") as f:
-                    data = json.load(f)
-                needs_migration = False
-                for uid, info in data.items():
-                    api_key, legacy_key = _decrypt(info.get("api_key", ""))
-                    api_secret, legacy_secret = _decrypt(info.get("api_secret", ""))
-                    needs_migration = needs_migration or legacy_key or legacy_secret
-                    self._users[uid.upper()] = UserConfig(
-                        zerodha_id=uid.upper(),
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        email=info.get("email", ""),
-                        # accounts saved before access levels existed keep full access
-                        access_level=normalize_level(info.get("access_level"), LEGACY_DEFAULT),
-                    )
+                self._users, needs_migration = self._read_file()
+                self._mtime = os.path.getmtime(USER_CONFIG_FILE)
                 logger.info("users_loaded", count=len(self._users))
                 if needs_migration:
                     logger.info("user_config_migrating_to_encrypted")
@@ -158,23 +191,32 @@ class UserConfigService:
                 )
 
     def _save(self) -> None:
+        """Write users.json atomically (a crash mid-write cannot corrupt it).
+        Raises on failure so callers never report a change that was not saved."""
         os.makedirs(os.path.dirname(USER_CONFIG_FILE), exist_ok=True)
+        data = {}
+        for uid, uc in self._users.items():
+            data[uid] = {
+                "api_key": _encrypt(uc.api_key),
+                "api_secret": _encrypt(uc.api_secret),
+                "email": uc.email,
+                "access_level": uc.access_level,
+            }
+        tmp = f"{USER_CONFIG_FILE}.{os.getpid()}.tmp"
         try:
-            data = {}
-            for uid, uc in self._users.items():
-                data[uid] = {
-                    "api_key": _encrypt(uc.api_key),
-                    "api_secret": _encrypt(uc.api_secret),
-                    "email": uc.email,
-                    "access_level": uc.access_level,
-                }
-            with open(USER_CONFIG_FILE, "w") as f:
+            with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
-            os.chmod(USER_CONFIG_FILE, 0o600)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, USER_CONFIG_FILE)
+            self._mtime = os.path.getmtime(USER_CONFIG_FILE)
         except Exception as e:
             logger.error("user_config_save_failed", error=str(e))
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     def get_user(self, zerodha_id: str) -> Optional[UserConfig]:
+        self._maybe_reload()
         return self._users.get(zerodha_id.upper())
 
     def validate_user(self, zerodha_id: str) -> bool:
@@ -200,6 +242,24 @@ class UserConfigService:
         logger.info("user_access_changed", zerodha_id=uc.zerodha_id, access_level=access_level)
         return uc
 
+    def set_credentials(self, zerodha_id: str, api_key: str, api_secret: str) -> UserConfig:
+        uc = self._users.get(zerodha_id.upper())
+        if uc is None:
+            raise KeyError(zerodha_id)
+        uc.api_key, uc.api_secret = api_key, api_secret
+        self._save()
+        logger.info("user_credentials_changed", zerodha_id=uc.zerodha_id)
+        return uc
+
+    def set_email(self, zerodha_id: str, email: str) -> UserConfig:
+        uc = self._users.get(zerodha_id.upper())
+        if uc is None:
+            raise KeyError(zerodha_id)
+        uc.email = email
+        self._save()
+        logger.info("user_email_changed", zerodha_id=uc.zerodha_id)
+        return uc
+
     def remove_user(self, zerodha_id: str) -> bool:
         uid = zerodha_id.upper()
         if uid in self._users:
@@ -209,5 +269,6 @@ class UserConfigService:
         return False
 
     def list_users(self) -> list[dict[str, str]]:
+        self._maybe_reload()
         return [{"zerodha_id": uc.zerodha_id, "email": uc.email, "access_level": uc.access_level}
                 for uc in self._users.values()]

@@ -42,6 +42,7 @@ from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth,
 from src.auth.user_config import UserConfigService
 from src.metrics.store import device_of, metrics
 from src.utils.mailer import mail_guard, send_mail
+from src.api.admin import is_admin_session, router as admin_router
 from src.demo.sessions import (
     MAX_PER_NETWORK as DEMO_MAX_PER_NETWORK,
     PUBLIC_SESSION_SECONDS,
@@ -260,6 +261,10 @@ def _content_security_policy(request: Request) -> str:
 
 def _apply_security_headers(response, request: Request):
     response.headers["Content-Security-Policy"] = _content_security_policy(request)
+    if request.url.path == "/admin" or request.url.path.startswith("/api/admin/"):
+        # personal data and account settings: never cached, never indexed
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -618,9 +623,9 @@ async def contact(request: Request) -> Any:
             + (" - supported\n" if supported else " - NOT supported yet (only Zerodha accounts can be connected)\n")
             + "  The requester confirmed both choices.\n\n"
             f"Message:\n{message or '-'}\n\n"
-            "To give them access, run on the server:\n"
+            f"Review and add the user in the admin panel: {_public_url()}/admin\n"
+            "Or on the server:\n"
             f"  sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add {trading_id or '<TRADING_ID>'} {email} --access {access_level}\n"
-            "  sudo systemctl restart verquoai\n"
         )
         if await asyncio.to_thread(send_mail, admin, f"VerquoAI access request: {name}", text, email):
             await asyncio.to_thread(metrics.mark_emailed, contact_id)
@@ -852,6 +857,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         "demo_kind": demo_kind(svc),
         "contact_email": os.environ.get("ADMIN_EMAIL", ""),
         "form_token": _form_token(),
+        "is_admin": is_admin_session(request),
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
@@ -2782,3 +2788,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         svc.unregister_ws_client(websocket)
     except Exception:
         svc.unregister_ws_client(websocket)
+
+
+app.include_router(admin_router)

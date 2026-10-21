@@ -23,7 +23,6 @@ account private:
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import time
 from datetime import date, datetime
@@ -111,8 +110,11 @@ class SharedMarketHub:
     def __init__(self, account_id: Optional[str] = None,
                  source_factory: Optional[Callable[[str], Any]] = None,
                  ticker_factory: Optional[Callable[[Any], Any]] = None) -> None:
-        raw = os.environ.get("MARKET_DATA_ACCOUNT", "") if account_id is None else account_id
-        self.account_id = re.sub(r"[^A-Z0-9]", "", raw.upper())
+        if account_id is None:
+            from src.utils.app_settings import get_setting  # admin panel value, else .env
+
+            account_id = get_setting("market_data_account", "MARKET_DATA_ACCOUNT")
+        self.account_id = re.sub(r"[^A-Z0-9]", "", account_id.upper())
         self._source_factory = source_factory or _default_source
         self._ticker_factory = ticker_factory or KiteTicker
         settings = get_settings()
@@ -202,6 +204,17 @@ class SharedMarketHub:
             while len(self._cache) >= CACHE_MAX_ENTRIES:
                 del self._cache[next(iter(self._cache))]
         self._cache[key] = (now + ttl, value)
+
+    async def set_account(self, account_id: str) -> None:
+        """Switch the source account (admin panel). Stops the feed and forgets
+        everything fetched with the old account's session; viewers stay
+        attached and resume on the new account once it is logged in."""
+        await self._stop_upstream()
+        self._cache.clear()
+        self.account_id = re.sub(r"[^A-Z0-9]", "", (account_id or "").upper())
+        logger.info("shared_market_account_changed", account_id=self.account_id or "(off)")
+        if self._viewers:
+            await self._ensure_upstream()
 
     # ── live feed ────────────────────────────────────────────────
     @property

@@ -303,6 +303,12 @@ class OTPAuth:
             self._sessions.pop(_hash_token(token), None)
         self._save_sessions()
 
+    def count_sessions(self, zerodha_id: str) -> int:
+        """Signed-in, unexpired sessions of this user (any browser or device)."""
+        uid, now = zerodha_id.upper(), time.time()
+        return sum(1 for v in self._sessions.values()
+                   if v.get("zerodha_id") == uid and now - v.get("created_at", 0) < v.get("ttl", SESSION_EXPIRY_SECONDS))
+
     def logout_all(self, zerodha_id: str) -> int:
         """End every session of this user (all browsers and devices)."""
         uid = zerodha_id.upper()

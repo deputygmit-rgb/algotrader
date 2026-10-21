@@ -60,6 +60,15 @@ curl -sI https://verquoai.com | head -1                                         
 
 If it does not start: `sudo journalctl -u verquoai -n 50 --no-pager`.
 
+## Admin panel
+
+Set `ADMIN_USERS=AB1234` (comma-separated Trading IDs, each an existing user) in `.env` and restart. Admins get an **Admin** button in the dashboard header (`/admin`). There you can add and remove users, change access levels, replace API credentials, sign users out everywhere, choose the shared market data account (saved in `data/app_settings.json`, which overrides `MARKET_DATA_ACCOUNT` in `.env`), and work through access requests.
+
+- Anyone not in `ADMIN_USERS` (or in a demo) gets 404; every admin request needs a confirmation code emailed in the last 15 minutes.
+- API secrets are stored encrypted and never shown again; changes take effect immediately, without a restart.
+- Every change is listed in the panel's audit log (`admin_audit` in `data/analytics.db`).
+- The command line below still works; the app picks up `users.json` edits within seconds.
+
 ## Users and access levels
 
 Run from `/opt/verquoai/app`, then restart the service:

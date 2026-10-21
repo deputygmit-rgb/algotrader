@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <meta name="robots" content="noindex, nofollow">
+    <title>VerquoAI | Admin</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
+    <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+</head>
+<body class="t-admin" data-csrf="{{ csrf_token }}" data-admin="{{ admin_id }}">
+    <header class="header">
+        <div class="header-left">
+            <a class="logo" href="/app">VerquoAI™</a>
+            <span class="status-badge status-demo">ADMIN</span>
+            <span class="status-badge" style="color:var(--t-a)">{{ admin_id }}</span>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-outline btn-sm" type="button" id="adm-refresh">Refresh</button>
+            <a class="btn btn-outline btn-sm" href="/app">Back to workspace</a>
+        </div>
+    </header>
+
+    <main class="adm">
+        <p class="adm-note">Every action here needs a confirmation code from your email (valid 15 minutes) and is recorded in the audit log below. API secrets are stored encrypted and never shown again.</p>
+        <div class="adm-flash" id="adm-flash" role="status" hidden></div>
+
+        <section class="card adm-card">
+            <div class="adm-head"><h2>Users</h2><span id="adm-user-count"></span></div>
+            <div class="adm-table-wrap">
+                <table class="adm-table">
+                    <thead><tr><th>Trading ID</th><th>Email</th><th>Access</th><th>API key</th><th>Broker session today</th><th>Signed in</th><th></th></tr></thead>
+                    <tbody id="adm-users"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <div class="adm-grid">
+            <section class="card adm-card">
+                <div class="adm-head"><h2>Add user</h2></div>
+                <form id="adm-add" class="adm-form" autocomplete="off">
+                    <input type="hidden" name="contact_id" value="">
+                    <label>Trading ID<input name="zerodha_id" maxlength="10" required style="text-transform:uppercase"></label>
+                    <label>Email (sign-in codes go here)<input name="email" type="email" maxlength="120" required></label>
+                    <label>Access<select name="access_level" id="adm-add-level"></select></label>
+                    <label>API key <em>(required above view)</em><input name="api_key" maxlength="64" autocomplete="off" spellcheck="false"></label>
+                    <label>API secret<input name="api_secret" type="password" maxlength="64" autocomplete="new-password"></label>
+                    <button class="btn btn-primary" type="submit">Add user</button>
+                </form>
+            </section>
+
+            <section class="card adm-card">
+                <div class="adm-head"><h2>Update API credentials</h2></div>
+                <form id="adm-creds" class="adm-form" autocomplete="off">
+                    <label>User<select name="zerodha_id" id="adm-creds-user" required></select></label>
+                    <label>New API key<input name="api_key" maxlength="64" autocomplete="off" spellcheck="false" required></label>
+                    <label>New API secret<input name="api_secret" type="password" maxlength="64" autocomplete="new-password" required></label>
+                    <p class="adm-hint">Ends that user's running services and saved broker session; they link their trading account again.</p>
+                    <button class="btn btn-primary" type="submit">Save credentials</button>
+                </form>
+            </section>
+
+            <section class="card adm-card">
+                <div class="adm-head"><h2>Shared market data</h2><span id="adm-feed-state"></span></div>
+                <form id="adm-market" class="adm-form">
+                    <label>Source account (view-only users read its live market data)<select name="account_id" id="adm-market-account"></select></label>
+                    <p class="adm-hint">The source account must sign in and link its trading account each trading day. Check your broker's data terms before sharing live data.</p>
+                    <button class="btn btn-primary" type="submit">Save source</button>
+                </form>
+            </section>
+        </div>
+
+        <section class="card adm-card">
+            <div class="adm-head"><h2>Access requests</h2><span id="adm-contact-count"></span></div>
+            <div class="adm-table-wrap">
+                <table class="adm-table">
+                    <thead><tr><th>#</th><th>Received</th><th>Name</th><th>Email</th><th>Phone</th><th>Trading ID</th><th>Access</th><th>Broker</th><th>Message</th><th>Status</th><th></th></tr></thead>
+                    <tbody id="adm-contacts"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card adm-card">
+            <div class="adm-head"><h2>Audit log</h2></div>
+            <div class="adm-table-wrap">
+                <table class="adm-table">
+                    <thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Target</th><th>Details</th></tr></thead>
+                    <tbody id="adm-audit"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/js/secure_fetch.js?v={{ secure_fetch_js_version }}"></script>
+    <script src="/static/js/admin.js?v={{ admin_js_version }}"></script>
+</body>
+</html>

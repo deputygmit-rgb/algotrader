@@ -65,7 +65,8 @@ def _paths(uid: str) -> list[str]:
     ]
 
 
-async def _shutdown(service: Any) -> None:
+async def shutdown_service(service: Any) -> None:
+    """Stop live trading and every background task of a TradingService."""
     try:
         if service.is_running:
             await service.stop_live()
@@ -119,7 +120,7 @@ class DemoSessions:
         self._used.discard(uid)
         mgr = TradingServiceManager.get_instance()
         if mgr.has_service(uid):
-            await _shutdown(mgr.get_service(uid, demo=True))
+            await shutdown_service(mgr.get_service(uid, demo=True))
             mgr.remove_service(uid)
         for path in _paths(uid):
             try:
