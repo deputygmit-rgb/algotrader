@@ -21,7 +21,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -38,11 +38,12 @@ from src.auth.access import AGENTIC, LEVEL_LABELS, VIEW, AccessDenied
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
 from src.api.service import TradingService, TradingServiceManager
-from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth
+from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth, rate_limit_subject
 from src.auth.user_config import UserConfigService
 from src.metrics.store import device_of, metrics
-from src.utils.mailer import send_mail
+from src.utils.mailer import mail_guard, send_mail
 from src.demo.sessions import (
+    MAX_PER_NETWORK as DEMO_MAX_PER_NETWORK,
     PUBLIC_SESSION_SECONDS,
     demo_sessions,
     is_public_demo_id,
@@ -188,6 +189,15 @@ def get_session_zerodha_id(request: Request) -> str:
 def is_logged_in(request: Request) -> bool:
     token = request.cookies.get(SESSION_COOKIE, "")
     return otp_auth.validate_session(token)
+
+
+def _same_origin(websocket: WebSocket) -> bool:
+    """Browsers send Origin on WebSocket handshakes; refuse other sites' pages
+    (cross-site WebSocket hijacking) even if a session cookie came along."""
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True  # non-browser clients; the session cookie still decides
+    return urlsplit(origin).netloc.lower() == (websocket.headers.get("host") or "").lower()
 
 
 def _client_ip(request: Request) -> str:
@@ -358,7 +368,7 @@ async def metrics_middleware(request: Request, call_next):
             user_id, kind = _session_identity(request)
             if device_of(request.headers.get("user-agent", "")) == "bot":
                 kind = "bot"
-            metrics.record_request(user_id or f"v:{visitor}", kind, route, request.method, response.status_code,
+            metrics.record_request(user_id or kind, kind, route, request.method, response.status_code,
                                    (time.perf_counter() - started) * 1000)
         except Exception:
             pass
@@ -372,7 +382,7 @@ async def metrics_middleware(request: Request, call_next):
 async def metrics_events(request: Request) -> Any:
     """Browser activity (page views, clicks, tab switches) from static/js/metrics.js."""
     ip = _client_ip(request)
-    if not otp_auth.check_ip_rate_limit("metrics", ip, max_requests=600, window_seconds=3600):
+    if not otp_auth.check_ip_rate_limit("metrics", ip, max_requests=360, window_seconds=3600):
         return JSONResponse({"ok": False}, status_code=429)
     raw = await request.body()
     if len(raw) > 32 * 1024:
@@ -386,6 +396,8 @@ async def metrics_events(request: Request) -> Any:
         return JSONResponse({"ok": False}, status_code=400)
     user_id, kind = _session_identity(request)
     device = device_of(request.headers.get("user-agent", ""))
+    if device == "bot":  # crawlers and scripts: accept, but don't store their clicks
+        return {"ok": True}
     visitor = getattr(request.state, "visitor_id", "")
     for e in events[:50]:
         if isinstance(e, dict):
@@ -515,6 +527,28 @@ def _access_confirmation(contact_id: int, access_level: str, supported: bool) ->
     )
 
 
+FORM_TOKEN_MIN_AGE = 3            # seconds: faster than this is a script
+FORM_TOKEN_MAX_AGE = 3 * 86400
+
+
+def _form_token(now: Optional[float] = None) -> str:
+    """Signed render time for the contact form (no cookie or session needed)."""
+    ts = str(int(now if now is not None else time.time()))
+    sig = hmac.new(otp_auth._secret.encode(), f"contact-form:{ts}".encode(), hashlib.sha256).hexdigest()[:24]
+    return f"{ts}.{sig}"
+
+
+def _form_token_state(token: str) -> str:
+    """'ok', 'fast' (bot), or 'invalid' (missing, forged or older than three days)."""
+    ts, _, sig = token.partition(".")
+    if not ts.isdigit() or not hmac.compare_digest(_form_token(int(ts)), token):
+        return "invalid"
+    age = time.time() - int(ts)
+    if age < FORM_TOKEN_MIN_AGE:
+        return "fast"
+    return "ok" if age <= FORM_TOKEN_MAX_AGE else "invalid"
+
+
 @app.post("/contact")
 async def contact(request: Request) -> Any:
     """Access requests from prospective customers (landing page and demo)."""
@@ -530,6 +564,15 @@ async def contact(request: Request) -> Any:
     thanks = {"success": True, "message": "Thanks! We'll get back to you by email."}
     if body.get("website"):  # hidden field only bots fill in
         return thanks
+    token_state = _form_token_state(str(body.get("form_token") or ""))
+    if token_state == "fast":
+        # Faster than a person fills the form. Say so rather than fake success:
+        # a real (very quick) person must not lose their request silently.
+        return JSONResponse({"success": False, "message": "Please take a moment to check your details, then send again."},
+                            status_code=429)
+    if token_state != "ok":
+        return JSONResponse({"success": False, "message": "This form has expired. Please reload the page and try again."},
+                            status_code=400)
     name = _clean(body.get("name"), 80)
     email = _clean(body.get("email"), 120).lower()
     phone = _clean(body.get("phone"), 20)
@@ -566,7 +609,7 @@ async def contact(request: Request) -> Any:
     logger.info("contact_request_received", contact_id=contact_id, source=source)
 
     admin = os.environ.get("ADMIN_EMAIL", "").strip()
-    if admin:
+    if admin and mail_guard.allow_admin_notice(email):
         text = (
             f"New access request #{contact_id} from the {source}{' (demo session)' if kind == 'demo' else ''}.\n\n"
             f"Name:       {name}\nEmail:      {email}\nPhone:      {phone or '-'}\nTrading ID: {trading_id or '-'}\n\n"
@@ -581,8 +624,9 @@ async def contact(request: Request) -> Any:
         )
         if await asyncio.to_thread(send_mail, admin, f"VerquoAI access request: {name}", text, email):
             await asyncio.to_thread(metrics.mark_emailed, contact_id)
-    # tell the requester what they asked for, so they have a record of it
-    copied = await asyncio.to_thread(
+    # tell the requester what they asked for, so they have a record of it - at most
+    # once a day per address, within a daily budget (see MailGuard)
+    copied = mail_guard.allow_requester_copy(email) and await asyncio.to_thread(
         send_mail, email, f"Your VerquoAI access request #{contact_id} - next steps",
         _access_confirmation(contact_id, access_level, supported), admin or None,
     )
@@ -597,7 +641,8 @@ async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True,
-                                                                "contact_email": os.environ.get("ADMIN_EMAIL", "")})
+                                                                "contact_email": os.environ.get("ADMIN_EMAIL", ""),
+                                                                "form_token": _form_token()})
 
 
 @app.post("/auth/send-otp")
@@ -687,12 +732,16 @@ async def demo_start(request: Request) -> Any:
     if not otp_auth.check_ip_rate_limit("demo-start", _client_ip(request), max_requests=6, window_seconds=3600):
         return JSONResponse({"success": False, "message": "Too many demo sessions from this network. Try again later."},
                             status_code=429)
+    network = rate_limit_subject(_client_ip(request))
+    if demo_sessions.active_for_network(network) >= DEMO_MAX_PER_NETWORK:
+        return JSONResponse({"success": False, "message": "You already have demo sessions open. Close one, or try again later."},
+                            status_code=429)
     if not demo_sessions.has_capacity():
         return JSONResponse({"success": False, "message": "The demo is busy right now. Please try again in a few minutes."},
                             status_code=503)
     demo_id = new_public_id()
     token = otp_auth.create_demo_session(demo_id, PUBLIC_SESSION_SECONDS)
-    demo_sessions.touch(demo_id)
+    demo_sessions.register(demo_id, network)
     logger.info("demo_session_started", demo_id=demo_id)
     _track(request, "demo_start", user_id=demo_id, kind="demo")
     response = JSONResponse({"success": True, "redirect": "/app"})
@@ -782,7 +831,8 @@ templates.env.globals["static_version"] = _static_version
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
-                                                                "contact_email": os.environ.get("ADMIN_EMAIL", "")})
+                                                                "contact_email": os.environ.get("ADMIN_EMAIL", ""),
+                                                                "form_token": _form_token()})
 
 
 @app.get("/app", response_class=HTMLResponse)
@@ -801,6 +851,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         "request": request,
         "demo_kind": demo_kind(svc),
         "contact_email": os.environ.get("ADMIN_EMAIL", ""),
+        "form_token": _form_token(),
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
@@ -1166,6 +1217,9 @@ async def start_oi_tracking(request: Request) -> dict[str, Any]:
 
 @app.websocket("/ws/oi")
 async def oi_websocket(websocket: WebSocket) -> None:
+    if not _same_origin(websocket):
+        await websocket.close(code=4003)
+        return
     try:
         svc = _service_for_session(websocket.cookies.get(SESSION_COOKIE, ""))
     except HTTPException:
@@ -2708,6 +2762,9 @@ async def export_journal(request: Request) -> dict[str, Any]:
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    if not _same_origin(websocket):
+        await websocket.close(code=4003)
+        return
     try:
         svc = _service_for_session(websocket.cookies.get(SESSION_COOKIE, ""))
     except HTTPException:

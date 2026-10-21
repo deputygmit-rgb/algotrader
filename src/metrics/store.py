@@ -34,6 +34,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_PATH = os.path.join(ROOT, "data", "analytics.db")
 RETENTION_DAYS = 400
+# Hard ceiling on stored browser/server events per day, whatever the source.
+DAILY_EVENT_CAP = int(os.environ.get("METRICS_DAILY_EVENT_CAP", "300000"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS request_counts (
@@ -111,6 +113,8 @@ class MetricsStore:
         self._secret = (os.environ.get("SESSION_SECRET") or "metrics").encode()
         self._last_purge = 0.0
         self._ready = False
+        self._cap_day = ""
+        self._events_today = 0
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=10)
@@ -163,8 +167,15 @@ class MetricsStore:
                _clip(kind, 16), event, _clip(page, 120), _clip(target, 80), json.dumps(clean), self.ip_hash(ip),
                _clip(device, 10))
         with self._lock:
+            if self._cap_day != row[1]:
+                self._cap_day, self._events_today = row[1], 0
+            if self._events_today >= DAILY_EVENT_CAP:
+                return
             if len(self._events) < 20_000:  # never let a flood exhaust memory between flushes
                 self._events.append(row)
+                self._events_today += 1
+                if self._events_today == DAILY_EVENT_CAP:
+                    logger.warning("metrics_daily_event_cap_reached", cap=DAILY_EVENT_CAP)
 
     # ── persistence ───────────────────────────────────────────────────────
     def flush(self) -> None:

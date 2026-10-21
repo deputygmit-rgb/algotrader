@@ -9,6 +9,9 @@ import pytest
 from src.api import webapp
 from src.auth import otp_auth as otp_module
 from src.metrics.store import MetricsStore
+from src.utils.mailer import MailGuard
+
+BROWSER = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0"}
 
 
 @pytest.fixture
@@ -17,6 +20,9 @@ def store(tmp_path, monkeypatch):
     s = MetricsStore(str(tmp_path / "analytics.db"))
     monkeypatch.setattr(webapp, "metrics", s)
     monkeypatch.setattr(webapp.otp_auth, "check_ip_rate_limit", lambda *a, **k: True)
+    # form-token and mail-cap behaviour have their own tests (test_abuse_protection.py)
+    monkeypatch.setattr(webapp, "_form_token_state", lambda token: "ok")
+    monkeypatch.setattr(webapp, "mail_guard", MailGuard())
     return s
 
 
@@ -55,7 +61,7 @@ def test_visitor_cookie_and_route_level_counts(store):
 
 def test_browser_events_are_stored_and_bounded(store):
     batch = {"events": [{"event": "click", "page": "/", "target": "Try the demo", "detail": {"to": "/app"}}] * 60}
-    assert _call("POST", "/metrics/events", body=batch).json() == {"ok": True}
+    assert _call("POST", "/metrics/events", body=batch, headers=BROWSER).json() == {"ok": True}
     assert _rows(store, "SELECT COUNT(*) FROM events")[0][0] == 50
     assert _call("POST", "/metrics/events", raw=b"x" * (40 * 1024)).status_code == 413
     assert _call("POST", "/metrics/events", body={"events": "nope"}).status_code == 400

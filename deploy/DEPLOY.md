@@ -45,6 +45,10 @@ Compare with `.env.template` after each release: `diff <(grep -o '^[A-Z_]*=' .en
 | `ADMIN_EMAIL=` | Receives access requests. |
 | `USER_CONFIG_ENCRYPTION_KEY=` | Never change it: existing `data/users.json` would become unreadable. |
 
+## Edge protection (once, and after nginx changes)
+
+`sudo bash /opt/verquoai/app/deploy/edge-protection.sh` installs nginx rate limits (login/OTP/contact/demo 10 per minute per IP, metrics 30 per minute, everything else 20 per second), a 40-connection cap per IP, a catch-all server that drops requests for the bare IP or unknown host names, and a fail2ban jail for repeat offenders. It rolls back if `nginx -t` fails. Check bans with `sudo fail2ban-client status nginx-limit-req`.
+
 ## 4. Check
 
 ```bash

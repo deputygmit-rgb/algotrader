@@ -619,6 +619,7 @@
                     {% if contact_email %}<p class="contact-mail">Prefer email? Write to <a href="mailto:{{ contact_email }}?subject=VerquoAI%20access%20request">{{ contact_email }}</a></p>{% endif %}
                 </div>
                 <form data-contact-form="landing" novalidate>
+                    <input type="hidden" name="form_token" value="{{ form_token }}">
                 <div class="contact-grid">
                     <label class="field"><span>Name</span><input name="name" type="text" maxlength="80" autocomplete="name" required></label>
                     <label class="field"><span>Email</span><input name="email" type="email" maxlength="120" autocomplete="email" required></label>

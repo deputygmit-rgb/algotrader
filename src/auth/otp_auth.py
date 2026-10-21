@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -30,11 +31,27 @@ STEP_UP_SECONDS = 900  # A fresh OTP unlocks risky actions for 15 minutes
 MAX_OTP_ATTEMPTS = 3  # Max incorrect OTP attempts
 # Per-account cap on OTP emails (all IPs together). The tighter per-(account, IP)
 # limit lives in the web layer, so one IP cannot use up the account's allowance.
-MAX_OTP_REQUESTS_PER_HOUR = 20
+MAX_OTP_REQUESTS_PER_HOUR = 10
 MAX_OTP_REQUESTS_PER_IP_PER_HOUR = 15  # Per-IP throttle across all Zerodha IDs
 MAX_VERIFY_ATTEMPTS_PER_IP_PER_HOUR = 30  # Per-IP throttle for OTP verification
 SESSION_FILE = os.path.expanduser("~/.kta_sessions.json")  # Home directory, not /tmp
 STEP_UP_PURPOSE = "STEP-UP"
+
+
+def rate_limit_subject(ip: str) -> str:
+    """The unit rate limits apply to: the IPv4 address, or the IPv6 /64.
+
+    One IPv6 customer gets a whole /64 (2^64 addresses), so limiting single
+    IPv6 addresses would let anyone bypass every per-IP limit."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip or "unknown"
+    if addr.version == 6:
+        if addr.ipv4_mapped:  # ::ffff:a.b.c.d is really an IPv4 client
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
 
 
 def _hash_token(token: str) -> str:
@@ -312,14 +329,25 @@ class OTPAuth:
         session = self._get_session(token)
         return bool(session) and session.get("step_up_until", 0) > time.time()
 
+    def _prune_ip_attempts(self, now: float) -> None:
+        """Forget keys with no attempt in the last day, so a stream of new
+        addresses cannot grow this table without bound."""
+        if now - getattr(self, "_last_prune", 0.0) < 300 and len(self._ip_attempts) < 50_000:
+            return
+        self._last_prune = now
+        cutoff = now - 86400
+        for key in [k for k, v in self._ip_attempts.items() if not v or v[-1] < cutoff]:
+            del self._ip_attempts[key]
+
     def check_ip_rate_limit(self, bucket: str, ip: str, max_requests: int, window_seconds: int = 3600) -> bool:
         """Generic per-IP rate limiter shared by login/OTP endpoints.
 
         Returns True if the request is allowed (and records it), False if the
         caller has exceeded ``max_requests`` within ``window_seconds``.
         """
-        key = f"{bucket}:{ip}"
+        key = f"{bucket}:{rate_limit_subject(ip)}"
         now = time.time()
+        self._prune_ip_attempts(now)
         window_start = now - window_seconds
         attempts = [t for t in self._ip_attempts.get(key, []) if t > window_start]
         if len(attempts) >= max_requests:

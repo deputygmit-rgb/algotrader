@@ -28,6 +28,10 @@ PUBLIC_PREFIX = "DEMO-P-"
 USER_PREFIX = "DEMO-U-"
 MAX_PUBLIC = int(os.environ.get("DEMO_MAX_SESSIONS", "10"))
 IDLE_SECONDS = int(os.environ.get("DEMO_IDLE_MINUTES", "30")) * 60
+# A demo that was started but never opened frees its slot quickly, and one
+# network may hold only a couple: otherwise a script could keep every slot busy.
+UNUSED_SECONDS = 300
+MAX_PER_NETWORK = int(os.environ.get("DEMO_MAX_PER_NETWORK", "2"))
 PUBLIC_SESSION_SECONDS = 2 * 3600
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -80,9 +84,22 @@ async def _shutdown(service: Any) -> None:
 class DemoSessions:
     def __init__(self) -> None:
         self._last_seen: dict[str, float] = {}
+        self._network: dict[str, str] = {}   # public demo id -> rate-limit subject (IP or /64)
+        self._used: set[str] = set()
+
+    def register(self, uid: str, network: str) -> None:
+        """A public demo was just started from this network (not used yet)."""
+        uid = uid.upper()
+        self._last_seen[uid] = time.time()
+        self._network[uid] = network
 
     def touch(self, uid: str) -> None:
-        self._last_seen[uid.upper()] = time.time()
+        uid = uid.upper()
+        self._last_seen[uid] = time.time()
+        self._used.add(uid)
+
+    def active_for_network(self, network: str) -> int:
+        return sum(1 for uid, net in self._network.items() if net == network and uid in self._last_seen)
 
     def active_public(self) -> int:
         return sum(1 for uid in self._last_seen if is_public_demo_id(uid))
@@ -98,6 +115,8 @@ class DemoSessions:
         if not is_demo_id(uid):
             return
         self._last_seen.pop(uid, None)
+        self._network.pop(uid, None)
+        self._used.discard(uid)
         mgr = TradingServiceManager.get_instance()
         if mgr.has_service(uid):
             await _shutdown(mgr.get_service(uid, demo=True))
@@ -113,8 +132,9 @@ class DemoSessions:
         logger.info("demo_session_ended", demo_id=uid)
 
     async def reap(self) -> int:
-        cutoff = time.time() - IDLE_SECONDS
-        idle = [uid for uid, seen in list(self._last_seen.items()) if seen < cutoff]
+        now = time.time()
+        idle = [uid for uid, seen in list(self._last_seen.items())
+                if seen < now - (IDLE_SECONDS if uid in self._used else UNUSED_SECONDS)]
         for uid in idle:
             await self.end(uid)
         return len(idle)
