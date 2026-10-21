@@ -2572,7 +2572,7 @@
     <div id="modal-contact" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-contact')">
         <div class="modal" style="max-width:560px;width:calc(100% - 32px)">
             <div class="modal-title">Request access <button class="btn btn-outline btn-sm" style="float:right" onclick="hideModal('modal-contact')" aria-label="Close">×</button></div>
-            <p class="t-contact-lead">Like what you see? Tell us about you and we'll set up your own workspace and reply by email.{% if contact_email %} Or write to <a href="mailto:{{ contact_email }}?subject=VerquoAI%20access%20request">{{ contact_email }}</a>.{% endif %}</p>
+            <p class="t-contact-lead">Like what you see? Tell us about you and we'll set up your own workspace and reply by email.</p>
             <form class="t-contact" data-contact-form="demo" novalidate>
                     <input type="hidden" name="form_token" value="{{ form_token }}">
                 <div class="t-contact-grid">

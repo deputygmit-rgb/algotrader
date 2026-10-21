@@ -2,613 +2,189 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <meta name="theme-color" content="#080d18">
-    <meta name="description" content="VerquoAI brings market flow, research, strategy tools, risk controls, and trade journaling into one trading workspace.">
-    <title>VerquoAI™ — A clearer view of the market</title>
+    <meta name="theme-color" content="#05080c">
+    <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try the full terminal on a simulated market.">
+    <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            color-scheme: dark;
-            --bg: #080d18;
-            --panel: #101827;
-            --line: rgba(160, 180, 210, .16);
-            --muted: #91a0b8;
-            --text: #f1f5fb;
-            --mint: #8cf0cd;
-            --blue: #8baeff;
-        }
-        * { box-sizing: border-box; }
-        html { scroll-behavior: smooth; }
-        body {
-            margin: 0;
-            background:
-                radial-gradient(ellipse at 76% 8%, rgba(92, 129, 255, .17), transparent 34rem),
-                radial-gradient(ellipse at 12% 35%, rgba(91, 237, 193, .08), transparent 30rem),
-                var(--bg);
-            color: var(--text);
-            font-family: "DM Sans", sans-serif;
-            line-height: 1.6;
-        }
-        a { color: inherit; text-decoration: none; }
-        .shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
-        .nav {
-            height: 82px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--line);
-        }
-        .brand {
-            display: inline-flex;
-            align-items: center;
-            gap: 11px;
-            font: 700 20px "Space Grotesk", sans-serif;
-            letter-spacing: -.6px;
-        }
-        .brand-mark {
-            display: grid;
-            width: 34px;
-            height: 34px;
-            place-items: center;
-            border: 1px solid rgba(140, 240, 205, .45);
-            border-radius: 11px;
-            color: var(--mint);
-            background: rgba(140, 240, 205, .08);
-            font-size: 17px;
-        }
-        .brand sup { margin-left: -9px; color: var(--mint); font: 600 9px "DM Sans", sans-serif; }
-        .nav-right { display: flex; align-items: center; gap: 27px; color: #c1cad8; font-size: 13px; }
-        .nav-link:hover { color: var(--mint); }
-        .button {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 43px;
-            padding: 0 17px;
-            border: 1px solid rgba(140, 240, 205, .4);
-            border-radius: 9px;
-            background: var(--mint);
-            color: #081510;
-            font-weight: 700;
-            transition: transform .18s ease, filter .18s ease;
-        }
-        .button:hover { transform: translateY(-1px); filter: brightness(1.06); }
-        .button-quiet { background: transparent; color: var(--text); border-color: var(--line); }
-        .hero { padding: 72px 0 78px; }
-        .hero-intro { display: grid; grid-template-columns: 1fr .7fr; align-items: end; gap: 55px; margin-bottom: 32px; }
-        .eyebrow {
-            display: inline-flex;
-            align-items: center;
-            gap: 9px;
-            color: var(--mint);
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 1.7px;
-            text-transform: uppercase;
-        }
-        .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 15px var(--mint); }
-        h1, h2, h3, p { margin-top: 0; }
-        h1 {
-            max-width: 650px;
-            margin: 18px 0;
-            font: 600 clamp(42px, 6vw, 68px)/1.04 "Space Grotesk", sans-serif;
-            letter-spacing: -3.2px;
-        }
-        h1 span { color: var(--mint); }
-        .hero-copy { max-width: 470px; margin: 0 0 10px; color: #aab6c9; font-size: 15px; }
-        .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 29px; }
-        .subnote { margin-top: 18px; color: #78879f; font-size: 11px; }
-        .sim-terminal {
-            overflow: hidden;
-            border: 1px solid rgba(155, 180, 220, .17);
-            border-radius: 14px;
-            background: #070b12;
-            box-shadow: 0 32px 100px rgba(0, 0, 0, .4), 0 0 75px rgba(64, 170, 255, .06);
-        }
-        .sim-topbar, .sim-controls, .sim-bottom {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 15px;
-            padding: 11px 17px;
-        }
-        .sim-topbar { min-height: 48px; border-bottom: 1px solid rgba(155, 180, 220, .11); }
-        .sim-brand { display: flex; align-items: center; gap: 9px; font: 700 12px "Space Grotesk", sans-serif; letter-spacing: 1.6px; }
-        .sim-brand-mark { color: #19c9ea; font-size: 16px; }
-        .sim-workspace { color: #8491a6; font-size: 9px; letter-spacing: 1px; }
-        .sim-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid rgba(255, 194, 112, .26); border-radius: 4px; color: #ffc270; background: rgba(255, 194, 112, .06); font-size: 8px; font-weight: 700; letter-spacing: .8px; white-space: nowrap; }
-        .sim-pill::before { width: 6px; height: 6px; border-radius: 50%; background: #ffc270; content: ""; box-shadow: 0 0 9px rgba(255, 194, 112, .7); }
-        .sim-top-right { display: flex; align-items: center; gap: 14px; }
-        .sim-session { color: #8793a7; font: 500 9px "DM Sans", sans-serif; letter-spacing: .7px; }
-        .sim-stats { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid rgba(155, 180, 220, .1); }
-        .sim-stat { min-width: 0; padding: 10px 16px; border-right: 1px solid rgba(155, 180, 220, .1); }
-        .sim-stat:last-child { border-right: 0; }
-        .sim-stat-label { display: block; overflow: hidden; margin-bottom: 4px; color: #758196; font-size: 8px; letter-spacing: .8px; text-overflow: ellipsis; white-space: nowrap; }
-        .sim-stat-value { font: 600 14px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; }
-        .sim-stat-change { margin-left: 6px; color: #61e4a5; font-size: 9px; font-variant-numeric: tabular-nums; }
-        .sim-main { display: grid; grid-template-columns: minmax(0, 1fr) 296px; min-height: 425px; }
-        .flow-chart-wrap { position: relative; min-width: 0; padding: 9px 2px 0 12px; }
-        .flow-chart-head { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px 0; color: #8290a6; font: 9px "DM Sans", sans-serif; letter-spacing: .8px; }
-        .flow-chart-head span:last-child { color: #58667d; font-size: 8px; letter-spacing: .3px; }
-        .flow-chart { display: block; width: 100%; height: 389px; }
-        .flow-grid { stroke: rgba(155, 180, 220, .09); stroke-width: 1; stroke-dasharray: 2 8; }
-        .flow-midline { stroke: rgba(177, 195, 222, .22); stroke-width: 1; }
-        .flow-gate { stroke: rgba(62, 191, 224, .54); stroke-width: 1; stroke-dasharray: 3 5; }
-        .flow-label { fill: #526078; font: 9px "DM Sans", sans-serif; }
-        .flow-count { font: 700 11px "Space Grotesk", sans-serif; letter-spacing: .5px; }
-        .flow-count.bull { fill: #68eab6; }
-        .flow-count.bear { fill: #ff718b; }
-        .flow-path { fill: none; stroke-width: 1.2; stroke-linecap: round; opacity: .5; }
-        .flow-path.bull { stroke: #63eab1; }
-        .flow-path.bear { stroke: #ff6885; }
-        .flow-path.featured { stroke-width: 1.8; opacity: .88; }
-        .flow-dot.bull { fill: #bcffe1; filter: drop-shadow(0 0 3px #4ce3a1); }
-        .flow-dot.bear { fill: #ffd1d9; filter: drop-shadow(0 0 3px #ff5879); }
-        .sim-movers { display: flex; flex-direction: column; padding: 13px 13px 10px; border-left: 1px solid rgba(155, 180, 220, .12); background: rgba(5, 9, 15, .56); }
-        .movers-head { display: flex; justify-content: space-between; margin-bottom: 9px; color: #aeb9c9; font-size: 8px; font-weight: 700; letter-spacing: .8px; }
-        .movers-total { color: #8694a9; font-weight: 400; letter-spacing: 0; }
-        .mover-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 8px; align-items: center; margin-bottom: 7px; padding: 9px 9px 8px; border: 1px solid rgba(155, 180, 220, .11); border-radius: 6px; background: linear-gradient(105deg, rgba(21, 31, 43, .76), rgba(10, 15, 24, .72)); }
-        .mover-row:last-of-type { margin-bottom: 0; }
-        .mover-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
-        .mover-badge { padding: 3px 5px; border-radius: 3px; color: #092015; background: #75edb8; font-size: 7px; font-weight: 800; letter-spacing: .5px; }
-        .mover-badge.bear { color: #2a0b12; background: #ff8195; }
-        .mover-symbol { overflow: hidden; color: #e0e7f1; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-        .mover-value { color: #69eab5; font: 600 10px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        .mover-value.bear { color: #ff8295; }
-        .mover-kind { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 5px; color: #8693a6; font-size: 8px; }
-        .mover-kind span:last-child { color: #68768a; }
-        .sim-legend { display: flex; gap: 12px; margin-top: auto; padding: 12px 3px 3px; color: #758297; font-size: 8px; }
-        .sim-legend span { display: inline-flex; align-items: center; gap: 5px; }
-        .legend-dot { width: 6px; height: 6px; border-radius: 50%; background: #68eab6; }
-        .legend-dot.bear { background: #ff718b; }
-        .sim-controls { min-height: 42px; border-top: 1px solid rgba(155, 180, 220, .11); }
-        .sim-lenses { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid rgba(155, 180, 220, .13); border-radius: 5px; background: rgba(4, 9, 17, .55); }
-        .sim-control, .sim-play { min-height: 25px; padding: 0 9px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #91a0b8; font: 600 9px "DM Sans", sans-serif; cursor: pointer; }
-        .sim-control[aria-pressed="true"] { border-color: rgba(140, 240, 205, .18); background: rgba(140, 240, 205, .1); color: var(--mint); }
-        .sim-play { border-color: rgba(155, 180, 220, .17); color: #c8d1df; }
-        .sim-play:hover, .sim-control:hover { color: var(--mint); }
-        .sim-updated { color: #758297; font-size: 8px; }
-        .sim-bottom { min-height: 36px; border-top: 1px solid rgba(155, 180, 220, .09); color: #6e7c91; font-size: 8px; }
-        .sim-bottom strong { color: #9aa8bb; font-weight: 500; }
-        .sim-bottom a { color: #62dfb1; font-weight: 600; }
-        .sim-terminal.paused .flow-dot { opacity: .45; }
-        .section { padding: 82px 0; border-top: 1px solid var(--line); }
-        .section-heading { max-width: 630px; margin-bottom: 29px; }
-        .section-heading h2 { margin: 12px 0; font: 600 clamp(28px, 4vw, 40px)/1.15 "Space Grotesk", sans-serif; letter-spacing: -1.5px; }
-        .section-heading p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
-        .platform-intro { display: flex; justify-content: space-between; align-items: end; gap: 36px; max-width: none; margin-bottom: 32px; }
-        .platform-intro h2 { max-width: 620px; margin-bottom: 0; font-size: clamp(34px, 5vw, 54px); letter-spacing: -2.2px; }
-        .platform-intro p { max-width: 355px; padding-bottom: 5px; }
-        .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-        .feature {
-            position: relative;
-            min-height: 205px;
-            overflow: hidden;
-            padding: 23px;
-            border: 1px solid rgba(155, 180, 220, .14);
-            border-radius: 12px;
-            background:
-                radial-gradient(ellipse at 100% 0%, rgba(66, 122, 175, .10), transparent 55%),
-                linear-gradient(145deg, rgba(17, 27, 43, .86), rgba(10, 16, 28, .92));
-            transition: border-color .2s ease, transform .2s ease, background-color .2s ease;
-        }
-        .feature:hover { transform: translateY(-3px); border-color: rgba(140, 240, 205, .32); }
-        .feature-number { position: absolute; top: 22px; right: 22px; color: #46546a; font: 500 10px "Space Grotesk", sans-serif; letter-spacing: 1px; }
-        .feature-icon {
-            display: grid;
-            width: 39px;
-            height: 39px;
-            margin-bottom: 22px;
-            place-items: center;
-            border: 1px solid rgba(140, 240, 205, .24);
-            border-radius: 11px;
-            color: var(--mint);
-            background: rgba(140, 240, 205, .07);
-            font-size: 17px;
-        }
-        .feature h3 { margin-bottom: 9px; font: 600 17px "Space Grotesk", sans-serif; letter-spacing: -.3px; }
-        .feature p { max-width: 340px; margin-bottom: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
-        .feature-link { display: inline-flex; gap: 7px; align-items: center; margin-top: 18px; color: #9fdbc9; font-size: 10px; font-weight: 600; }
-        .feature-link span { transition: transform .18s ease; }
-        .feature:hover .feature-link span { transform: translateX(3px); }
-        .flow-showcase { position: relative; overflow: hidden; background: radial-gradient(ellipse at 73% 46%, rgba(29, 83, 104, .15), transparent 32rem), #080d17; }
-        .flow-showcase::before { position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(136, 161, 197, .025) 1px, transparent 1px), linear-gradient(90deg, rgba(136, 161, 197, .025) 1px, transparent 1px); background-size: 38px 38px; content: ""; mask-image: linear-gradient(90deg, transparent, #000 45%, #000); }
-        .flow-showcase-inner { position: relative; }
-        .flow-section { display: grid; grid-template-columns: .82fr 1.18fr; gap: 70px; align-items: center; }
-        .flow-intro .section-heading { margin-bottom: 25px; }
-        .flow-intro .section-heading h2 { max-width: 480px; font-size: clamp(34px, 4.7vw, 52px); letter-spacing: -2px; }
-        .flow-overline { color: #76d9c2; font-size: 10px; font-weight: 700; letter-spacing: 1.7px; text-transform: uppercase; }
-        .flow-steps { display: grid; gap: 18px; }
-        .flow-step { display: grid; grid-template-columns: 31px 1fr; gap: 13px; align-items: start; }
-        .step-number {
-            display: grid;
-            width: 29px;
-            height: 29px;
-            place-items: center;
-            border: 1px solid rgba(140, 240, 205, .24);
-            border-radius: 9px;
-            color: #8be8ca;
-            font-size: 11px;
-        }
-        .flow-step b { display: block; margin-bottom: 4px; font: 600 13px "Space Grotesk", sans-serif; }
-        .flow-step p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
-        .flow-insight { overflow: hidden; border: 1px solid rgba(155, 180, 220, .16); border-radius: 12px; background: linear-gradient(150deg, rgba(15, 23, 37, .97), rgba(7, 12, 21, .98)); box-shadow: 0 28px 75px rgba(0, 0, 0, .28); }
-        .flow-insight-head { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 16px 18px; border-bottom: 1px solid rgba(155, 180, 220, .1); }
-        .flow-insight-title { color: #e0e7f1; font: 600 12px "Space Grotesk", sans-serif; }
-        .flow-insight-subtitle { margin-top: 4px; color: #76849a; font-size: 9px; }
-        .insight-demo { padding: 4px 7px; border: 1px solid rgba(255, 194, 112, .25); border-radius: 4px; color: #ffc270; font-size: 8px; font-weight: 700; letter-spacing: .7px; white-space: nowrap; }
-        .insight-body { display: grid; grid-template-columns: minmax(0, 1fr) 148px; min-height: 225px; }
-        .insight-chart { min-width: 0; padding: 12px 9px 7px 14px; }
-        .insight-svg { display: block; width: 100%; height: 194px; }
-        .insight-axis { fill: #67758c; font: 8px "DM Sans", sans-serif; }
-        .insight-grid { stroke: rgba(155, 180, 220, .11); stroke-width: 1; stroke-dasharray: 2 6; }
-        .insight-line { fill: none; stroke: #79e6c4; stroke-width: 2; }
-        .insight-area { fill: url(#insight-area-gradient); opacity: .38; }
-        .insight-cursor { stroke: rgba(255, 194, 112, .7); stroke-width: 1; stroke-dasharray: 3 4; }
-        .insight-detail { padding: 14px 12px; border-left: 1px solid rgba(155, 180, 220, .1); background: rgba(3, 8, 15, .36); }
-        .insight-detail-label { color: #78869b; font-size: 8px; letter-spacing: .9px; }
-        .insight-reading { margin-top: 8px; color: #7ee7be; font: 600 13px "Space Grotesk", sans-serif; }
-        .insight-reading.bear { color: #ff8b9e; }
-        .insight-divider { height: 1px; margin: 12px 0; background: rgba(155, 180, 220, .1); }
-        .insight-value { display: flex; justify-content: space-between; gap: 6px; margin-top: 9px; color: #8592a6; font-size: 8px; }
-        .insight-value strong { color: #d7e0ed; font-weight: 600; }
-        .insight-value strong.bull-text { color: #77e5b8; }
-        .insight-value strong.bear-text { color: #ff8b9e; }
-        .insight-scrubber { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 16px; border-top: 1px solid rgba(155, 180, 220, .1); color: #76849a; font-size: 8px; }
-        .insight-scrubber input { width: 100%; accent-color: #79e6c4; cursor: ew-resize; }
-        .flow-note { margin: 12px 0 0; color: #6f7d92; font-size: 9px; }
-        .disclaimer { padding: 23px 25px; border: 1px solid var(--line); border-radius: 12px; color: #a4afc1; background: rgba(16, 24, 39, .56); font-size: 11px; }
-        .disclaimer b { color: #dce4ef; }
-        footer { display: flex; justify-content: space-between; gap: 16px; padding: 28px 0 35px; color: #77869e; font-size: 11px; }
-        button.button { cursor: pointer; font: inherit; font-weight: 700; }
-        button.button-quiet { font-weight: 600; }
-        .button[aria-busy="true"] { opacity: .7; pointer-events: none; }
-        .demo-error { min-height: 18px; margin-top: 10px; color: #ff9aac; font-size: 12px; }
-
-        /* ticker tape */
-        .tape { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); background: rgba(5, 9, 16, .7); mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
-        .tape-track { display: flex; gap: 34px; width: max-content; padding: 9px 0; animation: tape 60s linear infinite; font: 500 11px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        .tape:hover .tape-track { animation-play-state: paused; }
-        .tape-item { display: inline-flex; gap: 8px; align-items: baseline; color: #c6d0de; }
-        .tape-item b { color: #8e9bb0; font-weight: 600; letter-spacing: .6px; }
-        .tape-item .up { color: #68eab6; }
-        .tape-item .down { color: #ff7d93; }
-        .tape-item.flash { animation: flash .6s ease; }
-        @keyframes tape { to { transform: translateX(-50%); } }
-        @keyframes flash { 0% { background: rgba(140, 240, 205, .14); } 100% { background: transparent; } }
-
-        /* live feature previews */
-        .feature { display: flex; flex-direction: column; }
-        .feature-live { margin: 16px 0 2px; padding: 11px 12px; min-height: 74px; border: 1px solid rgba(155, 180, 220, .1); border-radius: 9px; background: rgba(4, 8, 15, .55); font: 500 10px "Space Grotesk", sans-serif; font-variant-numeric: tabular-nums; color: #aeb9c9; }
-        .feature-link { margin-top: auto; padding-top: 16px; }
-        .live-label { display: flex; justify-content: space-between; margin-bottom: 8px; color: #6f7d92; font-size: 8px; letter-spacing: .9px; }
-        .live-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 8px var(--mint); animation: blink 1.8s ease infinite; font-style: normal; }
-        @keyframes blink { 50% { opacity: .35; } }
-        .breadth { display: flex; height: 9px; overflow: hidden; border-radius: 5px; background: #2a1820; }
-        .breadth span { background: linear-gradient(90deg, #3fcf95, #7cf0c6); transition: width .8s ease; }
-        .breadth-row { display: flex; justify-content: space-between; margin-top: 8px; }
-        .quote-row { display: grid; grid-template-columns: 1fr auto 52px; gap: 8px; align-items: center; padding: 2px 0; }
-        .quote-row svg { width: 52px; height: 16px; }
-        .quote-row polyline { fill: none; stroke-width: 1.3; }
-        .feed { display: grid; gap: 4px; }
-        .feed-line { display: flex; justify-content: space-between; gap: 8px; animation: rise .5s ease; }
-        .feed-line span:first-child { color: #dfe6f0; }
-        @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
-        .equity svg { display: block; width: 100%; height: 46px; }
-        .equity polyline { fill: none; stroke: var(--mint); stroke-width: 1.6; }
-        .meter { margin-bottom: 7px; }
-        .meter-bar { height: 6px; margin-top: 4px; overflow: hidden; border-radius: 3px; background: rgba(155, 180, 220, .1); }
-        .meter-bar span { display: block; height: 100%; border-radius: 3px; transition: width .8s ease; }
-        .agents { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
-        .agent { display: flex; align-items: center; gap: 6px; }
-        .agent i { width: 7px; height: 7px; border-radius: 50%; font-style: normal; transition: background .4s ease, box-shadow .4s ease; }
-        .agent em { margin-left: auto; color: #6f7d92; font-size: 8px; font-style: normal; }
-
-        /* contact */
-        .contact-card { display: grid; grid-template-columns: .9fr 1.1fr; gap: 48px; padding: 34px; border: 1px solid rgba(155, 180, 220, .14); border-radius: 14px; background: radial-gradient(ellipse at 0% 0%, rgba(140, 240, 205, .07), transparent 55%), linear-gradient(145deg, rgba(17, 27, 43, .86), rgba(10, 16, 28, .92)); }
-        .contact-card h2 { margin: 12px 0; font: 600 clamp(28px, 4vw, 40px)/1.15 "Space Grotesk", sans-serif; letter-spacing: -1.5px; }
-        .contact-card p { color: var(--muted); font-size: 14px; }
-        .contact-points { display: grid; gap: 10px; margin: 22px 0 0; padding: 0; list-style: none; color: #aab6c9; font-size: 13px; }
-        .contact-points li::before { content: "→"; margin-right: 9px; color: var(--mint); }
-        .contact-mail { margin-top: 22px; font-size: 13px; color: var(--muted); }
-        .contact-mail a { color: var(--mint); font-weight: 600; }
-        .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
-        .field em { color: #6f7d92; font-style: normal; font-weight: 400; }
-        .field textarea { width: 100%; padding: 12px 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; outline: none; background: rgba(4, 8, 15, .7); color: var(--text); font: 500 14px "DM Sans", sans-serif; resize: vertical; }
-        .field textarea:focus { border-color: rgba(140, 240, 205, .6); box-shadow: 0 0 0 3px rgba(140, 240, 205, .12); }
-        .contact-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
-        .access-choice { margin: 0 0 16px; padding: 0; border: 0; }
-        .access-choice legend { margin-bottom: 8px; color: #aab6c9; font-size: 11px; font-weight: 600; letter-spacing: .4px; }
-        .choice { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 8px; padding: 12px 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; background: rgba(4, 8, 15, .5); cursor: pointer; transition: border-color .15s ease; }
-        .choice:hover, .choice:has(input:checked) { border-color: rgba(140, 240, 205, .6); }
-        .choice input { margin-top: 3px; accent-color: #8cf0cd; }
-        .choice b { display: block; color: var(--text); font-size: 14px; }
-        .choice small { display: block; margin-top: 2px; color: #8b97ab; font-size: 12.5px; line-height: 1.45; }
-        .contact-note { margin: -6px 0 16px; color: #6f7d92; font-size: 12.5px; }
-        .confirm { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 18px; color: #aab6c9; font-size: 13.5px; cursor: pointer; }
-        .confirm input { margin-top: 3px; accent-color: #8cf0cd; }
-        .contact-status { min-height: 20px; margin-top: 12px; font-size: 13px; }
-        .contact-status.error { color: #ff9aac; }
-        .contact-status.success { color: var(--mint); }
-        .contact-status.info { color: var(--blue); }
-        .login-request { margin-top: 14px; color: var(--muted); font-size: 12px; }
-        .login-request a { color: #9fdbc9; font-weight: 600; }
-
-        /* scroll reveal */
-        .reveal { opacity: 0; transform: translateY(14px); transition: opacity .7s ease, transform .7s ease; }
-        .reveal.shown { opacity: 1; transform: none; }
-
-        /* login panel */
-        .login-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(3, 6, 12, .55); backdrop-filter: blur(3px); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
-        .login-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 41; display: flex; flex-direction: column; width: min(430px, 100%); padding: 28px 30px; overflow-y: auto; border-left: 1px solid rgba(155, 180, 220, .16); background: linear-gradient(170deg, rgba(16, 24, 39, .98), rgba(8, 13, 24, .99)); box-shadow: -30px 0 90px rgba(0, 0, 0, .45); transform: translateX(104%); transition: transform .32s cubic-bezier(.2, .8, .2, 1); }
-        body.login-open .login-backdrop { opacity: 1; pointer-events: auto; }
-        body.login-open .login-panel { transform: none; }
-        body.login-open { overflow: hidden; }
-        .login-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 34px; }
-        .login-close { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
-        .login-close:hover { color: var(--text); border-color: rgba(140, 240, 205, .4); }
-        .login-panel h2 { margin: 12px 0 8px; font: 600 30px/1.1 "Space Grotesk", sans-serif; letter-spacing: -1.2px; }
-        .login-panel .lead { margin-bottom: 26px; color: var(--muted); font-size: 13px; }
-        .field { display: block; margin-bottom: 16px; }
-        .field span { display: block; margin-bottom: 7px; color: #aab6c9; font-size: 11px; font-weight: 600; letter-spacing: .4px; }
-        .field input { width: 100%; min-height: 46px; padding: 0 14px; border: 1px solid rgba(155, 180, 220, .2); border-radius: 9px; outline: none; background: rgba(4, 8, 15, .7); color: var(--text); font: 500 15px "DM Sans", sans-serif; transition: border-color .15s ease, box-shadow .15s ease; }
-        .field input:focus { border-color: rgba(140, 240, 205, .6); box-shadow: 0 0 0 3px rgba(140, 240, 205, .12); }
-        .field .otp { letter-spacing: 10px; text-align: center; font: 600 22px "Space Grotesk", sans-serif; }
-        .login-panel .button { width: 100%; }
-        .login-step[hidden] { display: none; }
-        .login-msg { min-height: 20px; margin-top: 12px; font-size: 12px; }
-        .login-msg.error { color: #ff9aac; }
-        .login-msg.success { color: var(--mint); }
-        .login-msg.info { color: var(--blue); }
-        .login-meta { display: flex; justify-content: space-between; margin-top: 12px; color: #78879f; font-size: 12px; }
-        .login-meta button { padding: 0; border: 0; background: none; color: #9fdbc9; font: inherit; cursor: pointer; }
-        .login-alt { margin-top: auto; padding-top: 26px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
-        .login-alt .button { margin-top: 12px; }
-        @media (max-width: 760px) {
-            .nav { height: 70px; }
-            .nav-right { gap: 12px; }
-            .nav-right .nav-link { display: none; }
-            .hero { padding: 57px 0 62px; }
-            .hero-intro { grid-template-columns: 1fr; gap: 8px; margin-bottom: 25px; }
-            h1 { letter-spacing: -2px; }
-            .feature-grid { grid-template-columns: repeat(2, 1fr); }
-            .contact-card { grid-template-columns: 1fr; gap: 20px; padding: 24px; }
-            .flow-section { grid-template-columns: 1fr; gap: 28px; }
-            .platform-intro { display: block; }
-            .platform-intro p { margin-top: 18px; }
-            .sim-main { grid-template-columns: minmax(0, 1fr) 245px; min-height: 390px; }
-            .flow-chart { height: 354px; }
-            .flow-insight { max-width: 660px; }
-        }
-        @media (max-width: 480px) {
-            .shell { width: min(100% - 28px, 1120px); }
-            .brand { font-size: 17px; }
-            .nav-right { gap: 8px; }
-            .nav-right .button { min-height: 38px; padding: 0 11px; font-size: 11px; }
-            .feature-grid { grid-template-columns: 1fr; }
-            .contact-grid { grid-template-columns: 1fr; }
-            .contact-card { padding: 20px 16px; }
-            .section { padding: 61px 0; }
-            .platform-intro h2, .flow-intro .section-heading h2 { font-size: 35px; }
-            .sim-topbar, .sim-controls, .sim-bottom { padding-right: 9px; padding-left: 9px; }
-            .sim-workspace, .sim-updated { display: none; }
-            .sim-brand { font-size: 10px; }
-            .sim-pill { padding: 5px 6px; font-size: 7px; }
-            .sim-stats { grid-template-columns: repeat(2, 1fr); }
-            .sim-stat { padding: 11px 12px; }
-            .sim-stat:nth-child(2) { border-right: 0; }
-            .sim-stat:nth-child(-n+2) { border-bottom: 1px solid rgba(155, 180, 220, .1); }
-            .sim-main { grid-template-columns: 1fr; }
-            .sim-movers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 8px; border-top: 1px solid rgba(155, 180, 220, .1); border-left: 0; }
-            .movers-head, .sim-legend { grid-column: 1 / -1; }
-            .movers-head { margin-top: 2px; }
-            .mover-row { padding: 8px 0; }
-            .flow-chart { height: 245px; }
-            .flow-chart-wrap { padding-right: 7px; padding-left: 5px; }
-            .insight-body { grid-template-columns: minmax(0, 1fr) 118px; }
-            .insight-chart { padding-right: 4px; padding-left: 7px; }
-            .insight-detail { padding: 12px 8px; }
-            .insight-scrubber { gap: 7px; padding-right: 10px; padding-left: 10px; }
-            .flow-insight-head { padding: 13px 12px; }
-            .insight-svg { height: 170px; }
-            .sim-stat-value { font-size: 15px; }
-            .sim-bottom { font-size: 8px; }
-            footer { flex-direction: column; }
-        }
-        @media (max-width: 480px) {
-            .login-panel { padding: 22px 16px; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation: none !important; }
-            .reveal { opacity: 1; transform: none; }
-        }
-        .sim-terminal.paused .flow-dot { display: none; }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/landing.css?v={{ static_version('css/landing.css') }}">
+    <script>document.documentElement.classList.add('js');</script>
 </head>
 <body data-login-on-load="{{ 'true' if open_login else 'false' }}">
-    <header class="shell nav">
-        <a class="brand" href="/" aria-label="VerquoAI home">
-            <span class="brand-mark" aria-hidden="true">V</span>
-            <span>VerquoAI</span><sup>™</sup>
-        </a>
-        <nav class="nav-right" aria-label="Main navigation">
-            <a class="nav-link" href="#platform">Platform</a>
-            <a class="nav-link" href="#market-flow">Market Flow</a>
-            <a class="nav-link" href="#contact">Contact</a>
-            <a class="button button-quiet" href="/login" data-open-login>Sign in</a>
-            <button class="button" type="button" data-start-demo>Try the demo <span aria-hidden="true">&nbsp;↗</span></button>
-        </nav>
+    <header class="top">
+        <div class="shell top-row">
+            <a class="logo" href="/" aria-label="VerquoAI home">VERQUOAI<sup>™</sup></a>
+            <nav class="top-nav" aria-label="Main navigation">
+                <a href="#terminal">Terminal</a>
+                <a href="#features">Features</a>
+                <a href="#contact">Contact</a>
+            </nav>
+            <div class="top-actions">
+                <a class="btn btn-ghost" href="/login" data-open-login>Sign in</a>
+                <button class="btn btn-primary" type="button" data-start-demo>Try demo</button>
+            </div>
+        </div>
+        <div class="tape" aria-hidden="true"><div class="tape-track" id="tape-track"></div></div>
     </header>
-    <div class="tape" aria-label="Simulated market ticker">
-        <div class="tape-track" id="tape-track"></div>
-    </div>
 
     <main>
         <section class="shell hero">
-            <div class="hero-intro">
-                <div>
-                    <div class="eyebrow"><span class="pulse"></span> A connected trading workspace</div>
-                    <h1>See the market.<br><span>Understand the flow.</span></h1>
-                    <div class="hero-actions">
-                        <button class="button" type="button" data-start-demo>Try the live demo <span aria-hidden="true">&nbsp;→</span></button>
-                        <a class="button button-quiet" href="/login" data-open-login>Sign in securely</a>
-                    </div>
-                    <div class="demo-error" data-demo-error role="alert"></div>
-                </div>
-                <div>
-                    <p class="hero-copy">Research, market activity, strategy tools, risk controls, and trade review—brought together in one focused workspace for your trading process.</p>
-                    <p class="subnote">The demo opens the full workspace on a simulated market and broker. No account, no broker connection, nothing real at stake.</p>
-                </div>
+            <p class="eyebrow"><span class="dot"></span> Trading terminal · Indian markets</p>
+            <h1>See the market.<br><span>Understand the flow.</span></h1>
+            <p class="hero-copy">Market Flow, intraday setups, options OI, AI agents, backtests and risk controls — one terminal, built for how you actually trade.</p>
+            <div class="hero-actions">
+                <button class="btn btn-primary btn-lg" type="button" data-start-demo>Open the live demo →</button>
+                <a class="btn btn-ghost btn-lg" href="#contact">Request access</a>
             </div>
-            <section class="sim-terminal" id="market-simulation" aria-label="Simulated market flow preview. All displayed market values are illustrative, not live data.">
-                <div class="sim-topbar">
-                    <div class="sim-brand"><span class="sim-brand-mark" aria-hidden="true">ϟ</span><span>VERQUOAI™</span><span class="sim-workspace">/ MARKET FLOW</span></div>
-                    <div class="sim-top-right"><span class="sim-session" id="sim-clock">PAPER SESSION · --:-- IST</span><span class="sim-pill">SIMULATED MARKET</span></div>
-                </div>
-                <div class="sim-stats" aria-live="polite">
-                    <div class="sim-stat"><span class="sim-stat-label">SIMULATED INDEX</span><span class="sim-stat-value" id="sim-index">24,318.45</span><span class="sim-stat-change" id="sim-index-change">+0.42%</span></div>
-                    <div class="sim-stat"><span class="sim-stat-label">FLOW BREADTH</span><span class="sim-stat-value" id="sim-breadth">18 / 30</span></div>
-                    <div class="sim-stat"><span class="sim-stat-label">BULLISH STRANDS</span><span class="sim-stat-value" style="color:#68eab6" id="sim-bull-count">18</span></div>
-                    <div class="sim-stat"><span class="sim-stat-label">BEARISH STRANDS</span><span class="sim-stat-value" style="color:#ff718b" id="sim-bear-count">12</span></div>
-                </div>
-                <div class="sim-main">
-                    <div class="flow-chart-wrap">
-                        <div class="flow-chart-head"><span id="sim-chart-title">PRICE CHANGE · SIMULATED UNIVERSE</span><span>EARLIER FLOW <span aria-hidden="true">→</span> NOW</span></div>
-                        <svg class="flow-chart" id="sim-flow-svg" viewBox="0 0 1000 500" preserveAspectRatio="none" role="img" aria-label="Animated simulated bullish and bearish market-flow strands converging at the current time">
-                            <g aria-hidden="true">
-                                <line class="flow-grid" x1="33" y1="50" x2="988" y2="50"/>
-                                <line class="flow-grid" x1="33" y1="150" x2="988" y2="150"/>
-                                <line class="flow-midline" x1="33" y1="250" x2="988" y2="250"/>
-                                <line class="flow-grid" x1="33" y1="350" x2="988" y2="350"/>
-                                <line class="flow-grid" x1="33" y1="450" x2="988" y2="450"/>
-                                <line class="flow-gate" x1="466" y1="24" x2="466" y2="476"/>
-                                <text class="flow-label" x="8" y="54">+2σ</text>
-                                <text class="flow-label" x="8" y="154">+1σ</text>
-                                <text class="flow-label" x="8" y="254">0</text>
-                                <text class="flow-label" x="8" y="354">−1σ</text>
-                                <text class="flow-label" x="8" y="454">−2σ</text>
-                                <text class="flow-label" x="440" y="18">NOW</text>
-                                <text class="flow-count bull" x="485" y="226">▲ BULLISH <tspan id="sim-svg-bull-count">18</tspan></text>
-                                <text class="flow-count bear" x="485" y="278">▼ BEARISH <tspan id="sim-svg-bear-count">12</tspan></text>
-                                <g id="sim-flow-lines"></g>
-                            </g>
-                        </svg>
-                    </div>
-                    <aside class="sim-movers" aria-label="Simulated strongest movers">
-                        <div class="movers-head"><span>FLOW LEADERS</span><span class="movers-total">TOP MOVERS · DEMO</span></div>
-                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge">BULL</span><span class="mover-symbol">HDFCBANK</span></div><span class="mover-value bull" data-demo-value="1.01">+1.01%</span><div class="mover-kind"><span>LONG BUILD-UP</span><span>SIM · #1</span></div></div>
-                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge">BULL</span><span class="mover-symbol">INFY</span></div><span class="mover-value bull" data-demo-value="0.84">+0.84%</span><div class="mover-kind"><span>SHORT COVERING</span><span>SIM · #2</span></div></div>
-                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge bear">BEAR</span><span class="mover-symbol">RELIANCE</span></div><span class="mover-value bear" data-demo-value="-0.73">−0.73%</span><div class="mover-kind"><span>LONG UNWINDING</span><span>SIM · #3</span></div></div>
-                        <div class="mover-row"><div class="mover-heading"><span class="mover-badge bear">BEAR</span><span class="mover-symbol">ICICIBANK</span></div><span class="mover-value bear" data-demo-value="-0.58">−0.58%</span><div class="mover-kind"><span>SHORT BUILD-UP</span><span>SIM · #4</span></div></div>
-                        <div class="sim-legend"><span><i class="legend-dot"></i>Bullish flow</span><span><i class="legend-dot bear"></i>Bearish flow</span><span>Illustrative</span></div>
-                    </aside>
-                </div>
-                <div class="sim-controls">
-                    <div class="sim-lenses" role="group" aria-label="Select simulation lens">
-                        <button class="sim-control" type="button" data-sim-lens="price" aria-pressed="true">PRICE</button>
-                        <button class="sim-control" type="button" data-sim-lens="oi" aria-pressed="false">FUTURES OI</button>
-                    </div>
-                    <span class="sim-updated" id="sim-updated">SIMULATION TICK · --:--:--</span>
-                    <button class="sim-play" id="sim-pause" type="button" aria-pressed="false">Ⅱ&nbsp; Pause</button>
-                </div>
-                <div class="sim-bottom"><span><strong>DEMO PREVIEW:</strong> Generated simulation only—not live prices, broker data, or trade signals.</span><a href="/app#tab=market-flow" data-start-demo="market-flow">Open it in the demo&nbsp; ↗</a></div>
-            </section>
+            <p class="hero-note">The demo is the full terminal on a simulated market and broker. No account, nothing real at stake.</p>
+            <div class="demo-error" data-demo-error role="alert"></div>
         </section>
 
-        <section class="section reveal" id="platform">
-            <div class="shell">
-                <div class="section-heading platform-intro">
-                    <div>
-                        <div class="eyebrow">One workspace. Connected tools.</div>
-                        <h2>From market context<br>to considered action.</h2>
-                    </div>
-                    <p>Follow the market, explore your strategy, and review your process in a single workspace—built to keep context and risk in view.</p>
+        <section class="shell" id="terminal" aria-label="Interactive preview of the VerquoAI terminal">
+            <div class="term spot" id="term">
+                <div class="term-hud">
+                    <span class="term-logo">VERQUOAI™</span>
+                    <span class="pill pill-amber">SIMULATED</span>
+                    <span class="hud-session"><i class="hud-dot" id="hud-dot"></i><span id="hud-market">MARKET</span> <b id="hud-clock">--:--:--</b> IST</span>
+                    <span class="pill hud-agents" title="Agent health">AGENTS <i class="ag ok"></i><i class="ag ok"></i><i class="ag ok"></i><i class="ag wait" id="hud-agent4"></i></span>
+                    <span class="pill pill-green hud-access">ACCESS: VIEW</span>
                 </div>
-                <div class="feature-grid">
-                    <article class="feature"><span class="feature-number">01 / FLOW</span><div class="feature-icon" aria-hidden="true">↗</div><h3>Market Flow</h3><p>Follow price and futures OI lenses, classify build-ups, compare market breadth, and replay recent flow history.</p><div class="feature-live" aria-hidden="true"><div class="live-label"><span>BREADTH · SIMULATED</span><i></i></div><div class="breadth"><span id="live-breadth" style="width:58%"></span></div><div class="breadth-row"><span style="color:#68eab6" id="live-adv">ADV 290</span><span style="color:#ff7d93" id="live-dec">DEC 210</span></div></div><a class="feature-link" href="/app#tab=market-flow" data-start-demo="market-flow">Try it in the demo <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">02 / CONTEXT</span><div class="feature-icon" aria-hidden="true">⌁</div><h3>Market overview</h3><p>Bring index and stock quotes, contribution views, portfolio context, and market snapshots together.</p><div class="feature-live" aria-hidden="true" id="live-quotes"></div><a class="feature-link" href="/app#tab=overview" data-start-demo="overview">Try it in the demo <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">03 / RESEARCH</span><div class="feature-icon" aria-hidden="true">⌕</div><h3>Signals &amp; analysis</h3><p>Explore scanner results, indicators, options OI analysis, charts, and signal-review workflows.</p><div class="feature-live" aria-hidden="true"><div class="live-label"><span>SIGNAL FEED · SIMULATED</span><i></i></div><div class="feed" id="live-feed"></div></div><a class="feature-link" href="/app#tab=analysis" data-start-demo="analysis">Try it in the demo <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">04 / STRATEGY</span><div class="feature-icon" aria-hidden="true">⌘</div><h3>Strategy lab</h3><p>Build strategies, examine F&amp;O structures, and work with backtest, replay, and paper-trading tools.</p><div class="feature-live equity" aria-hidden="true"><div class="live-label"><span>BACKTEST EQUITY · SIMULATED</span><span id="live-equity-val">+0.0%</span></div><svg viewBox="0 0 200 46" preserveAspectRatio="none"><polyline id="live-equity" points=""/></svg></div><a class="feature-link" href="/app#tab=backtest" data-start-demo="backtest">Try it in the demo <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">05 / RISK</span><div class="feature-icon" aria-hidden="true">◇</div><h3>Risk &amp; execution</h3><p>Keep positions, exposure, daily limits, protective controls, and broker connection status in view.</p><div class="feature-live" aria-hidden="true"><div class="meter"><div class="live-label" style="margin:0"><span>EXPOSURE USED</span><span id="live-exp-val">42%</span></div><div class="meter-bar"><span id="live-exp" style="width:42%;background:linear-gradient(90deg,#8baeff,#8cf0cd)"></span></div></div><div class="meter"><div class="live-label" style="margin:0"><span>DAILY LOSS LIMIT</span><span id="live-loss-val">18%</span></div><div class="meter-bar"><span id="live-loss" style="width:18%;background:linear-gradient(90deg,#ffc270,#ff7d93)"></span></div></div></div><a class="feature-link" href="/app#tab=risk" data-start-demo="risk">Try it in the demo <span aria-hidden="true">→</span></a></article>
-                    <article class="feature"><span class="feature-number">06 / REVIEW</span><div class="feature-icon" aria-hidden="true">▤</div><h3>Journal &amp; agents</h3><p>Review trade analytics, portfolio health, system events, and supervised workflow-agent status.</p><div class="feature-live" aria-hidden="true"><div class="live-label"><span>AGENTS · SIMULATED</span><i></i></div><div class="agents" id="live-agents"></div></div><a class="feature-link" href="/app#tab=agents" data-start-demo="agents">Try it in the demo <span aria-hidden="true">→</span></a></article>
+                <div class="term-tabs" role="tablist" aria-label="Terminal views">
+                    <button role="tab" id="tab-flow" aria-controls="view-flow" aria-selected="true" data-view="flow" data-demo-tab="market-flow">Market Flow</button>
+                    <button role="tab" id="tab-day" aria-controls="view-day" aria-selected="false" tabindex="-1" data-view="day" data-demo-tab="market-flow">Day Trade</button>
+                    <button role="tab" id="tab-oi" aria-controls="view-oi" aria-selected="false" tabindex="-1" data-view="oi" data-demo-tab="oi-tracker">OI Tracker</button>
+                    <button role="tab" id="tab-agents" aria-controls="view-agents" aria-selected="false" tabindex="-1" data-view="agents" data-demo-tab="agents">Agents</button>
+                    <button role="tab" id="tab-bt" aria-controls="view-bt" aria-selected="false" tabindex="-1" data-view="bt" data-demo-tab="backtest">Backtest</button>
+                    <span class="tab-ink" id="tab-ink" aria-hidden="true"><i id="tab-progress"></i></span>
                 </div>
-            </div>
-        </section>
 
-        <section class="section flow-showcase reveal" id="market-flow">
-            <div class="shell flow-showcase-inner flow-section">
-                <div class="flow-intro">
-                    <div class="flow-overline">Designed for market context</div>
-                    <div class="section-heading">
-                        <h2>Market Flow,<br>made visible.</h2>
-                        <p>See dozens of instruments resolve into a single market picture. Compare earlier movement with the current balance, then change the lens to see what positioning may be doing beneath price.</p>
+                <!-- MARKET FLOW -->
+                <div class="view" id="view-flow" role="tabpanel" aria-labelledby="tab-flow">
+                    <div class="strip">
+                        <b class="c-cyan">NIFTY 50</b>
+                        <span>ADV <b class="c-green" id="mf-adv">0</b></span>
+                        <span>DEC <b class="c-red" id="mf-dec">0</b></span>
+                        <span class="bias-bar" aria-hidden="true"><i id="mf-bias"></i></span>
+                        <span>NET ₹ FLOW <b id="mf-net">—</b></span>
                     </div>
-                    <div class="flow-steps">
-                        <div class="flow-step"><span class="step-number">01</span><div><b>One line, one instrument</b><p>Each strand represents a symbol. Its direction and colour make relative bullish, bearish, and neutral flow easier to scan.</p></div></div>
-                        <div class="flow-step"><span class="step-number">02</span><div><b>Two ways to read participation</b><p>Switch between cash-price change and futures open-interest build-up classifications.</p></div></div>
-                        <div class="flow-step"><span class="step-number">03</span><div><b>Move through the session</b><p>Inspect the live workspace’s recent-history rail and focus on the symbols shaping the flow.</p></div></div>
-                    </div>
-                    <p class="flow-note">The preview beside this copy uses generated demo values. Live workspace availability depends on your broker connection and market-data access.</p>
-                </div>
-                <div>
-                    <div class="flow-insight" aria-label="Illustrative simulated market flow chart with interactive history scrubber">
-                        <div class="flow-insight-head">
-                            <div><div class="flow-insight-title">PARTICIPATION / NIFTY UNIVERSE</div><div class="flow-insight-subtitle">A sample view of how broad market flow can be explored</div></div>
-                            <span class="insight-demo">SIMULATION</span>
+                    <div class="flow-grid">
+                        <div class="flow-chart">
+                            <svg viewBox="0 0 600 360" preserveAspectRatio="xMidYMid meet" id="mf-svg" role="img" aria-label="Simulated money flow converging on the current moment">
+                                <line class="axis" x1="250" y1="18" x2="250" y2="342"/>
+                                <text class="axis-label" x="250" y="12" text-anchor="middle" id="mf-now">NOW</text>
+                                <g id="mf-strands"></g>
+                                <g id="mf-dots"></g>
+                                <circle class="now-pulse" cx="250" cy="180" r="9"/>
+                                <circle class="now-ring" cx="250" cy="180" r="9"/>
+                                <circle class="now-core" cx="250" cy="180" r="3.5"/>
+                                <text class="flow-tag c-green" x="262" y="160" id="mf-in-tag">▲ INFLOW 0</text>
+                                <text class="flow-tag c-red" x="262" y="208" id="mf-out-tag">▼ OUTFLOW 0</text>
+                            </svg>
                         </div>
-                        <div class="insight-body">
-                            <div class="insight-chart">
-                                <svg class="insight-svg" id="insight-svg" viewBox="0 0 620 230" preserveAspectRatio="none" role="img" aria-label="Illustrative line chart of simulated market-flow breadth">
-                                    <defs><linearGradient id="insight-area-gradient" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#79e6c4"/><stop offset="100%" stop-color="#79e6c4" stop-opacity="0"/></linearGradient></defs>
-                                    <line class="insight-grid" x1="36" y1="38" x2="607" y2="38"/>
-                                    <line class="insight-grid" x1="36" y1="83" x2="607" y2="83"/>
-                                    <line class="insight-grid" x1="36" y1="128" x2="607" y2="128"/>
-                                    <line class="insight-grid" x1="36" y1="173" x2="607" y2="173"/>
-                                    <text class="insight-axis" x="4" y="41">+2σ</text>
-                                    <text class="insight-axis" x="4" y="86">+1σ</text>
-                                    <text class="insight-axis" x="12" y="131">0</text>
-                                    <text class="insight-axis" x="4" y="176">−1σ</text>
-                                    <text class="insight-axis" x="35" y="211">−60m</text>
-                                    <text class="insight-axis" x="300" y="211">−30m</text>
-                                    <text class="insight-axis" x="586" y="211">NOW</text>
-                                    <path class="insight-area" d="M36 138 C70 127 78 90 115 103 S165 144 203 112 S250 64 287 90 S333 133 371 96 S420 110 456 78 S502 48 535 72 S577 95 607 48 L607 190 L36 190 Z"/>
-                                    <path class="insight-line" d="M36 138 C70 127 78 90 115 103 S165 144 203 112 S250 64 287 90 S333 133 371 96 S420 110 456 78 S502 48 535 72 S577 95 607 48"/>
-                                    <line class="insight-cursor" id="insight-cursor" x1="607" y1="21" x2="607" y2="190"/>
-                                    <circle id="insight-point" cx="607" cy="48" r="4" fill="#aaffdf" stroke="#09110f" stroke-width="2"/>
-                                </svg>
+                        <div class="leaders">
+                            <div class="leaders-col">
+                                <p class="col-head c-green">INFLOW LEADERS</p>
+                                <ol id="mf-long"></ol>
                             </div>
-                            <aside class="insight-detail">
-                                <div class="insight-detail-label">SELECTED WINDOW</div>
-                                <div class="insight-reading" id="insight-window">NOW</div>
-                                <div class="insight-divider"></div>
-                                <div class="insight-detail-label">FLOW BALANCE</div>
-                                <div class="insight-value"><span>Bullish</span><strong class="bull-text" id="insight-bullish">18</strong></div>
-                                <div class="insight-value"><span>Bearish</span><strong class="bear-text" id="insight-bearish">12</strong></div>
-                                <div class="insight-value"><span>Neutral</span><strong id="insight-neutral">4</strong></div>
-                                <div class="insight-divider"></div>
-                                <div class="insight-detail-label">SAMPLE LENS</div>
-                                <div class="insight-reading" id="insight-lens">PRICE</div>
-                            </aside>
+                            <div class="leaders-col">
+                                <p class="col-head c-red">OUTFLOW LEADERS</p>
+                                <ol id="mf-short"></ol>
+                            </div>
                         </div>
-                        <label class="insight-scrubber" for="insight-scrubber">
-                            <span>−60 MIN</span>
-                            <input id="insight-scrubber" type="range" min="0" max="60" value="0" aria-label="Scrub illustrative market flow history">
-                            <span id="insight-time">NOW</span>
-                        </label>
+                        <article class="pick" id="mf-pick" aria-live="polite"></article>
                     </div>
-                    <p class="flow-note">Interactive concept preview • synthetic values • not market data</p>
+                </div>
+
+                <!-- DAY TRADE -->
+                <div class="view" id="view-day" role="tabpanel" aria-labelledby="tab-day" hidden>
+                    <div class="strip">
+                        <b class="c-cyan">DAY TRADE BOARD</b>
+                        <span>5-MIN SETUPS · <b id="dt-count">0</b> SIGNALS</span>
+                        <span class="c-dim">AUTO-TRADE OFF · SIGNALS JOURNALED</span>
+                    </div>
+                    <div class="dt-list" id="dt-list"></div>
+                </div>
+
+                <!-- OI TRACKER -->
+                <div class="view" id="view-oi" role="tabpanel" aria-labelledby="tab-oi" hidden>
+                    <div class="strip">
+                        <b class="c-cyan">NIFTY OPTIONS OI</b>
+                        <span>SPOT <b id="oi-spot">—</b></span>
+                        <span>PCR <b id="oi-pcr">—</b></span>
+                        <span>MAX PAIN <b id="oi-pain">—</b></span>
+                        <span class="pill" id="oi-bias">NEUTRAL</span>
+                    </div>
+                    <div class="oi-legend"><span><i class="sw sw-red"></i>CALL OI</span><span><i class="sw sw-green"></i>PUT OI</span><span class="c-dim">walls = biggest OI</span></div>
+                    <div class="oi-chart" id="oi-chart"></div>
+                </div>
+
+                <!-- AGENTS -->
+                <div class="view" id="view-agents" role="tabpanel" aria-labelledby="tab-agents" hidden>
+                    <div class="agents-grid" id="ag-grid"></div>
+                    <div class="console" id="ag-log" aria-label="Agent activity log"></div>
+                </div>
+
+                <!-- BACKTEST -->
+                <div class="view" id="view-bt" role="tabpanel" aria-labelledby="tab-bt" hidden>
+                    <div class="strip">
+                        <b class="c-cyan">BACKTEST</b>
+                        <span class="bt-choices" role="group" aria-label="Strategy">
+                            <button type="button" class="chip active" data-bt="ema">EMA CROSS</button>
+                            <button type="button" class="chip" data-bt="vwap">VWAP BREAKOUT</button>
+                            <button type="button" class="chip" data-bt="orb">ORB 15M</button>
+                        </span>
+                        <button type="button" class="btn btn-primary btn-sm" id="bt-run">RUN ▶</button>
+                    </div>
+                    <div class="bt-body">
+                        <svg viewBox="0 0 600 220" preserveAspectRatio="none" class="bt-svg" role="img" aria-label="Simulated backtest equity curve">
+                            <line class="axis" x1="0" y1="110" x2="600" y2="110"/>
+                            <polyline id="bt-line" points=""/>
+                        </svg>
+                        <div class="bt-stats">
+                            <div><span>RETURN</span><b id="bt-ret">—</b></div>
+                            <div><span>WIN RATE</span><b id="bt-win">—</b></div>
+                            <div><span>SHARPE</span><b id="bt-sharpe">—</b></div>
+                            <div><span>MAX DD</span><b id="bt-dd">—</b></div>
+                            <div><span>TRADES</span><b id="bt-trades">—</b></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="term-foot">
+                    <span>SIMULATED PREVIEW · illustrative values, not market data</span>
+                    <a href="/app" data-start-demo="market-flow" id="term-open">Open Market Flow in the demo →</a>
                 </div>
             </div>
+        </section>
+
+        <section class="shell section reveal" id="features">
+            <h2 class="section-title">One terminal. Every step of the trade.</h2>
+            <div class="features">
+                <a class="feature spot" href="/app" data-start-demo="market-flow"><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="/app" data-start-demo="market-flow"><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day and squeeze setups on 5-minute bars, each with entry, stop and two targets.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="/app" data-start-demo="oi-tracker"><span class="f-tag">03 · OPTIONS</span><h3>OI Tracker</h3><p>Call and put walls, PCR, max pain and the market's options bias, minute by minute.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="/app" data-start-demo="analysis"><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="/app" data-start-demo="backtest"><span class="f-tag">05 · STRATEGY</span><h3>Backtest &amp; paper trade</h3><p>Test a strategy on history, replay sessions bar by bar, then paper trade it before going live.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="/app" data-start-demo="agents"><span class="f-tag">06 · AGENTS</span><h3>AI agents &amp; risk</h3><p>Agents scan, verify, execute and track — inside your limits, with a kill switch that stays on after a loss trip.</p><span class="f-go">Open in demo →</span></a>
+            </div>
+        </section>
+
+        <section class="shell section reveal" id="steps">
+            <h2 class="section-title">From preview to your own terminal</h2>
+            <ol class="steps">
+                <li><b>1 · Try the demo</b><span>The full terminal on a simulated market. Every tab works.</span></li>
+                <li><b>2 · Request access</b><span>Choose view-only, trading or agentic access. We reply by email.</span></li>
+                <li><b>3 · Link your broker</b><span>Sign in with your Trading ID and link your broker account each trading day.</span></li>
+            </ol>
         </section>
 
         <section class="shell section reveal" id="contact">
             <div class="contact-card">
-                <div>
-                    <div class="eyebrow">Get your workspace</div>
+                <div class="contact-intro">
+                    <p class="eyebrow"><span class="dot"></span> Get your workspace</p>
                     <h2>Request access</h2>
                     <p>VerquoAI workspaces are set up by our team. Tell us a little about you and we'll reply by email with the next steps.</p>
                     <ul class="contact-points">
@@ -616,465 +192,80 @@
                         <li>Help getting your broker API connected</li>
                         <li>Try everything first in the demo, no account needed</li>
                     </ul>
-                    {% if contact_email %}<p class="contact-mail">Prefer email? Write to <a href="mailto:{{ contact_email }}?subject=VerquoAI%20access%20request">{{ contact_email }}</a></p>{% endif %}
                 </div>
                 <form data-contact-form="landing" novalidate>
                     <input type="hidden" name="form_token" value="{{ form_token }}">
-                <div class="contact-grid">
-                    <label class="field"><span>Name</span><input name="name" type="text" maxlength="80" autocomplete="name" required></label>
-                    <label class="field"><span>Email</span><input name="email" type="email" maxlength="120" autocomplete="email" required></label>
-                    <label class="field"><span>Phone <em>(optional)</em></span><input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
-                    <label class="field"><span>Trading ID <em>(optional)</em></span><input name="trading_id" type="text" maxlength="10" style="text-transform:uppercase"></label>
-                </div>
-                <fieldset class="access-choice">
-                    <legend>What access do you want?</legend>
-                    <label class="choice"><input type="radio" name="access_level" value="view" required><span><b>View live trading</b><small>Read-only dashboards, signals and analysis. No orders are placed.</small></span></label>
-                    <label class="choice"><input type="radio" name="access_level" value="trade"><span><b>Trading</b><small>Place and manage your own orders through your broker.</small></span></label>
-                    <label class="choice"><input type="radio" name="access_level" value="agentic"><span><b>Agentic trading</b><small>AI agents place trades for you, within limits you set.</small></span></label>
-                </fieldset>
-                <label class="field"><span>Which broker do you trade with?</span><input name="platform" type="text" maxlength="60" required placeholder="Your broker's name"></label>
-                <p class="contact-note">We'll confirm whether your broker can be connected before setting anything up.</p>
-                <label class="field"><span>How do you trade? <em>(optional)</em></span><textarea name="message" rows="3" maxlength="1000"></textarea></label>
-                <label class="confirm"><input type="checkbox" name="confirm" value="yes" required><span>I confirm the access and trading platform selected above.</span></label>
-                <label class="contact-trap" aria-hidden="true">Website<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
-                    <button class="button" type="submit">Request access</button>
+                    <div class="contact-grid">
+                        <label class="field"><span>Name</span><input name="name" type="text" maxlength="80" autocomplete="name" required></label>
+                        <label class="field"><span>Email</span><input name="email" type="email" maxlength="120" autocomplete="email" required></label>
+                        <label class="field"><span>Phone <em>(optional)</em></span><input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
+                        <label class="field"><span>Trading ID <em>(optional)</em></span><input name="trading_id" type="text" maxlength="10" autocapitalize="characters" style="text-transform:uppercase"></label>
+                    </div>
+                    <fieldset class="access-choice">
+                        <legend>What access do you want?</legend>
+                        <label class="choice"><input type="radio" name="access_level" value="view" required><span><b>View live trading</b><small>Read-only dashboards, signals and analysis. No orders are placed.</small></span></label>
+                        <label class="choice"><input type="radio" name="access_level" value="trade"><span><b>Trading</b><small>Place and manage your own orders through your broker.</small></span></label>
+                        <label class="choice"><input type="radio" name="access_level" value="agentic"><span><b>Agentic trading</b><small>AI agents place trades for you, within limits you set.</small></span></label>
+                    </fieldset>
+                    <label class="field"><span>Which broker do you trade with?</span><input name="platform" type="text" maxlength="60" required placeholder="Your broker's name"></label>
+                    <p class="contact-note">We'll confirm whether your broker can be connected before setting anything up.</p>
+                    <label class="field"><span>How do you trade? <em>(optional)</em></span><textarea name="message" rows="3" maxlength="1000"></textarea></label>
+                    <label class="confirm"><input type="checkbox" name="confirm" value="yes" required><span>I confirm the access and trading platform selected above.</span></label>
+                    <label class="contact-trap" aria-hidden="true">Website<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
+                    <button class="btn btn-primary btn-lg btn-block" type="submit">Request access</button>
                     <div class="contact-status" data-contact-status role="status"></div>
                 </form>
             </div>
         </section>
 
         <section class="shell section">
-            <div class="disclaimer"><b>Important:</b> VerquoAI provides analytical and workflow tools, not investment advice or a promise of returns. Market data may be delayed or unavailable. Trading involves substantial risk, including possible loss of capital. Verify information independently and make your own decisions.</div>
+            <p class="disclaimer"><b>Important:</b> VerquoAI provides analytical and workflow tools, not investment advice or a promise of returns. Market data may be delayed or unavailable. Trading involves substantial risk, including possible loss of capital. Verify information independently and make your own decisions.</p>
         </section>
     </main>
+
+    <footer class="shell foot">
+        <span>© <span id="year"></span> VerquoAI™</span>
+        <span>Market analysis and trading workflow tools. Trading involves risk. We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</span>
+    </footer>
+
+    <div class="mobile-cta" id="mobile-cta">
+        <a class="btn btn-ghost" href="/login" data-open-login>Sign in</a>
+        <button class="btn btn-primary" type="button" data-start-demo>Try the demo</button>
+    </div>
 
     <div class="login-backdrop" data-close-login></div>
     <aside class="login-panel" id="login-panel" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-hidden="true" inert>
         <div class="login-head">
-            <span class="brand"><span class="brand-mark" aria-hidden="true">V</span><span>VerquoAI</span><sup>™</sup></span>
+            <span class="logo">VERQUOAI<sup>™</sup></span>
             <button class="login-close" type="button" data-close-login aria-label="Close sign-in">×</button>
         </div>
-        <div class="eyebrow"><span class="pulse"></span> Secure sign-in</div>
+        <p class="eyebrow"><span class="dot"></span> Secure sign-in</p>
         <h2 id="login-title">Open your workspace</h2>
         <p class="lead">We email a one-time code to the address saved for your Trading ID.</p>
 
         <div class="login-step" id="step-email">
-            <label class="field"><span>Trading ID</span><input type="text" id="zerodha-id-input" placeholder="e.g. AB1234" autocomplete="username" style="text-transform:uppercase"></label>
+            <label class="field"><span>Trading ID</span><input type="text" id="zerodha-id-input" placeholder="e.g. AB1234" autocomplete="username" autocapitalize="characters" style="text-transform:uppercase"></label>
             <label class="field"><span>Email address</span><input type="email" id="email-input" placeholder="you@example.com" autocomplete="email"></label>
-            <button class="button" type="button" id="btn-send-otp">Send code</button>
+            <button class="btn btn-primary btn-lg btn-block" type="button" id="btn-send-otp">Send code</button>
             <div class="login-msg" id="msg-email" role="status"></div>
             <p class="login-request">Don't have a Trading ID set up with us? <a href="#contact" data-close-login>Request access</a></p>
         </div>
 
         <div class="login-step" id="step-otp" hidden>
             <label class="field"><span id="otp-delivery-message">Enter the 6-digit code sent to your email</span><input type="text" id="otp-input" class="otp" maxlength="6" inputmode="numeric" placeholder="······" autocomplete="one-time-code"></label>
-            <button class="button" type="button" id="btn-verify">Verify &amp; sign in</button>
+            <button class="btn btn-primary btn-lg btn-block" type="button" id="btn-verify">Verify &amp; sign in</button>
             <div class="login-msg" id="msg-otp" role="status"></div>
             <div class="login-meta"><span id="otp-timer"></span><button type="button" id="btn-resend">Use a different ID / resend</button></div>
         </div>
 
         <div class="login-alt">
             No account yet? Explore the full workspace on a simulated market first.
-            <button class="button button-quiet" type="button" data-start-demo>Try the demo instead</button>
+            <button class="btn btn-ghost btn-lg btn-block" type="button" data-start-demo>Try the demo instead</button>
             <div class="demo-error" data-demo-error role="alert"></div>
         </div>
     </aside>
 
-    <footer class="shell">
-        <span>© <span id="year"></span> VerquoAI™</span>
-        <span>Market analysis and trading workflow tools. Trading involves risk. We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</span>
-    </footer>
-    <script>
-        (() => {
-            const svgNS = 'http://www.w3.org/2000/svg';
-            const lineLayer = document.getElementById('sim-flow-lines');
-            const terminal = document.getElementById('market-simulation');
-            const svg = document.getElementById('sim-flow-svg');
-            const insightCursor = document.getElementById('insight-cursor');
-            const insightPoint = document.getElementById('insight-point');
-            const insightScrubber = document.getElementById('insight-scrubber');
-            const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            let lens = 'price';
-            let paused = false;
-            let tick = 0;
-            let indexLevel = 24318.45;
-            let intervalId;
-
-            function svgElement(name, attributes = {}) {
-                const element = document.createElementNS(svgNS, name);
-                Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
-                return element;
-            }
-
-            function addStrand(index, side) {
-                const count = side === 'bull' ? 18 : 12;
-                const row = side === 'bull' ? index : index - 18;
-                const source = side === 'bull' ? 42 + row * 11.4 : 273 + row * 15.1;
-                const destination = side === 'bull'
-                    ? 39 + ((row * 7) % count) * 13.2
-                    : 278 + ((row * 5) % count) * 14.3;
-                const pathId = `sim-strand-${index}`;
-                const pathData = `M 34 ${source.toFixed(1)} C 185 ${source.toFixed(1)} 302 250 466 250 C 619 250 758 ${destination.toFixed(1)} 986 ${destination.toFixed(1)}`;
-                const path = svgElement('path', {
-                    id: pathId,
-                    d: pathData,
-                    class: `flow-path ${side}${row % 5 === 0 ? ' featured' : ''}`,
-                });
-                lineLayer.appendChild(path);
-                if (!reducedMotion) {
-                    const dot = svgElement('circle', { r: row % 5 === 0 ? 2.6 : 1.8, class: `flow-dot ${side}` });
-                    const motion = svgElement('animateMotion', {
-                        dur: `${4.4 + (row % 7) * 0.57}s`,
-                        begin: `${-((row * 0.83) % 5).toFixed(2)}s`,
-                        repeatCount: 'indefinite',
-                        rotate: 'auto',
-                    });
-                    motion.appendChild(svgElement('mpath', { href: `#${pathId}` }));
-                    dot.appendChild(motion);
-                    lineLayer.appendChild(dot);
-                }
-            }
-
-            for (let i = 0; i < 30; i++) addStrand(i, i < 18 ? 'bull' : 'bear');
-
-            function updateClock() {
-                const now = new Date();
-                const clock = new Intl.DateTimeFormat('en-IN', {
-                    timeZone: 'Asia/Kolkata',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: false,
-                }).format(now);
-                document.getElementById('sim-clock').textContent = `SIMULATED SESSION · ${clock} IST`;
-                document.getElementById('sim-updated').textContent = `SIMULATION TICK · ${clock}`;
-            }
-
-            function updateSimulation() {
-                if (paused) return;
-                tick += 1;
-                indexLevel += (Math.random() - 0.47) * 8;
-                const percent = 0.42 + Math.sin(tick / 8) * 0.17 + (Math.random() - 0.5) * 0.04;
-                document.getElementById('sim-index').textContent = indexLevel.toLocaleString('en-IN', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                });
-                document.getElementById('sim-index-change').textContent = `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`;
-                document.getElementById('sim-breadth').textContent = `${18 + Math.round(Math.sin(tick / 6) * 2)} / 30`;
-                document.getElementById('sim-bull-count').textContent = '18';
-                document.getElementById('sim-bear-count').textContent = '12';
-                document.getElementById('sim-svg-bull-count').textContent = '18';
-                document.getElementById('sim-svg-bear-count').textContent = '12';
-
-                document.querySelectorAll('[data-demo-value]').forEach((element) => {
-                    const base = Number(element.dataset.demoValue);
-                    const direction = Math.sign(base);
-                    const value = direction * (Math.abs(base) + (Math.random() - 0.5) * 0.1);
-                    const digits = Math.abs(value).toFixed(2);
-                    element.textContent = `${value >= 0 ? '+' : '−'}${digits}${lens === 'oi' ? '% OI' : '%'}`;
-                    element.classList.toggle('bear', value < 0);
-                    element.classList.toggle('bull', value >= 0);
-                });
-                updateClock();
-            }
-
-            function updateInsight() {
-                const elapsed = Number(insightScrubber.value);
-                const x = 36 + (60 - elapsed) * (571 / 60);
-                const wave = Math.sin(elapsed / 8);
-                const pointY = 112 - wave * 38;
-                const bullish = Math.max(4, Math.min(26, Math.round(16 + wave * 7)));
-                const bearish = 30 - bullish;
-                insightCursor.setAttribute('x1', x.toFixed(1));
-                insightCursor.setAttribute('x2', x.toFixed(1));
-                insightPoint.setAttribute('cx', x.toFixed(1));
-                insightPoint.setAttribute('cy', pointY.toFixed(1));
-                document.getElementById('insight-window').textContent = elapsed === 0 ? 'NOW' : `−${elapsed} MIN`;
-                document.getElementById('insight-time').textContent = elapsed === 0 ? 'NOW' : `−${elapsed} MIN`;
-                document.getElementById('insight-bullish').textContent = String(bullish);
-                document.getElementById('insight-bearish').textContent = String(bearish);
-                document.getElementById('insight-neutral').textContent = String(4 + Math.round(Math.cos(elapsed / 9) * 2));
-                document.getElementById('insight-lens').textContent = lens === 'oi' ? 'FUTURES OI' : 'PRICE';
-                document.getElementById('insight-window').classList.toggle('bear', wave < -0.2);
-            }
-
-            document.querySelectorAll('[data-sim-lens]').forEach((button) => {
-                button.addEventListener('click', () => {
-                    lens = button.dataset.simLens;
-                    document.querySelectorAll('[data-sim-lens]').forEach((control) => {
-                        control.setAttribute('aria-pressed', String(control === button));
-                    });
-                    document.getElementById('sim-chart-title').textContent =
-                        lens === 'oi' ? 'FUTURES OPEN INTEREST · SIMULATED UNIVERSE' : 'PRICE CHANGE · SIMULATED UNIVERSE';
-                    updateInsight();
-                    document.querySelectorAll('[data-demo-value]').forEach((element) => {
-                        const value = Number(element.dataset.demoValue);
-                        const number = Math.abs(value).toFixed(2);
-                        element.textContent = `${value >= 0 ? '+' : '−'}${number}${lens === 'oi' ? '% OI' : '%'}`;
-                    });
-                    updateClock();
-                });
-            });
-            insightScrubber.addEventListener('input', updateInsight);
-
-            document.getElementById('sim-pause').addEventListener('click', (event) => {
-                paused = !paused;
-                terminal.classList.toggle('paused', paused);
-                event.currentTarget.setAttribute('aria-pressed', String(paused));
-                event.currentTarget.innerHTML = paused ? '▶&nbsp; Resume' : 'Ⅱ&nbsp; Pause';
-                if (paused) svg.pauseAnimations();
-                else if (!reducedMotion) svg.unpauseAnimations();
-                if (!paused) updateSimulation();
-            });
-
-            document.getElementById('year').textContent = new Date().getFullYear();
-            updateInsight();
-            updateSimulation();
-            intervalId = window.setInterval(updateSimulation, 1150);
-            window.addEventListener('pagehide', () => window.clearInterval(intervalId), { once: true });
-        })();
-    </script>
-    <script>
-        // ── simulated previews (client-side only; illustrative values) ──
-        function startLivePreviews(reducedMotion) {
-            const fmt = (n, d = 2) => n.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
-            const symbols = [
-                ['NIFTY 50', 25012.4], ['BANKNIFTY', 56120.8], ['SENSEX', 82214.6], ['FINNIFTY', 26488.1],
-                ['RELIANCE', 1412.3], ['HDFCBANK', 1975.6], ['INFY', 1518.2], ['TCS', 3102.9], ['ICICIBANK', 1388.4],
-                ['SBIN', 842.7], ['LT', 3621.5], ['ITC', 412.9], ['BHARTIARTL', 1903.1], ['AXISBANK', 1176.2],
-            ].map(([name, close]) => ({ name, close, price: close * (1 + (Math.random() - 0.5) * 0.012), hist: [] }));
-            const track = document.getElementById('tape-track');
-            const item = s => {
-                const pct = (s.price / s.close - 1) * 100;
-                return `<span class="tape-item" data-sym="${s.name}"><b>${s.name}</b>${fmt(s.price)}<span class="${pct >= 0 ? 'up' : 'down'}">${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(2)}%</span></span>`;
-            };
-            const drawTape = () => { track.innerHTML = symbols.map(item).join('') + symbols.map(item).join(''); };
-            drawTape();
-
-            const quotes = document.getElementById('live-quotes');
-            const spark = (hist, up) => {
-                const min = Math.min(...hist), max = Math.max(...hist), span = max - min || 1;
-                const pts = hist.map((v, i) => `${(i / (hist.length - 1 || 1) * 52).toFixed(1)},${(15 - (v - min) / span * 14).toFixed(1)}`).join(' ');
-                return `<svg viewBox="0 0 52 16"><polyline points="${pts}" stroke="${up ? '#68eab6' : '#ff7d93'}"/></svg>`;
-            };
-            const drawQuotes = () => {
-                quotes.innerHTML = '<div class="live-label"><span>INDICES · SIMULATED</span><i></i></div>' + symbols.slice(0, 3).map(s => {
-                    const pct = (s.price / s.close - 1) * 100;
-                    return `<div class="quote-row"><span style="color:#dfe6f0">${s.name}</span><span class="${pct >= 0 ? 'up' : 'down'}" style="color:${pct >= 0 ? '#68eab6' : '#ff7d93'}">${fmt(s.price)}</span>${spark(s.hist.length > 1 ? s.hist : [s.close, s.price], pct >= 0)}</div>`;
-                }).join('');
-            };
-
-            const feed = document.getElementById('live-feed');
-            const setups = ['EMA crossover · 15m', 'RSI reversal · 5m', 'VWAP breakout · 5m', 'Long build-up · OI', 'Stage 2 breakout · D', 'Short covering · OI', 'Mean reversion · 15m'];
-            const pushSignal = () => {
-                const s = symbols[4 + Math.floor(Math.random() * (symbols.length - 4))];
-                const setup = setups[Math.floor(Math.random() * setups.length)];
-                const buy = Math.random() > 0.42;
-                const line = document.createElement('div');
-                line.className = 'feed-line';
-                line.innerHTML = `<span>${s.name}</span><span>${setup}</span><span style="color:${buy ? '#68eab6' : '#ff7d93'}">${buy ? 'BUY' : 'SELL'}</span>`;
-                feed.prepend(line);
-                while (feed.children.length > 3) feed.lastChild.remove();
-            };
-
-            const equityLine = document.getElementById('live-equity');
-            let equity = [0];
-            const stepEquity = () => {
-                const last = equity[equity.length - 1];
-                equity.push(last + (Math.random() - 0.4) * 1.1);
-                if (equity.length > 60) equity = [0];
-                const min = Math.min(...equity, -1), max = Math.max(...equity, 1);
-                equityLine.setAttribute('points', equity.map((v, i) => `${(i / 59 * 200).toFixed(1)},${(44 - (v - min) / (max - min) * 40).toFixed(1)}`).join(' '));
-                const value = equity[equity.length - 1];
-                document.getElementById('live-equity-val').textContent = `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
-            };
-
-            const agents = document.getElementById('live-agents');
-            const states = [['running', '#68eab6'], ['waiting', '#ffc270'], ['scanning', '#8baeff']];
-            const drawAgents = () => {
-                agents.innerHTML = ['SCANNER', 'VERIFIER', 'EXECUTOR', 'TRACKER'].map((name, i) => {
-                    const [label, color] = states[(Math.floor(Date.now() / 2600) + i) % states.length];
-                    return `<span class="agent"><i style="background:${color};box-shadow:0 0 8px ${color}"></i>${name}<em>${label}</em></span>`;
-                }).join('');
-            };
-
-            const step = () => {
-                symbols.forEach(s => {
-                    s.price *= 1 + (Math.random() - 0.495) * (s.name.length > 8 ? 0.0006 : 0.0012);
-                    s.hist.push(s.price);
-                    if (s.hist.length > 30) s.hist.shift();
-                });
-                drawTape();
-                drawQuotes();
-                const adv = 230 + Math.round(Math.sin(Date.now() / 9000) * 60 + Math.random() * 20);
-                document.getElementById('live-breadth').style.width = `${(adv / 500 * 100).toFixed(1)}%`;
-                document.getElementById('live-adv').textContent = `ADV ${adv}`;
-                document.getElementById('live-dec').textContent = `DEC ${500 - adv}`;
-                const exposure = 40 + Math.round(Math.sin(Date.now() / 7000) * 12);
-                const loss = 16 + Math.round(Math.cos(Date.now() / 11000) * 9);
-                document.getElementById('live-exp').style.width = `${exposure}%`;
-                document.getElementById('live-exp-val').textContent = `${exposure}%`;
-                document.getElementById('live-loss').style.width = `${loss}%`;
-                document.getElementById('live-loss-val').textContent = `${loss}%`;
-                stepEquity();
-                drawAgents();
-            };
-            for (let i = 0; i < 3; i++) pushSignal();
-            for (let i = 0; i < 20; i++) stepEquity();
-            step();
-            if (reducedMotion) return;
-            const timers = [setInterval(step, 1400), setInterval(pushSignal, 3200)];
-            window.addEventListener('pagehide', () => timers.forEach(clearInterval), { once: true });
-
-            const observer = new IntersectionObserver(entries => entries.forEach(e => {
-                if (e.isIntersecting) { e.target.classList.add('shown'); observer.unobserve(e.target); }
-            }), { threshold: 0.12 });
-            document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
-        }
-        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        if (prefersReducedMotion) document.querySelectorAll('.reveal').forEach(el => el.classList.add('shown'));
-        startLivePreviews(prefersReducedMotion);
-
-        // ── try the demo ──
-        async function startDemo(tab, button) {
-            const errors = document.querySelectorAll('[data-demo-error]');
-            errors.forEach(el => { el.textContent = ''; });
-            button?.setAttribute('aria-busy', 'true');
-            try {
-                const res = await fetch('/demo/start', { method: 'POST' });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || !data.success) throw new Error(data.message || 'The demo could not start. Please try again.');
-                window.location.href = `/app${tab ? '#tab=' + encodeURIComponent(tab) : ''}`;
-            } catch (e) {
-                errors.forEach(el => { el.textContent = e.message; });
-                button?.removeAttribute('aria-busy');
-            }
-        }
-        document.querySelectorAll('[data-start-demo]').forEach(el => el.addEventListener('click', event => {
-            event.preventDefault();
-            startDemo(el.dataset.startDemo || '', el);
-        }));
-
-        // ── sign-in panel ──
-        (() => {
-            const panel = document.getElementById('login-panel');
-            let lastFocus = null;
-            let currentZerodhaId = '';
-            let timer;
-            const $ = id => document.getElementById(id);
-            const message = (id, kind, text) => { const el = $(id); el.className = `login-msg ${kind}`; el.textContent = text; };
-            const showStep = step => {
-                $('step-email').hidden = step !== 'email';
-                $('step-otp').hidden = step !== 'otp';
-                (step === 'otp' ? $('otp-input') : $('zerodha-id-input')).focus();
-            };
-            const open = () => {
-                lastFocus = document.activeElement;
-                panel.inert = false;  // closed, it is off-screen but would still take keyboard focus
-                document.body.classList.add('login-open');
-                panel.setAttribute('aria-hidden', 'false');
-                if (location.pathname !== '/login') history.replaceState(null, '', '/login');
-                setTimeout(() => $('zerodha-id-input').focus(), 60);
-            };
-            const close = () => {
-                document.body.classList.remove('login-open');
-                panel.setAttribute('aria-hidden', 'true');
-                panel.inert = true;
-                if (location.pathname === '/login') history.replaceState(null, '', '/');
-                lastFocus?.focus?.();
-            };
-            document.querySelectorAll('[data-open-login]').forEach(el => el.addEventListener('click', e => { e.preventDefault(); open(); }));
-            document.querySelectorAll('[data-close-login]').forEach(el => el.addEventListener('click', close));
-            document.addEventListener('keydown', e => {
-                if (!document.body.classList.contains('login-open')) return;
-                if (e.key === 'Escape') close();
-                if (e.key === 'Tab') {  // keep focus inside the dialog
-                    const focusable = [...panel.querySelectorAll('button, input')].filter(el => !el.closest('[hidden]'));
-                    const first = focusable[0], last = focusable[focusable.length - 1];
-                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-                    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-                }
-            });
-
-            const startTimer = () => {
-                let seconds = 300;
-                clearInterval(timer);
-                timer = setInterval(() => {
-                    seconds--;
-                    $('otp-timer').textContent = seconds > 0
-                        ? `Code expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
-                        : 'Code expired. Request a new one.';
-                    if (seconds <= 0) clearInterval(timer);
-                }, 1000);
-            };
-
-            async function sendOTP() {
-                const zerodhaId = $('zerodha-id-input').value.trim().toUpperCase();
-                const email = $('email-input').value.trim();
-                if (!zerodhaId) return message('msg-email', 'error', 'Please enter your Trading ID');
-                if (!email) return message('msg-email', 'error', 'Please enter your email address');
-                currentZerodhaId = zerodhaId;
-                const btn = $('btn-send-otp');
-                btn.setAttribute('aria-busy', 'true');
-                message('msg-email', 'info', 'Sending code…');
-                try {
-                    const res = await fetch('/auth/send-otp', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email, zerodha_id: zerodhaId }),
-                    });
-                    const data = await res.json();
-                    if (!data.success) {
-                        message('msg-email', 'error', data.message || 'Failed to send the code');
-                    } else {
-                        if (data.mode === 'development' && data.otp) {
-                            $('otp-input').value = data.otp;
-                            $('otp-delivery-message').textContent = 'Development-only code (email failed)';
-                        } else {
-                            $('otp-delivery-message').textContent = 'Enter the 6-digit code sent to your email';
-                        }
-                        message('msg-email', 'success', '');
-                        message('msg-otp', 'info', '');
-                        showStep('otp');
-                        startTimer();
-                    }
-                } catch (e) {
-                    message('msg-email', 'error', 'Connection error. Please try again.');
-                }
-                btn.removeAttribute('aria-busy');
-            }
-
-            async function verifyOTP() {
-                const otp = $('otp-input').value.trim();
-                if (otp.length !== 6) return message('msg-otp', 'error', 'Please enter the 6-digit code');
-                const btn = $('btn-verify');
-                btn.setAttribute('aria-busy', 'true');
-                try {
-                    const res = await fetch('/auth/verify-otp', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ otp, zerodha_id: currentZerodhaId }),
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        message('msg-otp', 'success', 'Signed in. Opening your workspace…');
-                        setTimeout(() => { window.location.href = '/app'; }, 400);
-                        return;
-                    }
-                    message('msg-otp', 'error', data.message || 'Invalid code');
-                } catch (e) {
-                    message('msg-otp', 'error', 'Connection error. Please try again.');
-                }
-                btn.removeAttribute('aria-busy');
-            }
-
-            $('btn-send-otp').addEventListener('click', sendOTP);
-            $('btn-verify').addEventListener('click', verifyOTP);
-            $('btn-resend').addEventListener('click', () => showStep('email'));
-            $('email-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendOTP(); });
-            $('zerodha-id-input').addEventListener('keydown', e => { if (e.key === 'Enter') $('email-input').focus(); });
-            $('otp-input').addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTP(); });
-            if (document.body.dataset.loginOnLoad === 'true') open();
-        })();
-    </script>
+    <script src="/static/js/landing.js?v={{ static_version('js/landing.js') }}" defer></script>
     <script src="/static/js/contact.js?v={{ static_version('js/contact.js') }}" defer></script>
     <script src="/static/js/metrics.js?v={{ static_version('js/metrics.js') }}" defer></script>
 </body>

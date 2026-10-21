@@ -646,7 +646,6 @@ async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True,
-                                                                "contact_email": os.environ.get("ADMIN_EMAIL", ""),
                                                                 "form_token": _form_token()})
 
 
@@ -836,7 +835,6 @@ templates.env.globals["static_version"] = _static_version
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
-                                                                "contact_email": os.environ.get("ADMIN_EMAIL", ""),
                                                                 "form_token": _form_token()})
 
 
@@ -855,7 +853,6 @@ async def dashboard(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
         "demo_kind": demo_kind(svc),
-        "contact_email": os.environ.get("ADMIN_EMAIL", ""),
         "form_token": _form_token(),
         "is_admin": is_admin_session(request),
         "is_authenticated": svc.is_authenticated,
