@@ -895,6 +895,16 @@ async def stock_detail_page(request: Request, symbol: str) -> HTMLResponse:
     })
 
 
+def _access_label(request: Request, svc: TradingService) -> str:
+    """The signed-in account's own level. A user exploring the demo sandbox has
+    every feature there, but the label must not suggest their account does."""
+    if demo_kind(svc) == "user":
+        user = UserConfigService.get_instance().get_user(get_session_zerodha_id(request))
+        if user:
+            return f"{LEVEL_LABELS[user.access_level]} · demo: all features"
+    return LEVEL_LABELS[svc.access_level]
+
+
 @app.get("/api/status")
 async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
     svc = get_user_service(request)
@@ -906,7 +916,7 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
         "running": svc.is_running,
         "zerodha_id": svc.zerodha_id,
         "access_level": svc.access_level,
-        "access_label": LEVEL_LABELS[svc.access_level],
+        "access_label": _access_label(request, svc),
         "strategies": svc.get_strategies_info(),
         "risk": svc.get_risk_summary(),
         "journal": svc.get_journal_summary(),

@@ -60,7 +60,8 @@ def _client(cookies=None):
 def _user(monkeypatch, zid="AB1234"):
     monkeypatch.setattr(webapp.UserConfigService, "get_instance", staticmethod(
         lambda: SimpleNamespace(get_user=lambda z: SimpleNamespace(zerodha_id=zid, api_key="k", api_secret="s",
-                                                                   email="u@example.com") if z.upper() == zid else None)))
+                                                                   email="u@example.com", access_level="view")
+                                if z.upper() == zid else None)))
     return webapp.otp_auth._create_session(zid)
 
 
@@ -88,6 +89,7 @@ def test_user_without_zerodha_gets_demo_then_real_once_connected(_isolated, monk
             return (await c.get("/api/status")).json(), (await c.get("/api/login-url")).status_code
     first, login_status = asyncio.run(status())
     assert first["demo"] == "user" and first["zerodha_id"] == "DEMO-U-AB1234"
+    assert first["access_label"] == "View live trading · demo: all features"   # the account's real level
     assert login_status == 200  # connecting Zerodha uses the real service
 
     _isolated.mgr.services["AB1234"].is_authenticated = True
