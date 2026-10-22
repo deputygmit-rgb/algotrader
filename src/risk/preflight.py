@@ -40,6 +40,14 @@ logger = get_logger(__name__)
 # Enums & Data Classes
 # ─────────────────────────────────────────────────────────────
 
+
+def _age_seconds(ts: datetime) -> float:
+    """Seconds since ``ts``, whether it carries a timezone (broker / demo ticks) or not.
+    Subtracting an aware timestamp from naive ``datetime.now()`` raised on every
+    check ("can't subtract offset-naive and offset-aware datetimes")."""
+    now = datetime.now(ts.tzinfo) if ts.tzinfo is not None else datetime.now()
+    return (now - ts).total_seconds()
+
 class CheckSeverity(str, Enum):
     CRITICAL = "CRITICAL"    # Blocks order placement
     WARNING = "WARNING"      # Logged but does not block
@@ -578,7 +586,7 @@ class PreflightChecker:
                     latest_tick_time = ts
 
             if latest_tick_time:
-                age = (datetime.now() - latest_tick_time).total_seconds()
+                age = _age_seconds(latest_tick_time)
                 if age > self.config.max_tick_age_seconds:
                     if can_bypass_ws:
                         return CheckResult(
@@ -794,7 +802,7 @@ class PreflightChecker:
                 cached = chain[underlying]
                 cache_time = getattr(cached, "timestamp", None)
                 if cache_time:
-                    age_min = (datetime.now() - cache_time).total_seconds() / 60
+                    age_min = _age_seconds(cache_time) / 60
                     if age_min > self.config.max_chain_age_minutes:
                         return CheckResult(
                             name="option_chain_valid",

@@ -15,7 +15,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from src.agent.activity import default_log_dir
+from src.agent.activity import AgentActivity, default_log_dir
 from src.agent.executor_agent import ExecutorAgent
 from src.agent.market_hours import is_market_open
 from src.agent.scanner_agent import ScannerAgent
@@ -30,6 +30,11 @@ logger = get_logger(__name__)
 
 HEARTBEAT_INTERVAL_SECONDS = 60
 
+
+
+# light mode (demo / view-only sessions): cycle seconds and journal sizes
+LIGHT_VERIFIER_S, LIGHT_EXECUTOR_S, LIGHT_TRACKER_S = 180, 60, 60
+LIGHT_EVENTS, LIGHT_TRACE = 100, 300
 
 class TradingServiceAgent:
     """Supervises a single per-user TradingService and its pipeline sub-agents.
@@ -47,11 +52,19 @@ class TradingServiceAgent:
         self._alive = True
         self.created_at = datetime.now().isoformat(timespec="seconds")
         self.last_heartbeat_at: Optional[str] = None
+        # Demo and view-only sessions run the agents in a light mode: they place no real
+        # orders and share the market data, so slower cycles and smaller in-memory
+        # journals are enough - many public visitors at once must not exhaust the server.
+        light = bool(getattr(service, "is_demo", False) or getattr(service, "is_shared_market", False))
+        self.light = light
         self.scanner = ScannerAgent(zerodha_id, service)
-        self.verifier = VerifierAgent(zerodha_id, service)
-        self.executor = ExecutorAgent(zerodha_id, service)
-        self.tracker = TrackerAgent(zerodha_id, service)
+        self.verifier = VerifierAgent(zerodha_id, service, interval_seconds=LIGHT_VERIFIER_S if light else 45)
+        self.executor = ExecutorAgent(zerodha_id, service, interval_seconds=LIGHT_EXECUTOR_S if light else 30)
+        self.tracker = TrackerAgent(zerodha_id, service, interval_seconds=LIGHT_TRACKER_S if light else 20)
         for agent in self.agents.values():
+            if light:
+                agent.activity = AgentActivity(agent=agent.NAME, owner=zerodha_id,
+                                               max_events=LIGHT_EVENTS, max_trace=LIGHT_TRACE)
             agent.activity.enable_persistence(default_log_dir())
 
     @property
@@ -166,7 +179,12 @@ class TradingServiceSupervisorAgent:
         agent = self._agents.pop(uid, None)
         if agent:
             agent.stop_supervision()
-            logger.info("agent_removed", zerodha_id=uid)
+            try:
+                cancelled = agent.service.cancel_background_tasks()
+            except Exception as e:      # removal must complete even if a task misbehaves
+                cancelled = 0
+                logger.warning("service_task_cancel_failed", zerodha_id=uid, error=str(e))
+            logger.info("agent_removed", zerodha_id=uid, tasks_cancelled=cancelled)
 
     def list_agents(self) -> list[str]:
         return list(self._agents.keys())

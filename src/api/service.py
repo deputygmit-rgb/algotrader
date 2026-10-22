@@ -2935,6 +2935,29 @@ class TradingService:
                     logger.warning("fno_baseline_save_failed", error=str(e))
         logger.info("fno_baselines_loaded", count=len(self._fno_baselines))
 
+    # background tasks a session may start outside live trading (live trading's own
+    # loops end with stop_live)
+    _BACKGROUND_TASKS = ("_day_trade_task", "_oi_bias_task", "_oi_snapshot_task", "_replay_task",
+                         "_fno_baseline_task", "_swing_task")
+
+    def cancel_background_tasks(self) -> int:
+        """Stop every loop this session runs, when it is removed (demo expiry, logout,
+        admin). Each running loop holds the whole session - agents, caches, the board,
+        the engine - so a removed session whose loops kept running was never freed:
+        every demo visitor of the day stayed in memory (the OI-bias recorder is an
+        endless loop) until the process was killed for running out of memory."""
+        self._oi_streaming = False                     # ends the OI broadcast loop
+        cancelled = 0
+        for name in self._BACKGROUND_TASKS:
+            task = self.__dict__.get(name)
+            if task is not None and not task.done():
+                task.cancel()
+                cancelled += 1
+        clients = self.__dict__.get("_ws_clients")
+        if clients:
+            clients.clear()
+        return cancelled
+
     def _published(self) -> Any:
         """The source account's published products, for a view-only (shared market data) session."""
         if not self.__dict__.get("is_shared_market"):
@@ -3030,7 +3053,7 @@ class TradingService:
         contract = next((c for c in self._fno_universe if c.symbol == symbol), None)
         if contract is None:
             return []
-        if self.is_demo:
+        if self.__dict__.get("is_demo"):
             # one copy per symbol and bar window for every demo session (not stored:
             # simulated bars are regenerated on demand)
             bucket = bar_bucket(datetime.now())
@@ -3133,7 +3156,7 @@ class TradingService:
         self._board.save(self._day_trade.to_state(), now)
         snap = self._board.annotate(snap)
         snap["autotrade"]["live_trading"] = self._running and bool(getattr(self._execution, "_running", False))
-        if self.is_demo:
+        if self.__dict__.get("is_demo"):
             # a logged-in user whose Zerodha session is not connected (it expires every
             # morning) is served this simulated board: say so on screen
             snap["demo"] = True
@@ -3150,8 +3173,8 @@ class TradingService:
         Every viewer used to fetch and analyse the NIFTY / SENSEX option chains
         every minute through the source account's shared rate limits, writing
         the same rows again."""
-        if self.__dict__.get("is_shared_market"):
-            return
+        if self.__dict__.get("is_shared_market") or self.__dict__.get("is_demo"):
+            return     # viewers read the source's history; a demo's simulated chain is not worth recording
         if self._oi_bias_task is None or self._oi_bias_task.done():
             self._oi_bias_task = asyncio.create_task(self._oi_bias_loop(), name="oi_bias_recorder")
             self._oi_bias_task.add_done_callback(self._task_exception_handler)
