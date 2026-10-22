@@ -216,7 +216,7 @@ const DayTrade = (() => {
 
     // why the feed is empty, in words (it used to just say "no signals match")
     function emptyFeedReason() {
-        const demoNote = data.demo ? ' (DEMO data: connect Zerodha for the live board.)' : '';
+        const demoNote = data.demo ? ' (DEMO data: link your trading account for the live board.)' : '';
         if (data.feed.length) return 'No signals match this filter — choose ALL to see every signal.';
         if (!data.tracked.length) {
             return (data.market_open
@@ -288,7 +288,7 @@ const DayTrade = (() => {
         // nothing tradeable yet (e.g. after hours): show the whole session, labelled hypothetical
         const replayMode = !(data.stats?.signals) && data.replay_stats?.signals;
         const st = (replayMode ? data.replay_stats : data.stats) || {};
-        $('dt-meta').textContent = `${data.tracked.length} tracked · last bar ${data.last_bar || '—'}${data.session ? ` (${data.session})` : ''} · ${data.market_open ? 'LIVE' : 'MARKET CLOSED — session replay'}${data.pending ? ` · loading ${data.pending}` : ''}${data.demo ? ' · DEMO: simulated broker, Zerodha not connected' : ''}`;
+        $('dt-meta').textContent = `${data.tracked.length} tracked · last bar ${data.last_bar || '—'}${data.session ? ` (${data.session})` : ''} · ${data.market_open ? 'LIVE' : 'MARKET CLOSED — session replay'}${data.pending ? ` · loading ${data.pending}` : ''}${data.demo ? ' · DEMO: simulated broker, trading account not linked' : ''}`;
         $('dt-stats').innerHTML = `
             ${replayMode ? '<span class="dt-flag" title="All signals were replayed from bars closed before tracking; these figures assume every signal was taken">SESSION REPLAY · HYPOTHETICAL</span>' : ''}
             <span>SIGNALS <b>${st.signals ?? 0}</b></span>

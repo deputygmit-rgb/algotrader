@@ -118,6 +118,14 @@ async def test_disabled_never_sends_and_daily_limit_holds():
 
 # ── service: the send path is the live-trading path ──────────────────────
 
+class _Midday(datetime):
+    """The service's clock at 11:00: the tests must not depend on when they run."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 19, 11, 0)
+
+
 def _service(running=True, preflight_passes=True):
     from src.api.service import TradingService
 
@@ -158,6 +166,7 @@ async def test_board_signal_goes_through_live_path_with_the_strategy_plan(monkey
     import src.api.service as service_mod
 
     monkeypatch.setattr(service_mod, "market_open", lambda now: True)
+    monkeypatch.setattr(service_mod, "datetime", _Midday)   # the live path refuses entries near 15:15
     svc, placed = _service()
     bt = BoardTrader(Bus())
     out = await svc._send_board_signal(_sig(), 66, bt)
@@ -174,6 +183,7 @@ async def test_board_signal_blocked_by_preflight_or_live_off(monkeypatch):
     import src.api.service as service_mod
 
     monkeypatch.setattr(service_mod, "market_open", lambda now: True)
+    monkeypatch.setattr(service_mod, "datetime", _Midday)   # the live path refuses entries near 15:15
     svc, placed = _service(preflight_passes=False)
     out = await svc._send_board_signal(_sig(), 10, BoardTrader(Bus()))
     assert out["decision"] == "blocked" and "Insufficient margin" in out["reason"] and placed == []

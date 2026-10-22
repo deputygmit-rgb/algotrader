@@ -92,3 +92,47 @@ def test_rebuild_schedule():
     assert not _stale(TODAY, (10, 0), "2026-10-21")              # yesterday's is fine during the session
     assert _stale(TODAY, (16, 15), "2026-10-21")                 # after the close: today's
     assert not _stale(TODAY, (16, 15), "2026-10-22")
+
+
+# --- daily review email ------------------------------------------------------------
+
+def test_review_lists_what_changed_and_names_no_broker(tmp_path):
+    import sqlite3
+
+    from src.analysis import efficacy_report as report
+
+    prev = summarize(trades("day", "ORB", "LONG", [0.2] * MIN_TRADES) + trades("swing", "FLAG", "LONG", [0.3] * 10), TODAY)
+    now = summarize(trades("day", "ORB", "LONG", [-0.4] * MIN_TRADES) + trades("day", "SQUEEZE", "SHORT", [0.1] * 12), TODAY)
+    moves = report.changes(now, prev)
+    assert any("ORB LONG: SUSPENDED" in m for m in moves)
+    assert any("SQUEEZE SHORT: first record" in m for m in moves)
+    assert any("FLAG LONG: no trades left" in m for m in moves)
+
+    db = tmp_path / "m.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE signals (source, account, session, status, result_r, skipped, backfilled)")
+    con.executemany("INSERT INTO signals VALUES (?,?,?,?,?,?,?)", [
+        ("board", "AB1234", TODAY.isoformat(), "TARGET 2", 2.1, "", 0),
+        ("board", "AB1234", TODAY.isoformat(), "STOPPED", -1.1, "", 0),
+        ("board", "AB1234", TODAY.isoformat(), "ACTIVE", None, "portfolio full", 0),
+        ("board", "AB1234", TODAY.isoformat(), "STOPPED", -1.0, "", 1),          # replayed: excluded
+    ])
+    con.commit()
+    con.close()
+    board = report.board_today(str(db), TODAY)
+    assert board["AB1234"]["signals"] == 3 and board["AB1234"]["taken"] == 2 and round(board["AB1234"]["net_r"], 2) == 1.0
+    subject, text, html = report.build(now, prev, TODAY, board)
+    assert "1 suspended" in subject and "SUSPENDED NOW" in text and "AB1234: 3 signals, 2 taken" in text
+    assert "<table" in html and "&lt;" not in subject
+    for part in (subject, text, html):
+        assert "zerodha" not in part.lower() and "kite" not in part.lower()
+
+
+def test_review_recipients_and_once_a_day():
+    from src.analysis import efficacy_report as report
+
+    assert report.recipients({"ADMIN_EMAIL": "a@x.com"}) == ["a@x.com"]
+    assert report.recipients({"REPORT_EMAILS": "a@x.com, b@y.com", "ADMIN_EMAIL": "c@z.com"}) == ["a@x.com", "b@y.com"]
+    assert report.recipients({"ADMIN_EMAIL": "evil@x.com\nBcc: y@z.com"}) == []
+    assert report.should_send("2026-10-21", TODAY, False) and not report.should_send(TODAY.isoformat(), TODAY, False)
+    assert report.should_send(TODAY.isoformat(), TODAY, True)

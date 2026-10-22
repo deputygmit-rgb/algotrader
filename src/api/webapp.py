@@ -96,7 +96,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await mcp_driver.shutdown()
 
 
-app = FastAPI(title="VerquoAI", version="2.0", lifespan=_lifespan)
+# No /docs, /redoc or /openapi.json: they would publish the whole API (and its
+# internal descriptions) to every signed-in user; nothing in the app uses them.
+app = FastAPI(title="VerquoAI", version="2.0", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 @app.exception_handler(AccessDenied)
 async def _access_denied(request: Request, exc: AccessDenied) -> JSONResponse:
     """An action the account's access level does not allow (src/auth/access.py)."""
@@ -497,7 +499,7 @@ ACCESS_LEVELS: dict[str, str] = {
 # The broker is asked as free text: public pages do not name the broker we
 # integrate with. This recognises it from what the requester typed.
 SUPPORTED_BROKER = re.compile(r"zerodha|kite", re.IGNORECASE)
-SUPPORTED_BROKER_LABEL = "Zerodha (Kite Connect API)"
+SUPPORTED_BROKER_LABEL = "Your broker - supported (API connection)"   # emails never name the broker
 
 
 def _public_url() -> str:
@@ -540,24 +542,24 @@ def _access_confirmation(contact_id: int, access_level: str, supported: bool) ->
     if supported:
         prepare = (
             "WHAT TO PREPARE\n"
-            "  1. An active Zerodha account. Your Trading ID is your Zerodha client ID.\n"
-            "  2. A Kite Connect developer app - create one at https://developers.kite.trade\n"
-            "     (Kite Connect is a paid subscription billed by Zerodha; live market data\n"
-            "     for your workspace comes through it). When creating the app, enter:\n"
+            "  1. An active account with your broker. Your Trading ID is your broker client ID.\n"
+            "  2. An API (developer) app from your broker's developer portal - we will send\n"
+            "     the exact steps (it is a paid subscription billed by your broker; live market\n"
+            "     data for your workspace comes through it). When creating the app, enter:\n"
             f"       Redirect URL:  {site}/api/auth/callback\n"
             f"       Postback URL:  {site}/api/auth/postback   (optional)\n"
             "  3. Keep the app's API key and API secret ready. Please do NOT send the API\n"
             "     secret by email - we will arrange a secure way for you to enter it.\n"
-            "  4. Zerodha requires a fresh broker login every trading day: once set up, use\n"
-            "     \"Login to Zerodha\" in your workspace each morning before trading.\n"
+            "  4. Your broker requires a fresh login every trading day: once set up, use\n"
+            "     \"Link trading account\" in your workspace each morning before trading.\n"
         )
         platform_line = SUPPORTED_BROKER_LABEL
     else:
         prepare = (
             "ABOUT YOUR BROKER\n"
-            "  We currently connect Zerodha accounts only. We have noted the broker you use and\n"
-            "  will let you know if we add support for it. If you also hold a Zerodha account,\n"
-            "  reply to this email and we can set your workspace up with that.\n"
+            "  We currently connect one broker. We have noted the broker you use and will let\n"
+            "  you know if we add support for it. If you also hold an account with another\n"
+            "  broker, reply to this email and we will tell you whether it can be connected.\n"
         )
         platform_line = "Another broker - we will confirm whether it can be connected"
     return (
@@ -683,7 +685,7 @@ async def contact(request: Request) -> Any:
             f"Name:       {name}\nEmail:      {email}\nPhone:      {phone or '-'}\nTrading ID: {trading_id or '-'}\n\n"
             f"Access requested: {ACCESS_LEVELS[access_level]}\n"
             f"Trading platform: {platform}"
-            + (" - supported\n" if supported else " - NOT supported yet (only Zerodha accounts can be connected)\n")
+            + (" - supported\n" if supported else " - NOT supported yet (only the integrated broker can be connected)\n")
             + "  The requester confirmed both choices.\n\n"
             f"Message:\n{message or '-'}\n\n"
             f"Review and add the user in the admin panel: {_public_url()}/admin\n"
@@ -1038,7 +1040,7 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
 async def login_url(request: Request) -> dict[str, str]:
     user = UserConfigService.get_instance().get_user(get_session_zerodha_id(request))
     if user is not None and not user.api_key:
-        raise HTTPException(400, "Your account has no Kite Connect app yet - ask the admin to add your API key.")
+        raise HTTPException(400, "Your account has no broker API app yet - ask the admin to add your API key.")
     svc = get_real_user_service(request)
     return {"url": svc.get_login_url()}
 

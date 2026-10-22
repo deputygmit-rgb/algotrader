@@ -10,6 +10,11 @@ process (it reads a lot of history); run it by hand any time:
 
     python scripts/rebuild_efficacy.py
     python scripts/rebuild_efficacy.py --show          # print the current record
+    python scripts/rebuild_efficacy.py --email         # and email the review (first rebuild of the day)
+    python scripts/rebuild_efficacy.py --preview       # print the review instead of sending it
+
+The review goes to REPORT_EMAILS (comma-separated) or else ADMIN_EMAIL, with
+the same SMTP_* settings as the sign-in email.
 """
 from __future__ import annotations
 
@@ -86,8 +91,15 @@ def main() -> None:
     ap.add_argument("--db", default=os.path.join(ROOT, "data", "market_data.db"))
     ap.add_argument("--out", default=PATH)
     ap.add_argument("--show", action="store_true")
+    ap.add_argument("--email", action="store_true", help="email the review (once a day)")
+    ap.add_argument("--force-email", action="store_true", help="email the review even if already sent today")
+    ap.add_argument("--preview", action="store_true", help="print the review text")
     args = ap.parse_args()
     if args.show:
+        if not os.path.exists(args.out):
+            print(f"no track record yet ({args.out}): the web app builds it 2 minutes after it starts "
+                  f"and nightly after the close - or run this script without --show to build it now")
+            return
         with open(args.out, encoding="utf-8") as f:
             data = json.load(f)
         print(f"as of {data['as_of']}")
@@ -97,18 +109,32 @@ def main() -> None:
         return
     started = time.time()
     today = date.today()
-    previous = {}
+    previous, previous_as_of = {}, None
     try:
         with open(args.out, encoding="utf-8") as f:
-            previous = json.load(f).get("records") or {}
+            old = json.load(f)
+        previous, previous_as_of = old.get("records") or {}, old.get("as_of")
     except (OSError, ValueError):
         pass
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     trades = day_trades(con, today) + swing_trades(con, today)
     con.close()
     records = summarize(trades, today, previous)
-    save(records, today, args.out, note=f"{len(trades)} trades replayed in {time.time() - started:.0f}s")
+    note = f"{len(trades)} trades replayed in {time.time() - started:.0f}s"
+    save(records, today, args.out, note=note)
     print(f"efficacy: {len(records)} setup records from {len(trades)} trades in {time.time() - started:.0f}s")
+    if args.email or args.force_email or args.preview:
+        from src.analysis import efficacy_report as report
+
+        subject, text, html = report.build(records, previous, today, report.board_today(args.db, today), note)
+        if args.preview:
+            print(f"\nSubject: {subject}\n\n{text}")
+        elif report.should_send(previous_as_of, today, args.force_email):
+            from src.utils.mailer import send_mail
+
+            to = report.recipients(dict(os.environ))
+            sent = [addr for addr in to if send_mail(addr, subject, text, html=html)]
+            print(f"review emailed to {len(sent)} of {len(to)} recipient(s)" if to else "review not emailed: set ADMIN_EMAIL or REPORT_EMAILS")
 
 
 if __name__ == "__main__":

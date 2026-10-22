@@ -134,7 +134,7 @@ def test_requester_gets_a_confirmation_of_access_and_platform(store, monkeypatch
     assert f"Reference:         #{cid}" in text
     assert "Agentic trading - AI agents place trades for you" in text
     assert "stays\n  OFF until you switch it on" in text           # agentic follow-up
-    assert "Another broker - we will confirm" in text and "We currently connect Zerodha accounts only" in text
+    assert "Another broker - we will confirm" in text and "We currently connect one broker" in text and "Zerodha" not in text
     assert "Redirect URL" not in text                              # no setup steps for an unsupported broker
     # the requester's own free text is never echoed to the address they typed
     assert "FreeMoneyBroker" not in text and "Ravi" not in text

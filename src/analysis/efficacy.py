@@ -197,7 +197,7 @@ async def rebuild_once() -> bool:
     kwargs: dict[str, Any] = {}
     if os.name == "posix":
         kwargs["preexec_fn"] = lambda: os.nice(10)        # behind the web worker for CPU
-    proc = await asyncio.create_subprocess_exec(sys.executable, script, cwd=ROOT,
+    proc = await asyncio.create_subprocess_exec(sys.executable, script, "--email", cwd=ROOT,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs)
     out, err = await proc.communicate()
     if proc.returncode == 0:

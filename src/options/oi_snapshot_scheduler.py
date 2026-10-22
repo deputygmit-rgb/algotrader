@@ -78,7 +78,7 @@ class OISnapshotScheduler:
             return {"status": "already_running", "interval_minutes": self._interval // 60}
 
         if not self._kite:
-            return {"status": "error", "message": "Kite client not set"}
+            return {"status": "error", "message": "Trading account not linked"}
 
         self._fetcher.set_kite_client(self._kite)
         self._running = True
@@ -141,7 +141,7 @@ class OISnapshotScheduler:
             }
 
         if not self._kite or not self._fetcher.is_available:
-            return {"status": "error", "message": "Kite client not available"}
+            return {"status": "error", "message": "Trading account not linked"}
 
         results = await self._capture_all_underlyings()
         return {
