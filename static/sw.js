@@ -31,13 +31,9 @@ self.addEventListener('fetch', event => {
     const req = event.request;
     if (req.method !== 'GET') return;
     const url = new URL(req.url);
-    if (url.origin !== self.location.origin) {
-        // Google Fonts: cached after first use so text renders at once
-        if (url.hostname === 'fonts.gstatic.com' || url.hostname === 'fonts.googleapis.com') {
-            event.respondWith(staleWhileRevalidate(req));
-        }
-        return;
-    }
+    // other sites (Google Fonts): left to the browser and its own cache - the worker is bound by
+    // the site's security policy (connections to this site only), so it must not fetch them itself
+    if (url.origin !== self.location.origin) return;
     if (NEVER.some(rx => rx.test(url.pathname))) return;
     if (req.mode === 'navigate') {
         event.respondWith(page(event));
@@ -64,7 +60,7 @@ async function staleWhileRevalidate(req) {
     const network = fetch(req).then(res => {
         if (res && res.ok && (res.type === 'basic' || res.type === 'cors')) cache.put(req, res.clone());
         return res;
-    }).catch(() => cached);
+    }).catch(() => cached || Response.error());       // offline and never cached: a normal network error
     return cached || network;
 }
 

@@ -925,7 +925,9 @@
         document.body.classList.add('login-open');
         panel.setAttribute('aria-hidden', 'false');
         if (location.pathname !== '/login') history.replaceState(null, '', '/login');
-        setTimeout(() => $('zerodha-id-input').focus(), 60);
+        // desktop: straight into the first field. Touch screens: no automatic focus - on a
+        // phone it pops the keyboard and scrolls the panel (and its close button) away
+        if (window.matchMedia('(pointer: fine)').matches) setTimeout(() => $('zerodha-id-input').focus(), 60);
     };
     const close = () => {
         document.body.classList.remove('login-open');

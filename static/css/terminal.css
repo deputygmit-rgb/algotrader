@@ -818,3 +818,6 @@ body.has-bnav .pwa-offline { bottom: calc(60px + env(safe-area-inset-bottom)); }
     .dt-hd-r { flex-wrap: wrap; max-width: 100%; }
     input, select, textarea { max-width: 100%; }
 }
+
+/* iPhone notch / status bar: the terminal header clears it in Safari and in the installed app alike */
+.header { padding-top: max(8px, env(safe-area-inset-top)); padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
