@@ -696,6 +696,8 @@
     const markOverflow = () => tabBar.classList.toggle('more', tabBar.scrollLeft + tabBar.clientWidth < tabBar.scrollWidth - 4);
     tabBar.addEventListener('scroll', markOverflow, { passive: true });
     let view = 'flow';
+    // tabs the public demo does not include (src/api/demo_scope.py)
+    const ACCOUNT_ONLY = new Set(['market-flow', 'day-trade', 'swing', 'analysis']);
     const DEMO_LABEL = { 'market-flow': 'Market Flow', 'day-trade': 'Day Trade', 'oi-tracker': 'OI Tracker', agents: 'Agents', backtest: 'Backtest' };
     function moveInk(tab) {
         ink.style.width = `${tab.offsetWidth}px`;
@@ -713,8 +715,15 @@
         view = tab.dataset.view;
         moveInk(tab);
         const open = $('term-open');
-        open.dataset.startDemo = tab.dataset.demoTab;
-        open.textContent = `Open ${view === 'day' ? 'the Day Trade board' : DEMO_LABEL[tab.dataset.demoTab]} in the demo →`;
+        const label = view === 'day' ? 'the Day Trade board' : DEMO_LABEL[tab.dataset.demoTab];
+        if (ACCOUNT_ONLY.has(tab.dataset.demoTab)) {
+            // not in the public demo: these are for accounts with access
+            delete open.dataset.startDemo;
+            open.textContent = `Request access to ${label} →`;
+        } else {
+            open.dataset.startDemo = tab.dataset.demoTab;
+            open.textContent = `Open ${label} in the demo →`;
+        }
         if (focus) tab.focus();
         const left = tab.offsetLeft - tabBar.scrollLeft, right = left + tab.offsetWidth;
         if (left < 0 || right > tabBar.clientWidth) tabBar.scrollTo({ left: tab.offsetLeft - 16, behavior: reducedMotion ? 'auto' : 'smooth' });
@@ -892,6 +901,12 @@
         event.preventDefault();
         startDemo(node.dataset.startDemo || '', node);
     }));
+    // the preview's link starts the demo, or asks for access for tabs the demo does not include
+    $('term-open').addEventListener('click', event => {
+        if (event.currentTarget.dataset.startDemo === undefined) return;
+        event.preventDefault();
+        startDemo(event.currentTarget.dataset.startDemo, event.currentTarget);
+    });
 
     // ── sign-in panel ──────────────────────────────────────────────────
     const panel = $('login-panel');

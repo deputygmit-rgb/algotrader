@@ -13,7 +13,6 @@ from src.analysis.indicators import compute_all_indicators
 from src.analysis.nifty_contribution import compute_nifty_contribution, nifty_quote_instruments
 from src.analysis.fno_flow import FlowHistory, build_universe, compute_fno_flow, quote_keys
 from src.api.day_trade import DayTradeTracker, bar_bucket, market_open
-from src.demo.sessions import is_public_demo_id
 from src.api.swing_trade import DAILY_DAYS, HOURLY_DAYS, SwingTracker, swing_candidates
 from src.analysis.nifty500 import NIFTY_500_SYMBOLS, get_sector
 from src.agent.telemetry import Telemetry
@@ -1309,12 +1308,7 @@ class TradingService:
         if ws in self._ws_clients:
             self._ws_clients.remove(ws)
 
-    # the public demo's live socket carries prices and connection state only (src/api/demo_scope.py)
-    PUBLIC_DEMO_WS_TYPES = frozenset({"ticks", "status", "scan_progress"})
-
     async def _broadcast_ws(self, data: dict[str, Any]) -> None:
-        if is_public_demo_id(self._zerodha_id or "") and data.get("type") not in self.PUBLIC_DEMO_WS_TYPES:
-            return
         dead: list[Any] = []
         for ws in self._ws_clients:
             try:

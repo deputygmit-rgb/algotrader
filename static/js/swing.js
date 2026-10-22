@@ -9,12 +9,10 @@ const Swing = (() => {
         'STOPPED': 'loss', 'TIME EXIT': 'flat',
     };
     const OPEN = new Set(['PENDING', 'ACTIVE', 'T1 HIT']);
-    // the public demo shows signals and plans, not the rules behind them (src/api/demo_scope.py)
-    const PUBLIC_DEMO = document.body?.dataset.demoScope === 'public';
     // setup rules come from the server for signed-in accounts (src/api/setup_rules.py)
     let RULE = {};
     async function loadRules() {
-        if (PUBLIC_DEMO || Object.keys(RULE).length) return;
+        if (Object.keys(RULE).length) return;
         try {
             const res = await fetch('/api/market/setup-rules');
             if (!res.ok) return;
@@ -456,10 +454,7 @@ const Swing = (() => {
             s.backfilled ? 'Replayed: it fired before the stock joined the board, so it is left out of the stats.' : '',
             s.skipped ? `Not taken: ${esc(s.skipped)}.` : '',
         ].filter(Boolean).map(n => `<p class="dt-fi-note">${n}</p>`).join('');
-        const method = PUBLIC_DEMO
-            ? `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
-                <p>Quality <b>${s.quality}</b>. The trigger rule and quality breakdown are shown in your own account.</p></div>`
-            : `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
+        const method = `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
                 ${rule.long ? `<p>${esc(long ? rule.long : rule.short)}, on ≥ ${rule.vol}× volume against both the previous session and the normal for that hour. Stop: ${esc(rule.stop)}, kept 0.6–1.5 daily ATR from the fill.</p>` : ''}
                 <p class="dt-fi-trig">${esc(s.trigger)}</p></div>
             <div class="dt-fi"><h4>WHY IT QUALIFIED</h4><dl>
@@ -476,7 +471,7 @@ const Swing = (() => {
                 <dt>Signal</dt><dd>${esc(when(s.time))} close</dd>
                 <dt>Entry</dt><dd>${num(s.entry)} · ${s.entry_time ? `filled ${esc(when(s.entry_time))}` : 'est. · next open'}</dd>
                 <dt>Stop</dt><dd class="mf-rt">${num(s.stop)}</dd>
-                ${PUBLIC_DEMO ? '' : `<dt class="dt-fi-sub">setup level</dt><dd class="mf-dim">${num(s.natural_stop)}</dd>`}
+                <dt class="dt-fi-sub">setup level</dt><dd class="mf-dim">${num(s.natural_stop)}</dd>
                 <dt title="Half is booked at T1 and the stop on the rest moves to breakeven">T1 · 1.5R · ½ off</dt><dd class="mf-gt">${num(s.target1)}</dd>
                 <dt>T2 · 3R</dt><dd class="mf-gt">${num(s.target2)}</dd>
                 <dt>Risk</dt><dd>${num(s.risk_pct)}% of price</dd>

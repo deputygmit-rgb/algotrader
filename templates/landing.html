@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#05080c">
-    <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try market flow and the setup boards on a simulated market.">
+    <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try backtests, strategies and paper trading on a simulated market.">
     <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
     {% if open_login %}<meta name="robots" content="noindex, follow">{% else %}<meta name="robots" content="index, follow, max-image-preview:large">{% endif %}
     <link rel="canonical" href="{{ site_url }}/">
@@ -68,7 +68,7 @@
                 <button class="btn btn-primary btn-lg" type="button" data-start-demo>Open the live demo →</button>
                 <a class="btn btn-ghost btn-lg" href="#contact">Request access</a>
             </div>
-            <p class="hero-note">The demo opens Market Flow, the Day Trade and Swing boards and Analysis on a simulated market. No account, nothing real at stake.</p>
+            <p class="hero-note">The demo runs backtests, strategies, paper trading, OI tools and agents on a simulated market. No account, nothing real at stake.</p>
             <div class="demo-error" data-demo-error role="alert"></div>
         </section>
 
@@ -190,7 +190,7 @@
 
                 <div class="term-foot">
                     <span>SIMULATED PREVIEW · illustrative values, not market data</span>
-                    <a href="/app" data-start-demo="market-flow" id="term-open">Open Market Flow in the demo →</a>
+                    <a href="#contact" id="term-open">Request access to Market Flow →</a>
                 </div>
             </div>
         </section>
@@ -198,10 +198,10 @@
         <section class="shell section reveal" id="features">
             <h2 class="section-title">One terminal. Every step of the trade.</h2>
             <div class="features">
-                <a class="feature spot" href="/app" data-start-demo="market-flow"><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="/app" data-start-demo="day-trade"><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="oi-tracker"><span class="f-tag">03 · OPTIONS</span><h3>OI Tracker</h3><p>Call and put walls, PCR, max pain and the market's options bias, minute by minute.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="/app" data-start-demo="analysis"><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="backtest"><span class="f-tag">05 · STRATEGY</span><h3>Backtest &amp; paper trade</h3><p>Test a strategy on history, replay sessions bar by bar, then paper trade it before going live.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="agents"><span class="f-tag">06 · AGENTS</span><h3>AI agents &amp; risk</h3><p>Agents scan, verify, execute and track — inside your limits, with a kill switch that stays on after a loss trip.</p><span class="f-go">Open in demo →</span></a>
             </div>
@@ -210,7 +210,7 @@
         <section class="shell section reveal" id="steps">
             <h2 class="section-title">From preview to your own terminal</h2>
             <ol class="steps">
-                <li><b>1 · Try the demo</b><span>Market Flow, the setup boards and Analysis on a simulated market.</span></li>
+                <li><b>1 · Try the demo</b><span>Backtests, strategies, paper trading and agents on a simulated market.</span></li>
                 <li><b>2 · Request access</b><span>Choose view-only, trading or agentic access. We reply by email.</span></li>
                 <li><b>3 · Link your broker</b><span>Sign in with your Trading ID and link your broker account each trading day.</span></li>
             </ol>
@@ -225,7 +225,7 @@
                     <ul class="contact-points">
                         <li>Your own private workspace and trading account link</li>
                         <li>Help getting your broker API connected</li>
-                        <li>See market flow and live setups in the demo, no account needed</li>
+                        <li>Try backtests and strategies in the demo, no account needed</li>
                     </ul>
                 </div>
                 <form data-contact-form="landing" novalidate>

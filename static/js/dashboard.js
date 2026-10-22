@@ -209,16 +209,14 @@ function restoreView() {
 window.addEventListener('pagehide', saveScroll);
 document.addEventListener('click', e => { if (e.target.closest('[data-stock], a[href^="/app/stock/"]')) saveScroll(); }, true);
 
-// the public demo shows Market Flow, the boards and Analysis; other tabs are locked
-// (the server leaves their panels out and refuses their endpoints: src/api/demo_scope.py)
-const PUBLIC_DEMO = document.body?.dataset.demoScope === 'public';
-
+// the public demo locks Market Flow, the boards and Analysis: the server leaves
+// their panels out and refuses their endpoints (src/api/demo_scope.py)
 function demoLocked(btn) {
     showToast(`${btn.textContent.replace(/\W+$/, '').trim()} is available in your own account - request access to use it.`, 'info');
 }
 
 function switchTab(tabName) {
-    if (!document.getElementById(`tab-${tabName}`)) tabName = 'market-flow';
+    if (!document.getElementById(`tab-${tabName}`)) tabName = 'overview';
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     const tabBtn = document.querySelector(`[data-tab="${tabName}"]`);
@@ -364,9 +362,8 @@ function updateStatusBadge(data) {
         statusBadge.textContent = data.running ? 'DEMO · LIVE' : 'DEMO';
         statusBadge.className = 'status-badge status-demo';
         btnLogin.style.display = data.demo === 'user' ? '' : 'none';
-        const canRun = data.demo !== 'public';         // live trading is locked in the public demo
-        btnStart.style.display = canRun && !data.running ? '' : 'none';
-        btnStop.style.display = canRun && data.running ? '' : 'none';
+        btnStart.style.display = data.running ? 'none' : '';
+        btnStop.style.display = data.running ? '' : 'none';
         return;
     }
     if (data.market_feed === 'shared') {
@@ -6642,15 +6639,6 @@ function _getKeyMetricsForPillar(key, metrics) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    if (PUBLIC_DEMO) {
-        const badge = () => API.get('/api/status').then(updateStatusBadge).catch(() => {});
-        badge();
-        connectWS();
-        statusInterval = setInterval(badge, 10000);
-        initAnalysisTableSorting();
-        if (!restoreView()) MarketFlow.start();
-        return;
-    }
     loadFullStatus();
     loadSignals();
     connectWS();

@@ -393,14 +393,11 @@ const DayTrade = (() => {
     // ── setup chart (selected signal) ───────────────────────────────
     // The setup's own geometry is recomputed here with the engine's rules
     // (src/analysis/intraday_setups.py), so the chart shows exactly what fired.
-    // the public demo shows signals and plans, not the rules behind them (src/api/demo_scope.py)
-    const PUBLIC_DEMO = document.body?.dataset.demoScope === 'public';
-    const DEMO_LOCKED_NOTE = 'The trigger rule and quality breakdown are shown in your own account.';
     // setup rules come from the server for signed-in accounts (src/api/setup_rules.py)
     let SETUP_RULE = {};
     let TOD_NOTE = '';
     async function loadRules() {
-        if (PUBLIC_DEMO || Object.keys(SETUP_RULE).length) return;
+        if (Object.keys(SETUP_RULE).length) return;
         try {
             const res = await fetch('/api/market/setup-rules');
             if (!res.ok) return;
@@ -710,10 +707,7 @@ const DayTrade = (() => {
             s.skipped ? `Not taken: ${esc(s.skipped)}.` : '',
             s.order ? `Auto-trade: ${esc(s.order.decision)}${s.order.reason ? ` — ${esc(s.order.reason)}` : ''}${s.order.order_id ? ` · order #${esc(s.order.order_id)}` : ''}.` : '',
         ].filter(Boolean).map(n => `<p class="dt-fi-note">${n}</p>`).join('');
-        const method = PUBLIC_DEMO
-            ? `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
-                <p>Quality <b>${s.quality}</b>. ${esc(DEMO_LOCKED_NOTE)}</p></div>`
-            : `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
+        const method = `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
                 ${rule.long ? `<p>${esc(long ? rule.long : rule.short)}${rule.vol ? ` on ≥ ${rule.vol}× the 10-bar average volume` : ''}.${TOD_NOTE} Stop: ${esc(rule.stop)}, kept 0.5–1.2 daily ATR from the fill.</p>` : ''}
                 <p class="dt-fi-trig">${esc(s.trigger)}</p></div>
             <div class="dt-fi"><h4>WHY IT QUALIFIED</h4><dl>
@@ -733,7 +727,7 @@ const DayTrade = (() => {
                 <dt>Signal</dt><dd>${esc(s.time)} bar close</dd>
                 <dt>Entry</dt><dd>${num(s.entry)} · ${filled}</dd>
                 <dt>Stop</dt><dd class="mf-rt">${num(s.stop)}</dd>
-                ${PUBLIC_DEMO ? '' : `<dt class="dt-fi-sub">setup level</dt><dd class="mf-dim">${num(s.natural_stop)}</dd>`}
+                <dt class="dt-fi-sub">setup level</dt><dd class="mf-dim">${num(s.natural_stop)}</dd>
                 <dt title="Half is booked at T1 and the stop on the rest moves to breakeven">T1 · 1.5R · ½ off</dt><dd class="mf-gt">${num(s.target1)}</dd>
                 <dt>T2 · 3R</dt><dd class="mf-gt">${num(s.target2)}</dd>
                 <dt>Risk</dt><dd>${num(s.risk_pct)}% of price</dd>

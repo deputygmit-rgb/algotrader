@@ -116,11 +116,9 @@ def test_demo_skips_confirmation_code_but_real_account_does_not(_isolated, monke
             await _start(c)
             tok = c.cookies.get("kta_session")
             return await start({"kta_session": tok}, webapp.otp_auth.get_csrf_token(tok))
-    locked = asyncio.run(demo())            # live trading is not part of the public demo
-    assert locked.status_code == 403 and locked.json()["demo_locked"]
+    assert asyncio.run(demo()).status_code == 200
 
     token = _user(monkeypatch)
-    assert asyncio.run(start({"kta_session": token}, webapp.otp_auth.get_csrf_token(token))).status_code == 200
     _isolated.mgr.get_service("AB1234").is_authenticated = True
     real = asyncio.run(start({"kta_session": token}, webapp.otp_auth.get_csrf_token(token)))
     assert real.status_code == 403 and real.json()["detail"] == "step_up_required"
@@ -210,28 +208,29 @@ def test_demo_service_uses_its_own_market_store(tmp_path, monkeypatch):
 
 # --- the public demo shows Market Flow and Analysis only (src/api/demo_scope.py) -----
 
-def test_public_demo_reaches_market_flow_and_analysis_only(_isolated):
+def test_public_demo_locks_market_flow_the_boards_and_analysis(_isolated):
     async def go():
         async with _client() as c:
             await _start(c)
             csrf = webapp.otp_auth.get_csrf_token(c.cookies.get("kta_session"))
             locked = {path: (await c.request(m, path, headers={"X-CSRF-Token": csrf})).status_code
-                      for m, path in [("GET", "/api/strategies"), ("POST", "/api/backtest"), ("GET", "/api/signals"),
+                      for m, path in [("GET", "/api/market/fno-flow"), ("GET", "/api/market/day-trade"),
+                                      ("POST", "/api/market/day-trade/track"), ("GET", "/api/market/swing"),
                                       ("GET", "/api/market/day-trade/replay?symbols=INFY"),
-                                      ("GET", "/api/market/day-trade/autotrade"), ("GET", "/api/agents/log"),
-                                      ("GET", "/api/journal"), ("GET", "/api/oi/bias-history"),
-                                      ("GET", "/api/portfolio/positions")]}
+                                      ("GET", "/api/analysis/results"), ("GET", "/api/analysis/deep/INFY"),
+                                      ("GET", "/api/market/setup-rules")]}
             status = (await c.get("/api/status")).json()
             page = (await c.get("/app")).text
             return locked, status, page
     locked, status, page = asyncio.run(go())
     assert set(locked.values()) == {403}, locked
-    assert status["demo"] == "public" and "strategies" not in status and "risk" not in status
-    assert 'data-demo-scope="public"' in page and 'id="tab-market-flow"' in page and 'id="tab-analysis"' in page
-    for hidden in ("tab-backtest", "tab-strategy-builder", "tab-paper-trading", "tab-replay", "tab-journal",
-                   "dt-replay-form", "dt-auto-toggle"):
+    assert status["demo"] == "public" and "strategies" in status
+    assert 'data-demo-scope="public"' in page
+    for hidden in ("tab-market-flow", "tab-day-trade", "tab-swing", "tab-analysis"):
         assert f'id="{hidden}"' not in page, hidden
-    assert 'data-locked="backtest"' in page
+    for shown in ("tab-overview", "tab-backtest", "tab-strategy-builder", "tab-paper-trading", "tab-agents"):
+        assert f'id="{shown}"' in page, shown
+    assert 'data-locked="market-flow"' in page and 'data-locked="backtest"' not in page
 
 
 def test_logged_in_user_on_the_demo_broker_keeps_every_tab(_isolated, monkeypatch):
@@ -241,7 +240,7 @@ def test_logged_in_user_on_the_demo_broker_keeps_every_tab(_isolated, monkeypatc
         async with _client({"kta_session": token}) as c:
             return (await c.get("/app")).text
     page = asyncio.run(go())
-    assert "data-demo-scope" not in page and 'id="tab-backtest"' in page and 'id="dt-replay-form"' in page
+    assert "data-demo-scope" not in page and 'id="tab-market-flow"' in page and 'id="dt-replay-form"' in page
 
 
 def test_setup_rules_reach_signed_in_users_but_not_the_public_demo(_isolated, monkeypatch):

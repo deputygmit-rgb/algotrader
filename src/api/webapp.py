@@ -56,7 +56,7 @@ from src.demo.sessions import (
     user_demo_id,
 )
 from src.api.static_files import MinifiedStaticFiles
-from src.api.demo_scope import LOCKED_MESSAGE, public_demo_blocked, trim_day_trade, trim_flow
+from src.api.demo_scope import LOCKED_MESSAGE, public_demo_blocked
 from src.utils.exceptions import KiteError, KillSwitchError
 from src.utils.logger import get_logger
 
@@ -365,8 +365,6 @@ async def auth_middleware(request: Request, call_next):
         token = request.cookies.get(SESSION_COOKIE, "")
         if not otp_auth.validate_session(token):
             response = JSONResponse({"error": "Not authenticated"}, status_code=401)
-        elif is_public_demo_id(otp_auth.get_session_user(token) or "") and public_demo_blocked(path, "WS"):
-            response = JSONResponse({"error": LOCKED_MESSAGE, "demo_locked": True}, status_code=403)
         else:
             response = await call_next(request)
     elif not is_logged_in(request):
@@ -381,9 +379,8 @@ async def auth_middleware(request: Request, call_next):
         # per account, on top of nginx's per-IP limit (src/api/request_limiter.py)
         response = JSONResponse({"error": "Too many requests - please slow down"}, status_code=429,
                                 headers={"Retry-After": "2"})
-    elif is_public_demo_id(otp_auth.get_session_user(request.cookies.get(SESSION_COOKIE, "")) or "") \
-            and public_demo_blocked(path, request.method):
-        # the public demo shows Market Flow and Analysis only (src/api/demo_scope.py)
+    elif path.startswith("/api/") and public_demo_blocked(path) and _is_public_demo(request):
+        # Market Flow, the boards and Analysis are for accounts with access (src/api/demo_scope.py)
         response = JSONResponse({"error": LOCKED_MESSAGE, "demo_locked": True}, status_code=403)
     elif request.method not in CSRF_EXEMPT_METHODS:
         token = request.cookies.get(SESSION_COOKIE, "")
@@ -1091,10 +1088,6 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
         "zerodha_id": svc.zerodha_id,
         "access_level": svc.access_level,
         "access_label": _access_label(request, svc),
-    }
-    if _is_public_demo(request):
-        return result           # header state only: no strategies, risk, journal or execution internals
-    result |= {
         "strategies": svc.get_strategies_info(),
         "risk": svc.get_risk_summary(),
         "journal": svc.get_journal_summary(),
@@ -2223,13 +2216,10 @@ async def get_fno_flow(request: Request) -> Any:
             sim.universe, sim.quotes(), sim.baselines, now, _fno_demo_history.changes_ago(15, now),
         )
         _fno_demo_history.record(result, now)
-        result = {**result, "demo": True, "baseline_loading": False}
-        return trim_flow(result) if _is_public_demo(request) else result
+        return {**result, "demo": True, "baseline_loading": False}
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
-    if _is_public_demo(request):
-        return trim_flow(await svc.get_fno_flow())
     # the same snapshot object for ~2 s (and for every viewer): serialise it once
     return shared_json(request, await svc.get_fno_flow())
 
@@ -2274,13 +2264,10 @@ async def get_day_trade(request: Request) -> Any:
     symbols): bars, VWAP / EMA / opening range, signals with outcomes, open
     trades and the session feed. ``?demo=1`` uses simulated sessions."""
     if request.query_params.get("demo") == "1":
-        snap = await _demo_day_trade_snapshot()
-        return trim_day_trade(snap) if _is_public_demo(request) else snap
+        return await _demo_day_trade_snapshot()
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
-    if _is_public_demo(request):
-        return trim_day_trade(await svc.get_day_trade())
     return shared_json(request, await svc.get_day_trade())
 
 
@@ -2360,14 +2347,10 @@ async def get_swing(request: Request) -> Any:
     from src.api.service import _demo_flow_source
 
     if request.query_params.get("demo") == "1":
-        if _is_public_demo(request):
-            return trim_day_trade(await _demo_flow_source().get_swing())
         return shared_json(request, await _demo_flow_source().get_swing())   # marked demo by the service
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
-    if _is_public_demo(request):
-        return trim_day_trade(await svc.get_swing())
     return shared_json(request, await svc.get_swing())
 
 
