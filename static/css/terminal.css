@@ -599,3 +599,48 @@ body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-
 .adm-form input:focus, .adm-form select:focus { outline: none; border-color: var(--t-c); }
 .adm-hint { margin: 0; color: var(--t-mute); font-size: 11px; }
 @media (max-width: 640px) { .adm { padding: 14px 16px 32px; } }
+
+/* ── phones / small tablets (audited at 360 and 390 px wide) ─────── */
+@media (max-width: 768px) {
+    /* header: the control row scrolls sideways instead of being cut off at both
+       edges, the controls that stop risk come first, and the header is not pinned
+       (stacked, it covered ~100 px of every screen) */
+    .header { position: relative; padding: 8px 12px; gap: 6px; }
+    .header-left { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .header-right { width: 100%; justify-content: flex-start; flex-wrap: nowrap; overflow-x: auto; gap: 6px;
+        padding-bottom: 2px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .header-right::-webkit-scrollbar { display: none; }
+    .header-right > * { flex: 0 0 auto; }
+    .header-right .t-head-meta { display: none; }              /* the HUD below shows session and clock */
+    #btn-stop, #btn-start { order: -3; }
+    .header-right [onclick="toggleKillSwitch()"] { order: -2; }
+    .header-right .btn-sm, .header-right .ag-pill { min-height: 34px; }
+    /* tab bar: an edge fade says more tabs scroll in */
+    .tabs { -webkit-mask-image: linear-gradient(to right, #000 86%, transparent);
+            mask-image: linear-gradient(to right, #000 86%, transparent); scroll-snap-type: x proximity; }
+    .tabs .tab { scroll-snap-align: start; flex: 0 0 auto; }
+}
+@media (max-width: 640px) {
+    .t-demo-banner { gap: 8px; padding: 6px 12px; font-size: 11px; }
+    .t-demo-text { flex-basis: 100%; line-height: 1.4; }
+    /* agent console: time / agent / kind on one line, the message full width below
+       (in four columns the message got ~50 px and wrapped letter by letter) */
+    .ag-ln { grid-template-columns: auto auto 1fr; gap: 2px 8px; padding: 3px 10px; }
+    .ag-ln .m { grid-column: 1 / -1; }
+    .ag-ln .k { justify-self: start; }
+    /* filter pills wrap instead of being clipped (their buttons were unreachable) */
+    .mf-tabs { flex-wrap: wrap; max-width: 100%; }
+    /* sector flow: net flow as a number, leader / laggard on its own line */
+    .mf-sector { grid-template-columns: minmax(0, 1fr) 34px 54px 70px; row-gap: 2px; }
+    .mf-sector .nf { grid-template-columns: 1fr; text-align: right; }
+    .mf-sector .nf i { display: none; }
+    .mf-sector .ll { grid-column: 1 / -1; font-size: 10.5px; }
+    /* labels that rendered at 8.5-9.5 px: readable on a phone */
+    th, .dt-side, .dt-src, .dt-flag, .dt-table td i, .mf-factors em, .ag-ln .k, .ag-step, .ag-recent-hd,
+    .ag-kpi span, .ag-work-hd span, .ag-work-hd b, .ag-more span, .mf-sector .nm small { font-size: 10px !important; }
+}
+/* touch screens: buttons, filter pills and collapsible card titles big enough to tap */
+@media (max-width: 768px) and (pointer: coarse) {
+    .btn, .mf-btn, .mf-tabs button, .t-demo-actions .btn, .t-demo-actions a { min-height: 34px; }
+    .card-title[role="button"] { padding-top: 8px; padding-bottom: 8px; }
+}

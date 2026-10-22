@@ -2674,6 +2674,9 @@ class TradingService:
                 "data": {"scanned": scanned, "total": total, "symbol": symbol},
             })
 
+        pub = self._published()
+        if pub is not None and not symbols:
+            return await pub.request_scan(universe)     # the shared scan (a stale one is refreshed once)
         self._emit("scan.started", universe=universe)
         if getattr(self, "is_demo", False):
             result = await self._shared_demo_scan(symbols, universe, _on_progress)
@@ -2706,9 +2709,15 @@ class TradingService:
         return result
 
     def get_analysis_results(self, universe: str = "nifty50") -> dict[str, Any]:
+        pub = self._published()
+        if pub is not None:
+            return pub.scan(universe)
         return self._scanner.get_cached_results(universe)
 
     def get_scanner_status(self) -> dict[str, Any]:
+        pub = self._published()
+        if pub is not None:
+            return pub.scan_status()
         return {
             "scanning": self._scanner.is_scanning,
             "last_scan_time": self._scanner.last_scan_time,
@@ -2901,8 +2910,19 @@ class TradingService:
                     logger.warning("fno_baseline_save_failed", error=str(e))
         logger.info("fno_baselines_loaded", count=len(self._fno_baselines))
 
+    def _published(self) -> Any:
+        """The source account's published products, for a view-only (shared market data) session."""
+        if not self.__dict__.get("is_shared_market"):
+            return None
+        from src.api.shared_market import SharedMarketHub
+
+        return SharedMarketHub.get_instance().publisher
+
     async def get_fno_flow(self, max_age_s: float = 2.0) -> dict[str, Any]:
         """Market-flow snapshot for F&O + NIFTY 500 (cash, plus nearest future for F&O stocks)."""
+        pub = self._published()
+        if pub is not None:
+            return await pub.flow()          # computed once by the source account, market fields only
         async with self._fno_lock:
             cached = self._fno_cache
             if cached and time.monotonic() - cached[0] < max_age_s:
@@ -2940,6 +2960,8 @@ class TradingService:
     def _record_flow_snapshot(self, flow: dict[str, Any], now: datetime) -> None:
         """Persist the flow once per 5-minute bar close, stamped with that close
         (HH:MM), so back-tests see exactly what the board saw when a bar closed."""
+        if self.__dict__.get("is_shared_market"):
+            return        # the source account stores the snapshot for everyone
         if not market_open(now) or flow.get("baseline_loading") or not flow.get("rows"):
             return
         stamp = bar_bucket(now).strftime("%Y-%m-%dT%H:%M")    # the bar that just closed ends here
@@ -2952,6 +2974,9 @@ class TradingService:
             logger.warning("flow_snapshot_store_failed", error=str(e))
 
     def get_fno_flow_history(self, minutes: int = 60) -> list[dict[str, Any]]:
+        pub = self._published()
+        if pub is not None:
+            return pub.flow_history(minutes)
         return self._fno_history.since(minutes, datetime.now())
 
     # ── 5-minute day-trade tracking ───────────────────────────
@@ -2986,6 +3011,13 @@ class TradingService:
     def _with_market_oi(self, flow: dict[str, Any]) -> dict[str, Any]:
         """The flow plus the latest market-wide options-OI bias (recorded once a minute)."""
         latest = self.__dict__.get("last_oi_bias") or {}
+        if not latest and self.__dict__.get("is_shared_market"):
+            # viewers do not record: the source account's latest stored reading
+            today = datetime.now().strftime("%Y-%m-%d")
+            for u in self.OI_BIAS_UNDERLYINGS:
+                rows = self._market_store.get_oi_bias(u, f"{today}T00:00")
+                if rows:
+                    latest[u] = rows[-1]
         return {**flow, "market_oi": {u: {"bias": r.get("bias"), "pcr_oi": r.get("pcr_oi"), "ts": r.get("ts")}
                                       for u, r in latest.items()}}
 
@@ -3016,7 +3048,9 @@ class TradingService:
         """During market hours keep the board loop running for a real account even
         when nobody has the Day Trade tab open, so every session's flow snapshots
         and signal ledger are complete (the data the board is back-tested on)."""
-        if self.is_demo or not self.is_authenticated or not market_open(datetime.now()):
+        # viewers (shared market data) read what the source account records
+        if self.is_demo or self.__dict__.get("is_shared_market") or not self.is_authenticated \
+                or not market_open(datetime.now()):
             return
         self._ensure_day_trade_loop()
 
@@ -3028,6 +3062,9 @@ class TradingService:
 
     async def get_day_trade(self) -> dict[str, Any]:
         """Tracked symbols with 5-minute bars, setups, open trades and the signal feed."""
+        pub = self._published()
+        if pub is not None:
+            return await pub.day_trade()     # the source's board: money-flow picks, market fields only
         self._ensure_day_trade_loop()
         flow = await self.get_fno_flow(max_age_s=5.0)
         if flow.get("error"):
@@ -3040,13 +3077,25 @@ class TradingService:
         self._board.save(self._day_trade.to_state(), now)
         snap = self._board.annotate(snap)
         snap["autotrade"]["live_trading"] = self._running and bool(getattr(self._execution, "_running", False))
+        if self.is_demo:
+            # a logged-in user whose Zerodha session is not connected (it expires every
+            # morning) is served this simulated board: say so on screen
+            snap["demo"] = True
         return snap
 
     # ── OI-bias history ────────────────────────────────────────────────
     OI_BIAS_UNDERLYINGS = ("NIFTY", "SENSEX")
 
     def ensure_oi_bias_recorder(self) -> None:
-        """Start the per-minute OI-bias recorder (idempotent; needs a running loop)."""
+        """Start the per-minute OI-bias recorder (idempotent; needs a running loop).
+
+        Not for view-only (shared market data) sessions: the source account
+        records the bias once for everyone, and viewers read the stored history.
+        Every viewer used to fetch and analyse the NIFTY / SENSEX option chains
+        every minute through the source account's shared rate limits, writing
+        the same rows again."""
+        if self.__dict__.get("is_shared_market"):
+            return
         if self._oi_bias_task is None or self._oi_bias_task.done():
             self._oi_bias_task = asyncio.create_task(self._oi_bias_loop(), name="oi_bias_recorder")
             self._oi_bias_task.add_done_callback(self._task_exception_handler)
@@ -3183,6 +3232,8 @@ class TradingService:
         }
 
     async def track_day_trade_symbol(self, symbol: str, action: str = "add") -> dict[str, Any]:
+        if self._published() is not None:
+            return {"error": "View-only accounts follow the shared Day Trade board (its money-flow picks)."}
         symbol = symbol.upper().strip()
         if action == "remove":
             self._day_trade.remove(symbol)

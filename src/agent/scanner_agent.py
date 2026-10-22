@@ -180,6 +180,11 @@ class ScannerAgent(BaseAgent):
     # ── loop ───────────────────────────────────────────────────────────
     async def _run_loop(self) -> None:
         while self._alive:
+            if getattr(self.service, "is_shared_market", False):
+                # view-only session: the source account scans once for everyone (src/api/published.py)
+                self._set_state("using_shared_scan")
+                await self._wait(IDLE_POLL_SECONDS)
+                continue
             if not is_market_open():
                 self._set_state("waiting_market_open")
                 await self._wait(IDLE_POLL_SECONDS)

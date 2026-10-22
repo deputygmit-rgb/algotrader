@@ -321,3 +321,46 @@ def test_view_account_without_kite_app_gets_a_clear_answer_on_connect(monkeypatc
     with pytest.raises(HTTPException) as err:
         run(webapp.login_url(SimpleNamespace()))
     assert err.value.status_code == 400
+
+
+# ── viewers read what the source account records ──────────────────────
+def test_viewers_do_not_run_the_recorders_the_source_account_runs(shared_service, monkeypatch):
+    from datetime import datetime
+
+    import src.api.service as service_mod
+
+    monkeypatch.setattr(service_mod, "market_open", lambda now: True)
+    started = []
+    shared_service._ensure_day_trade_loop = lambda: started.append("board loop")
+    shared_service.ensure_session_recording()
+    shared_service.ensure_oi_bias_recorder()
+    assert started == [] and shared_service._oi_bias_task is None
+    writes = []
+    shared_service._market_store = SimpleNamespace(store_flow_snapshot=lambda *a: writes.append(a))
+    shared_service._record_flow_snapshot({"rows": [{"symbol": "INFY"}], "picks": {}}, datetime(2026, 10, 21, 10, 5))
+    assert writes == []
+
+
+def test_viewers_read_the_latest_stored_market_oi_bias(shared_service):
+    shared_service.last_oi_bias = {}
+    shared_service._market_store = SimpleNamespace(
+        get_oi_bias=lambda u, since: [{"bias": "NEUTRAL", "ts": "t1"}, {"bias": "MILDLY BEARISH", "pcr_oi": 0.8, "ts": "t2"}])
+    flow = shared_service._with_market_oi({"rows": []})
+    assert flow["market_oi"]["NIFTY"]["bias"] == "MILDLY BEARISH"
+
+
+def test_starting_the_live_stream_needs_no_step_up_for_a_viewer(shared_service):
+    from src.api.webapp import _require_step_up
+
+    request = SimpleNamespace(cookies={})
+    _require_step_up(request, shared_service)               # no OTP: a viewer can place no order
+    with pytest.raises(Exception):
+        _require_step_up(request, SimpleNamespace(is_demo=False, is_shared_market=False))
+
+
+def test_daily_history_is_shared_across_viewers_for_longer(hub):
+    a, b = hub.client_for("AB1234"), hub.client_for("CD5678")
+    run(a.get_historical_data(256265, Interval.DAY, "2026-01-01", "2026-02-01"))
+    hub._cache = {k: (v[0] - 120, v[1]) for k, v in hub._cache.items()}     # two minutes later
+    run(b.get_historical_data(256265, Interval.DAY, "2026-01-01", "2026-02-01"))
+    assert hub.source._client.calls.count("get_historical_data") == 1

@@ -783,8 +783,13 @@ STEP_UP_REQUIRED = "step_up_required"
 def _require_step_up(request: Request, svc: TradingService) -> None:
     """Risky actions (real orders, live trading, auto-trade, kill switch off)
     need an OTP confirmed in the last few minutes, not just a session cookie.
-    Demo services trade a simulated sandbox, so they need no confirmation."""
+    Demo services trade a simulated sandbox and view-only services can place
+    no orders, so neither needs a confirmation."""
     if getattr(svc, "is_demo", False):
+        return
+    # view-only sessions on shared market data can place no order at all
+    # (SharedMarketClient refuses every order call): streaming prices is not risky
+    if getattr(svc, "is_shared_market", False):
         return
     if not otp_auth.has_recent_step_up(request.cookies.get(SESSION_COOKIE, "")):
         raise HTTPException(403, STEP_UP_REQUIRED)

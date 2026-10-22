@@ -16,6 +16,7 @@ const AgentsView = (() => {
         idle: 'Idle', stopped: 'Stopped', crashed: 'Crashed',
         waiting_market_open: 'Waiting · market closed', waiting_zerodha_auth: 'Waiting · trading account login',
         waiting_live_trading: 'Standby · live trading off', waiting_next_cycle: 'On duty · between cycles',
+        using_shared_scan: 'Standby · reading the shared market scan',
         scanning: 'Scanning', checking: 'Auditing', monitoring: 'Monitoring', syncing: 'Syncing',
     };
     const ACTIVE = new Set(['scanning', 'checking', 'monitoring', 'syncing']);

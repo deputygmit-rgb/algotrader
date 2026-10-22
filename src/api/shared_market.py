@@ -63,6 +63,7 @@ NO_ORDERS = "Your account has view-only access - it cannot place orders."
 VIEWER_SHARE = 0.5                # of each source rate limit, for all viewers together
 QUOTE_TTL_S = 2.0
 HISTORICAL_TTL_S = 30.0
+DAILY_HISTORY_TTL_S = 900.0       # daily candles: every viewer's scan shares one fetch per 15 min
 INSTRUMENTS_TTL_S = 6 * 3600.0
 CACHE_MAX_ENTRIES = 4000
 MAX_INSTRUMENTS_PER_QUOTE = 500   # Kite's own /quote cap
@@ -129,6 +130,10 @@ class SharedMarketHub:
         self._viewers: set[SharedTicker] = set()
         self._subs: dict[int, dict[SharedTicker, str]] = {}
         self._upstream_modes: dict[int, str] = {}
+        # products the source account computes once for every viewer (src/api/published.py)
+        from src.api.published import Publisher
+
+        self.publisher = Publisher(self._source)
 
     @classmethod
     def get_instance(cls) -> SharedMarketHub:
@@ -405,7 +410,8 @@ class SharedMarketClient:
             raise NetworkError(UNAVAILABLE) from None
         frm, to = self._date(from_date), self._date(to_date)
         key = ("historical", token, interval.value, frm, to, bool(continuous), bool(oi))
-        value = await self._hub.fetch(key, HISTORICAL_TTL_S, self._hub._historical_limiter,
+        ttl = DAILY_HISTORY_TTL_S if interval == Interval.DAY else HISTORICAL_TTL_S
+        value = await self._hub.fetch(key, ttl, self._hub._historical_limiter,
                                       lambda c: c.get_historical_data(token, interval, frm, to,
                                                                       continuous=bool(continuous), oi=bool(oi)))
         return list(value)

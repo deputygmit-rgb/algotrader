@@ -185,6 +185,24 @@ const DayTrade = (() => {
         } catch (e) { /* shown on the next poll */ }
     }
 
+    // why the feed is empty, in words (it used to just say "no signals match")
+    function emptyFeedReason() {
+        const demoNote = data.demo ? ' (DEMO data: connect Zerodha for the live board.)' : '';
+        if (data.feed.length) return 'No signals match this filter — choose ALL to see every signal.';
+        if (!data.tracked.length) {
+            return (data.market_open
+                ? 'No stocks tracked yet — money-flow picks are added from 09:20, once the first 5-minute bar has closed.'
+                : 'No stocks tracked — the board picks stocks from live money flow during market hours.') + demoNote;
+        }
+        if (data.pending) return `Loading today's 5-minute bars for ${data.pending} of ${data.tracked.length} tracked stocks…` + demoNote;
+        if (!data.market_open) return 'Market closed — no signals in the last session for the tracked stocks.' + demoNote;
+        if (!data.last_bar || data.last_bar < '09:30') {
+            return `Waiting for the opening range (09:15–09:30) to complete — the first setups usually fire from about 09:35. ${data.tracked.length} stocks tracked.` + demoNote;
+        }
+        const watching = data.tracked.reduce((n, t) => n + ((t.watch || []).length), 0);
+        return `No setup has fired yet on the ${data.tracked.length} tracked stocks (last bar ${data.last_bar}); ${watching} trigger levels on watch — see each card.` + demoNote;
+    }
+
     function feedFilter(s) {
         if (filter === 'open') return OPEN.has(s.status);
         if (filter === 'LONG' || filter === 'SHORT') return s.side === filter;
@@ -238,7 +256,7 @@ const DayTrade = (() => {
         // nothing tradeable yet (e.g. after hours): show the whole session, labelled hypothetical
         const replayMode = !(data.stats?.signals) && data.replay_stats?.signals;
         const st = (replayMode ? data.replay_stats : data.stats) || {};
-        $('dt-meta').textContent = `${data.tracked.length} tracked · last bar ${data.last_bar || '—'}${data.session ? ` (${data.session})` : ''} · ${data.market_open ? 'LIVE' : 'MARKET CLOSED — session replay'}${data.pending ? ` · loading ${data.pending}` : ''}${data.demo ? ' · DEMO' : ''}`;
+        $('dt-meta').textContent = `${data.tracked.length} tracked · last bar ${data.last_bar || '—'}${data.session ? ` (${data.session})` : ''} · ${data.market_open ? 'LIVE' : 'MARKET CLOSED — session replay'}${data.pending ? ` · loading ${data.pending}` : ''}${data.demo ? ' · DEMO: simulated broker, Zerodha not connected' : ''}`;
         $('dt-stats').innerHTML = `
             ${replayMode ? '<span class="dt-flag" title="All signals were replayed from bars closed before tracking; these figures assume every signal was taken">SESSION REPLAY · HYPOTHETICAL</span>' : ''}
             <span>SIGNALS <b>${st.signals ?? 0}</b></span>
@@ -254,7 +272,7 @@ const DayTrade = (() => {
         $('dt-feed').innerHTML = feed.length
             ? `<table class="dt-table"><thead><tr><th title="Bar close time when the signal fired">SIGNAL</th><th>SYMBOL</th><th>SIDE</th><th>SETUP</th><th>Q</th><th>ENTRY</th><th>STOP</th><th>T1</th><th>STATUS</th><th>R</th><th title="Board auto-trade decision for this signal">ORDER</th></tr></thead>
                 <tbody>${feed.map(feedRow).join('')}</tbody></table>`
-            : '<div class="mf-dim" style="padding:10px">No signals match this filter yet.</div>';
+            : `<div class="mf-dim" style="padding:10px">${esc(emptyFeedReason())}</div>`;
 
         const cards = [...data.tracked].sort(cardOrder);
         $('dt-board').innerHTML = cards.map(boardCard).join('') || '<div class="mf-dim" style="padding:10px">Nothing tracked yet — money-flow picks are added automatically.</div>';

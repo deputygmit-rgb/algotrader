@@ -28,7 +28,7 @@ class BaseAgent:
     ROUTINE_STATES: frozenset[str] = frozenset()
     # states where the agent is blocked on a precondition rather than doing its job
     OFF_DUTY_STATES = frozenset({"idle", "stopped", "crashed", "waiting_market_open",
-                                 "waiting_zerodha_auth", "waiting_live_trading"})
+                                 "waiting_zerodha_auth", "waiting_live_trading", "using_shared_scan"})
 
     def __init__(self, zerodha_id: str, service: "TradingService", interval_seconds: float) -> None:
         self.zerodha_id = zerodha_id

@@ -5,7 +5,12 @@ async function responseError(res) {
         const json = JSON.parse(text);
         return json.detail || json.error || json.message || text;
     } catch (_) {
-        return text;
+        // Not JSON: a page from nginx (the app restarting or down) or a proxy -
+        // never put its HTML on screen.
+        if ([502, 503, 504].includes(res.status)) {
+            return `The server is restarting or briefly unavailable (HTTP ${res.status}) — try again in a few seconds.`;
+        }
+        return /<\s*html|<\s*!doctype/i.test(text) ? `Unexpected response from the server (HTTP ${res.status}).` : text;
     }
 }
 
@@ -206,7 +211,10 @@ document.addEventListener('click', e => { if (e.target.closest('[data-stock], a[
 function switchTab(tabName) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+    const tabBtn = document.querySelector(`[data-tab="${tabName}"]`);
+    tabBtn.classList.add('active');
+    // on a phone the tab bar scrolls: keep the chosen tab in view
+    tabBtn.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
     document.getElementById(`tab-${tabName}`).classList.add('active');
     if (tabName === 'analysis' && !analysisData) {
         loadAnalysis();
