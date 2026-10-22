@@ -566,7 +566,7 @@ class DemoMarket:
             candles.append(HistoricalCandle(timestamp=stamp, open=_round_tick(open_), high=_round_tick(high),
                                             low=_round_tick(low), close=_round_tick(close), volume=volume, oi=oi))
             prev = close
-        if len(self._history_cache) > 400:
+        if len(self._history_cache) > 150:          # within one 30 s slot: bound the candles held
             self._history_cache.clear()
         self._history_cache[key] = candles
         return candles

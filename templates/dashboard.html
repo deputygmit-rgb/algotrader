@@ -40,7 +40,7 @@
     <div class="t-demo-banner" id="demo-banner" data-demo="{{ demo_kind }}" role="status">
         <span class="t-demo-tag">DEMO</span>
         {% if demo_kind == 'public' %}
-        <span class="t-demo-text">Simulated market and broker. Prices, fills and P&amp;L are not real, and nothing reaches a broker. Every tab works &mdash; try a scan, a backtest or Start Live.</span>
+        <span class="t-demo-text">Simulated market and broker. Prices, fills and P&amp;L are not real, and nothing reaches a broker. Every tab works &mdash; try a scan, a backtest, a Day Trade setup chart or Start Live.</span>
         <span class="t-demo-actions">
             <button class="btn btn-success btn-sm" onclick="showModal('modal-contact')" data-track="demo-request-access">Request access</button>
             <a class="btn btn-primary btn-sm" href="/login" onclick="event.preventDefault(); exitDemoTo('/login')">Log in</a>
@@ -74,7 +74,9 @@
             <button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
             <button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>
             <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
-            <button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start();DayTrade.start()">Market Flow</button>
+            <button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start()">Market Flow</button>
+            <button class="tab" data-tab="day-trade" onclick="switchTab('day-trade');DayTrade.start()">Day Trade</button>
+            <button class="tab" data-tab="swing" onclick="switchTab('swing');Swing.start()">Swing</button>
             <button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>
             <button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>
             <button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>
@@ -872,11 +874,30 @@
                     <div class="mf-picks" id="mf-picks-short"></div>
                 </section>
             </div>
+            <section class="mf-sectors-wrap">
+                <div class="mf-sec-hd">SECTOR MONEY FLOW <span class="mf-dim">avg flow score · breadth · net ₹ flow · leader / laggard</span></div>
+                <div class="mf-sectors" id="mf-sectors"></div>
+            </section>
+            <div class="mf-legend">
+                <span><b>FLOW</b> −100…+100 money-flow score: signed money flow 20 · move in ATRs 15 · VWAP distance in ATRs 15 · relative strength vs NIFTY 10 · close location in day range 10 · futures OI build-up 10 · 15-min momentum 10 · previous-day high/low break 5 · order book 5 (missing factors are dropped and the rest re-weighted)</span>
+                <span><b>SCORE</b> 0–100 conviction = |flow| × participation (relative volume)</span>
+                <span><b>BEST LONGS / SHORTS</b> flow bias, price on the right side of VWAP, ≥ ₹2 cr traded and normal-or-better volume; <i>watch</i> rows miss the volume or liquidity bar</span>
+                <span><b>PLAN</b> stop just beyond VWAP (0.3–0.8 daily ATR), targets 1.5R and 3R — a mechanical reference, not advice</span>
+                <span><b>RVOL</b> volume vs 20-session average, adjusted for the normal intraday volume curve</span>
+                <span><b>₹ FLOW</b> turnover × close location (Chaikin money-flow multiplier), ₹ crore</span>
+                <span><b>OI</b> near-month futures OI vs previous close; build-up from price × OI direction (moves under 0.05% price / 0.1% OI are neutral)</span>
+                <span><b>S / R</b> nearest previous-session floor pivots below / above price, with their names</span>
+                <span>Drag the time rail (left) to replay the last 60 min · click any strand, card or row to open its technical analysis</span>
+            </div>
+        </div>
+
+        <div id="tab-day-trade" class="tab-content mf">
             <section class="dt" aria-labelledby="dt-title">
                 <div class="dt-hd">
                     <span class="mf-title" id="dt-title">DAY TRADE · 5-MIN SETUPS</span>
                     <span class="mf-dim" id="dt-meta">—</span>
                     <div class="dt-stats" id="dt-stats"></div>
+                    <div class="dt-eff" id="dt-eff" title="Each setup's recent track record (last 60 closed trades, 120 days, net R): it moves quality and can suspend a setup"></div>
                     <div class="dt-hd-r">
                         <form id="dt-add-form" class="dt-add" role="search">
                             <label class="sr-only" for="dt-add">Track a symbol</label>
@@ -892,6 +913,7 @@
                             </select>
                             <button class="mf-btn" type="submit">REPLAY</button>
                         </form>
+                        <label class="mf-chk" title="Simulated sessions (same switch as Market Flow's DEMO)"><input type="checkbox" id="dt-demo"> DEMO</label>
                         <label class="mf-chk" title="Play a tone on new signals and outcome changes"><input type="checkbox" id="dt-alerts" checked> ALERTS</label>
                         <button class="mf-btn dt-auto-btn" id="dt-auto-btn" type="button" title="Opt-in: send new board signals as real orders through the live-trading path">AUTO-TRADE: OFF</button>
                         <div class="mf-tabs" id="dt-filter" role="group" aria-label="Feed filter">
@@ -921,31 +943,85 @@
                 </div>
                 <div class="dt-body">
                     <div class="dt-feed-wrap">
-                        <div class="dt-sub">SIGNAL FEED <span class="mf-dim">newest first · R = result, or live for open trades</span></div>
+                        <div class="dt-sub">SIGNAL FEED <span class="mf-dim">newest first · R = result, or live for open trades · click a signal to chart its setup</span></div>
                         <div class="dt-feed" id="dt-feed"></div>
                     </div>
-                    <div class="dt-board-wrap">
-                        <div class="dt-sub">SETUP BOARD <span class="mf-dim">VWAP <i class="dt-k vwap"></i> EMA 9 <i class="dt-k e9"></i> EMA 20 <i class="dt-k e20"></i> · opening range / prev-day levels dashed</span></div>
-                        <div class="dt-board" id="dt-board"></div>
+                    <div class="dt-focus-wrap">
+                        <div class="dt-sub dt-focus-hd">SETUP CHART <span class="mf-dim" id="dt-focus-title">click a signal or a board card</span>
+                            <button class="mf-btn" id="dt-focus-open" type="button" hidden title="Open this stock's technical analysis">STOCK PAGE ↗</button></div>
+                        <div class="dt-focus" id="dt-focus">
+                            <canvas class="dt-focus-chart" id="dt-focus-chart" role="img" aria-label="5-minute chart of the selected setup"></canvas>
+                            <div class="dt-focus-info" id="dt-focus-info"><div class="mf-dim">Select a signal in the feed (or a card on the board) to see exactly where its setup fired: the trigger level, the signal bar, volume against its 10-bar average, and the trade plan from fill to exit.</div></div>
+                        </div>
                     </div>
+                </div>
+                <div class="dt-board-wrap">
+                    <div class="dt-sub">SETUP BOARD <span class="mf-dim">VWAP <i class="dt-k vwap"></i> EMA 9 <i class="dt-k e9"></i> EMA 20 <i class="dt-k e20"></i> · opening range / prev-day levels dashed · click a card to chart it</span></div>
+                    <div class="dt-board" id="dt-board"></div>
                 </div>
                 <div class="dt-replay" id="dt-replay" hidden aria-live="polite"></div>
             </section>
-            <section class="mf-sectors-wrap">
-                <div class="mf-sec-hd">SECTOR MONEY FLOW <span class="mf-dim">avg flow score · breadth · net ₹ flow · leader / laggard</span></div>
-                <div class="mf-sectors" id="mf-sectors"></div>
+            <div class="mf-legend">
+                <span><b>DAY TRADE</b> 5-minute setups on the money-flow picks (plus symbols you track), checked on closed bars only so signals never repaint: opening-range breakout (15-minute range, ≥1.3× volume) · previous-day high/low break (≥1.3× volume) · VWAP reclaim / rejection (≥1.2× volume, EMA 9 turning) · squeeze breakout (6-bar box under 0.35 daily ATR, ≥1.5× volume). Trend pullback is off by default.</span>
+                <span><b>WHY A SETUP IS NOT SHOWN</b> signal bar under 1.2× the normal volume for its time of day (median of the same 5-minute slot over 20 sessions — a quiet lunch window cannot make an ordinary bar look like a surge) · quality under 60 (volume 35 on the weaker of the two volume ratios + EMA trend 35 + VWAP side 30, ± the NIFTY options-OI bias) · against the stock's money-flow direction (one direction per stock per day) · against the day's move (a long needs a close above the previous close) · same setup already fired that day · 2 trades per stock per day, one at a time · 15-minute cooldown after an exit · no new entries after 14:45</span>
+                <span><b>TRACK RECORD</b> each setup and side keeps its last 60 closed trades (120 days, net R, rebuilt nightly from the stored bars): quality moves −15…+8 points with it (shrunk towards zero, so a few lucky trades prove little), and a setup averaging below −0.15R over 30+ trades is <i>suspended</i> — its signals are shown and followed but not taken — until it recovers above −0.05R. A signal keeps the verdict it was first shown with.</span>
+                <span><b>SKIP / BF</b> <i>skip</i> = not taken: 5 trades were already open on the board, or the setup's recent record suspended / weakened it · <i>bf</i> = fired before the stock was tracked (it joined the board later), replayed from history — both shown, both left out of the stats</span>
+                <span><b>TIMING</b> a signal fires at its bar's close (the time shown), is detected once that bar's data arrives (normally 20–50 s later) and is PENDING until it fills at the next bar's open plus 0.03% slippage. Auto-trade only acts within one bar of the close.</span>
+                <span><b>PLAN</b> stop at the setup's natural level bounded to 0.5–1.2 daily ATR · half booked at 1.5R, rest moved to breakeven · final target 3R · time exit after 3 hours or at 15:15 · if one bar touches stop and target, the stop counts · R is net of slippage and charges · an orange flag = the live price crossed the stop or a target before the bar closed</span>
+            </div>
+        </div>
+
+        <div id="tab-swing" class="tab-content mf">
+            <section class="dt" aria-labelledby="sw-title">
+                <div class="dt-hd">
+                    <span class="mf-title" id="sw-title">SWING · 1-HOUR SETUPS · DAILY CONTEXT</span>
+                    <span class="mf-dim" id="sw-meta">—</span>
+                    <div class="dt-stats" id="sw-stats"></div>
+                    <div class="dt-eff" id="sw-eff" title="Each setup's recent track record (last 60 closed trades, 120 days, net R): it moves quality and can suspend a setup"></div>
+                    <div class="dt-hd-r">
+                        <form id="sw-add-form" class="dt-add" role="search">
+                            <label class="sr-only" for="sw-add">Track a symbol</label>
+                            <input id="sw-add" placeholder="Track symbol" maxlength="32" autocomplete="off" spellcheck="false">
+                            <button class="mf-btn" type="submit">TRACK</button>
+                        </form>
+                        <label class="mf-chk" title="Simulated market (same switch as Market Flow's DEMO)"><input type="checkbox" id="sw-demo"> DEMO</label>
+                        <label class="mf-chk" title="Toast and tone on new swing signals and outcome changes"><input type="checkbox" id="sw-alerts" checked> ALERTS</label>
+                        <div class="mf-tabs" id="sw-filter" role="group" aria-label="Feed filter">
+                            <button class="on" data-v="all">ALL</button>
+                            <button data-v="open">OPEN</button>
+                            <button data-v="LONG">LONG</button>
+                            <button data-v="SHORT">SHORT</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="dt-body">
+                    <div class="dt-feed-wrap">
+                        <div class="dt-sub">SIGNAL FEED <span class="mf-dim">newest first · R = result, or live for open trades · click a signal to chart its setup</span></div>
+                        <div class="dt-feed" id="sw-feed"></div>
+                    </div>
+                    <div class="dt-focus-wrap">
+                        <div class="dt-sub dt-focus-hd">SETUP CHART <span class="mf-dim" id="sw-focus-title">click a signal or a board card</span>
+                            <button class="mf-btn" id="sw-focus-open" type="button" hidden title="Open this stock's technical analysis">STOCK PAGE ↗</button></div>
+                        <div class="dt-focus">
+                            <div class="sw-ch-hd"><b>1 HOUR</b> <span class="mf-dim">EMA 20 <i class="dt-k e9"></i> EMA 50 <i class="dt-k e20"></i> · sessions divided · the setup, its volume and the plan from fill to exit</span></div>
+                            <canvas class="dt-focus-chart" id="sw-chart-h" role="img" aria-label="1-hour chart of the selected swing setup"></canvas>
+                            <div class="sw-ch-hd"><b>1 DAY</b> <span class="mf-dim">EMA 20 <i class="dt-k e9"></i> EMA 50 <i class="dt-k e20"></i> · 20-day high / low dashed · signal day shaded</span></div>
+                            <canvas class="sw-chart-d" id="sw-chart-d" role="img" aria-label="Daily chart: the trend the swing setup trades with"></canvas>
+                            <div class="dt-focus-info" id="sw-info"><div class="mf-dim">Select a signal in the feed (or a card on the board) to see its setup on the 1-hour chart and the trend behind it on the daily chart.</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="dt-board-wrap">
+                    <div class="dt-sub">SETUP BOARD <span class="mf-dim">scanner picks (trend leaders, near 52-week highs, relative strength; shorts near 52-week lows, F&amp;O only) kept 10 sessions · 1-hour bars · click a card to chart it</span></div>
+                    <div class="dt-board" id="sw-board"></div>
+                </div>
             </section>
             <div class="mf-legend">
-                <span><b>FLOW</b> −100…+100 money-flow score: signed money flow 20 · move in ATRs 15 · VWAP distance in ATRs 15 · relative strength vs NIFTY 10 · close location in day range 10 · futures OI build-up 10 · 15-min momentum 10 · previous-day high/low break 5 · order book 5 (missing factors are dropped and the rest re-weighted)</span>
-                <span><b>SCORE</b> 0–100 conviction = |flow| × participation (relative volume)</span>
-                <span><b>BEST LONGS / SHORTS</b> flow bias, price on the right side of VWAP, ≥ ₹2 cr traded and normal-or-better volume; <i>watch</i> rows miss the volume or liquidity bar</span>
-                <span><b>PLAN</b> stop just beyond VWAP (0.3–0.8 daily ATR), targets 1.5R and 3R — a mechanical reference, not advice</span>
-                <span><b>RVOL</b> volume vs 20-session average, adjusted for the normal intraday volume curve</span>
-                <span><b>₹ FLOW</b> turnover × close location (Chaikin money-flow multiplier), ₹ crore</span>
-                <span><b>OI</b> near-month futures OI vs previous close; build-up from price × OI direction (moves under 0.05% price / 0.1% OI are neutral)</span>
-                <span><b>S / R</b> nearest previous-session floor pivots below / above price, with their names</span>
-                <span><b>DAY TRADE</b> 5-minute setups on the money-flow picks (plus symbols you track), checked on closed bars only so signals never repaint: opening-range breakout (15 min, ≥1.3× volume) · previous-day high/low break · VWAP reclaim / rejection (≥1.2× volume) · trend pullback to EMA 20 / VWAP · squeeze breakout. Selective by design: quality ≥ 60, at most 2 trades per stock per day, one direction per stock (the money-flow bias it was tracked for), 15-minute cooldown after each exit, and at most 5 open trades across the list (<i>skip</i> = not taken because 5 were open). A signal fires at a bar's close (the time shown) and is PENDING until it fills at the next bar's open plus 0.03% slippage. Stop at the setup's natural level (0.15–0.6 daily ATR), half booked at 1.5R with the rest at breakeven, final target 3R, time exit after 1 hour or at 15:15; if one bar touches stop and target, the stop counts. R is net of exit slippage and ~0.06% round-trip charges. An orange flag means the live price has crossed the stop or a target before the bar closed. <i>bf</i> = replayed from before the stock was tracked — shown, but excluded from the stats</span>
-                <span>Drag the time rail (left) to replay the last 60 min · click any strand, card or row to open its technical analysis</span>
+                <span><b>SWING</b> setups on closed 1-hour bars, with daily context taken only from the days before: 20-day breakout (close beyond the previous 20 days' high / low) · pullback in a daily trend (close &gt; EMA 20 &gt; EMA 50; an hourly bar dips to the daily EMA 20 and closes back above it, above its hourly EMA 20) · inside-day / NR7 breakout · hourly flag (seven bars inside 0.6 daily ATR, then a breakout close).</span>
+                <span><b>VOLUME</b> the signal bar against the previous session's bars and against the normal volume for its hour (median of the same hourly slot over 20 sessions): breakouts need ≥ 1.3× on both, a pullback ≥ 1.0×. Quality = volume 35 (weaker ratio) + daily trend 35 + hourly trend 30, minimum 60.</span>
+                <span><b>PLAN</b> fill at the next hourly bar's open plus 0.03% · stop at the setup's level, bounded to 0.6–1.5 daily ATR · half booked at 1.5R and the rest moved to breakeven · final target 3R · time exit after 10 sessions · at most 5 open swing trades (<i>skip</i>) · R net of slippage and delivery charges (0.1% STT both sides; shorts costed as futures).</span>
+                <span><b>TRACK RECORD</b> as on the Day Trade board: each swing setup's last 60 closed trades (net R, dated by exit) move its quality and can suspend it.</span>
+                <span><b>SIGNALS ONLY</b> the swing board places no orders. <i>bf</i> = fired before the stock joined the board, replayed from history and left out of the stats. A replay of 23 stocks' stored bars: longs +0.14R (breakout) to +0.26R (pullback) a trade, shorts mostly negative — a small sample, not a promise.</span>
             </div>
         </div>
 
@@ -2811,6 +2887,7 @@
     <script src="/static/js/dashboard.js?v={{ js_version }}"></script>
     <script src="/static/js/market_flow.js?v={{ flow_js_version }}"></script>
     <script src="/static/js/day_trade.js?v={{ day_trade_js_version }}"></script>
+    <script src="/static/js/swing.js?v={{ static_version('js/swing.js') }}"></script>
     <script src="/static/js/terminal.js?v={{ terminal_js_version }}"></script>
     <script src="/static/js/agents.js?v={{ agents_js_version }}"></script>
     <script src="/static/js/contact.js?v={{ contact_js_version }}"></script>

@@ -13,6 +13,7 @@ from src.analysis.indicators import compute_all_indicators
 from src.analysis.nifty_contribution import compute_nifty_contribution, nifty_quote_instruments
 from src.analysis.fno_flow import FlowHistory, build_universe, compute_fno_flow, quote_keys
 from src.api.day_trade import DayTradeTracker, bar_bucket, market_open
+from src.api.swing_trade import DAILY_DAYS, HOURLY_DAYS, SwingTracker, swing_candidates
 from src.analysis.nifty500 import NIFTY_500_SYMBOLS, get_sector
 from src.agent.telemetry import Telemetry
 from src.api.client import KiteClient
@@ -118,6 +119,11 @@ def _shared_demo_scanner() -> StockScanner:
 # history loads and the 500-row flow are computed once, not once per session.
 DEMO_FLOW_ID = "DEMO-FLOW"               # never a session id (those are DEMO-P- / DEMO-U-)
 _DEMO_FLOW_SOURCE: Optional["TradingService"] = None
+
+
+# Demo sessions also share the 5-minute bars they fetch: the same simulated
+# market gives every session the same bars for a symbol within a bar window.
+_DEMO_BARS: dict[str, Any] = {"bucket": None, "bars": {}}
 
 
 def _demo_flow_source() -> "TradingService":
@@ -267,6 +273,11 @@ class TradingService:
         self._board = BoardTrader(self._emit, os.path.join(base, "data", "day_trade", self._zerodha_id or "default"),
                                   store=self._market_store, account=self._zerodha_id or "default")
         self._board_preflight: Any = None
+        # swing board: 1-hour setups with daily context on scanner picks (src/api/swing_trade.py)
+        self._swing = SwingTracker(self._fetch_swing_hourly, self._fetch_swing_daily,
+                                   os.path.join(base, "data", "swing", self._zerodha_id or "default", "swing.json"))
+        self._swing_cache: tuple[float, dict[str, Any]] | None = None
+        self._swing_task: Optional[asyncio.Task] = None
         # per-minute OI-bias history (own analyser so manual scans aren't disturbed)
         self._oi_bias_analyzer = OptionsOIAnalyzer()
         self._oi_bias_task: Optional[asyncio.Task] = None
@@ -3019,17 +3030,17 @@ class TradingService:
         contract = next((c for c in self._fno_universe if c.symbol == symbol), None)
         if contract is None:
             return []
-        from src.strategy.day_trade_setups import HISTORY_CALENDAR_DAYS
-
-        today = datetime.now().date()
-        candles = await self._client.get_historical_data(
-            contract.cash_token, Interval.MINUTE_5,
-            (today - timedelta(days=HISTORY_CALENDAR_DAYS)).isoformat(), today.isoformat(),
-        )
-        bars = [
-            {"t": str(k.timestamp), "o": k.open, "h": k.high, "l": k.low, "c": k.close, "v": k.volume}
-            for k in candles
-        ]
+        if self.is_demo:
+            # one copy per symbol and bar window for every demo session (not stored:
+            # simulated bars are regenerated on demand)
+            bucket = bar_bucket(datetime.now())
+            if _DEMO_BARS["bucket"] != bucket:
+                _DEMO_BARS["bucket"], _DEMO_BARS["bars"] = bucket, {}
+            cached = _DEMO_BARS["bars"].get(symbol)
+            if cached is None:
+                cached = _DEMO_BARS["bars"][symbol] = await self._load_day_bars(contract)
+            return cached
+        bars = await self._load_day_bars(contract)
         try:   # keep the bars, so board sessions (and filter / exit changes) can be replayed later
             self._market_store.store_candles(contract.cash_token, "5minute", completed_candles([
                 {"ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"], "volume": b["v"]} for b in bars
@@ -3037,6 +3048,19 @@ class TradingService:
         except Exception as e:
             logger.warning("day_trade_bars_store_failed", symbol=symbol, error=str(e))
         return bars
+
+    async def _load_day_bars(self, contract: Any) -> list[dict[str, Any]]:
+        from src.strategy.day_trade_setups import HISTORY_CALENDAR_DAYS
+
+        today = datetime.now().date()
+        candles = await self._client.get_historical_data(
+            contract.cash_token, Interval.MINUTE_5,
+            (today - timedelta(days=HISTORY_CALENDAR_DAYS)).isoformat(), today.isoformat(),
+        )
+        return [
+            {"t": str(k.timestamp), "o": k.open, "h": k.high, "l": k.low, "c": k.close, "v": k.volume}
+            for k in candles
+        ]
 
     def _with_market_oi(self, flow: dict[str, Any]) -> dict[str, Any]:
         """The flow plus the latest market-wide options-OI bias (recorded once a minute)."""
@@ -3056,8 +3080,9 @@ class TradingService:
         while self.is_authenticated:
             now = datetime.now()
             idle = time.monotonic() - self._day_trade_last_request > self.DAY_TRADE_IDLE_S
-            # runs all session while the market is open (journal + opt-in auto-trade need no viewer)
-            if idle and not market_open(now):
+            # a real account's loop runs all session while the market is open (journal +
+            # opt-in auto-trade need no viewer); a demo session's only while someone watches
+            if idle and (self.is_demo or not market_open(now)):
                 break
             try:
                 flow = await self.get_fno_flow(max_age_s=5.0)
@@ -3066,8 +3091,9 @@ class TradingService:
                     self._day_trade.update_selection(flow, now)
                     await self._day_trade.refresh(now)
                     # journal every signal / status change and (if opted in) act on new ones,
-                    # whether or not anyone has the board open
-                    snap = self._day_trade.snapshot(flow, now)
+                    # whether or not anyone has the board open (computed in a worker thread
+                    # so requests are not held up behind it)
+                    snap = await asyncio.to_thread(self._day_trade.snapshot, flow, now)
                     await self._board.process(snap, now, send=self._send_board_signal)
                     self._board.save(self._day_trade.to_state(), now)
             except Exception as e:
@@ -3102,7 +3128,7 @@ class TradingService:
         flow = self._with_market_oi(flow)
         now = datetime.now()
         self._day_trade.update_selection(flow, now)
-        snap = self._day_trade.snapshot(flow, now)
+        snap = await asyncio.to_thread(self._day_trade.snapshot, flow, now)
         await self._board.process(snap, now)          # journal only; orders are sent by the loop
         self._board.save(self._day_trade.to_state(), now)
         snap = self._board.annotate(snap)
@@ -3260,6 +3286,93 @@ class TradingService:
             "by_side": group_stats(combined, "side"),
             "signals": combined[:300],
         }
+
+    # ── swing board (1-hour setups, daily context) ─────────────────
+    SWING_CACHE_S = 20.0
+
+    def _swing_contract(self, symbol: str) -> Any:
+        return next((c for c in self._fno_universe if c.symbol == symbol), None)
+
+    async def _fetch_swing_bars(self, symbol: str, interval: Interval, days: int) -> list[dict[str, Any]]:
+        contract = self._swing_contract(symbol)
+        if contract is None:
+            return []
+        today = datetime.now().date()
+        candles = await self._client.get_historical_data(
+            contract.cash_token, interval, (today - timedelta(days=days)).isoformat(), today.isoformat())
+        bars = [{"t": str(k.timestamp), "o": k.open, "h": k.high, "l": k.low, "c": k.close, "v": k.volume}
+                for k in candles]
+        if not self.is_demo:
+            # completed bars only: they feed the nightly swing track record (scripts/rebuild_efficacy.py)
+            from src.api.swing_trade import completed_hourly
+
+            now = datetime.now()
+            done = completed_hourly(bars, now) if interval == Interval.MINUTE_60 else \
+                [b for b in bars if str(b["t"])[:10] < today.isoformat() or now.time() >= dtime(15, 30)]
+            try:
+                self._market_store.store_candles(contract.cash_token, interval.value, [
+                    {"ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"], "close": b["c"], "volume": b["v"]}
+                    for b in done])
+            except Exception as e:
+                logger.warning("swing_bars_store_failed", symbol=symbol, error=str(e))
+        return bars
+
+    async def _fetch_swing_hourly(self, symbol: str) -> list[dict[str, Any]]:
+        return await self._fetch_swing_bars(symbol, Interval.MINUTE_60, HOURLY_DAYS)
+
+    async def _fetch_swing_daily(self, symbol: str) -> list[dict[str, Any]]:
+        return await self._fetch_swing_bars(symbol, Interval.DAY, DAILY_DAYS)
+
+    async def get_swing(self) -> dict[str, Any]:
+        """Swing board: tracked picks, 1-hour setups with outcomes, hourly and daily bars."""
+        pub = self._published()
+        if pub is not None:
+            return await pub.swing()        # the source account's board, market fields only
+        if self.is_demo and self._zerodha_id != DEMO_FLOW_ID:
+            return await _demo_flow_source().get_swing()      # one simulated market: one board
+        cached = self._swing_cache
+        if cached and time.monotonic() - cached[0] < self.SWING_CACHE_S:
+            return cached[1]
+        flow = await self.get_fno_flow(max_age_s=10.0)
+        if flow.get("error"):
+            return {"error": flow["error"]}
+        now = datetime.now()
+        try:
+            scan = self._scanner.get_cached_results("nifty500")
+        except Exception:
+            scan = None
+        open_trades = {t["symbol"] for t in (cached[1].get("tracked", []) if cached else []) if t.get("active")}
+        self._swing.update_selection(swing_candidates(scan, flow), now, open_trades)
+        # bars load in the background: the board answers at once and fills in
+        if self._swing_task is None or self._swing_task.done():
+            self._swing_task = asyncio.create_task(self._swing.refresh(now), name="swing_bars")
+            self._swing_task.add_done_callback(self._task_exception_handler)
+        snap = await asyncio.to_thread(self._swing.snapshot, flow, now)
+        if self.is_demo:
+            snap["demo"] = True
+        self._swing_cache = (time.monotonic(), snap)
+        return snap
+
+    async def track_swing_symbol(self, symbol: str, action: str = "add") -> dict[str, Any]:
+        if self._published() is not None:
+            return {"error": "View-only accounts follow the shared Swing board (its scanner picks)."}
+        if self.is_demo and self._zerodha_id != DEMO_FLOW_ID:
+            return await _demo_flow_source().track_swing_symbol(symbol, action)
+        symbol = symbol.upper().strip()
+        if action == "remove":
+            self._swing.remove(symbol)
+        else:
+            flow = await self.get_fno_flow(max_age_s=10.0)
+            if flow.get("error"):
+                return {"error": flow["error"]}
+            if not any(r["symbol"] == symbol for r in flow.get("rows", [])):
+                return {"error": f"{symbol} is not in the F&O or NIFTY 500 universe"}
+            try:
+                self._swing.add(symbol, datetime.now())
+            except ValueError as e:
+                return {"error": str(e)}
+        self._swing_cache = None
+        return {"success": True, "tracked": self._swing.symbols}
 
     async def track_day_trade_symbol(self, symbol: str, action: str = "add") -> dict[str, Any]:
         if self._published() is not None:

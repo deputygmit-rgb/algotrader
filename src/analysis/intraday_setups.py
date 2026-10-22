@@ -51,6 +51,15 @@ Selectivity (to avoid over-trading in choppy sessions):
     the session's first trade;
   * no new entry for ``COOLDOWN_BARS`` bars after an exit;
   * VWAP reclaims need >= ``RECLAIM_VOL`` x volume;
+  * with ``vol_norm`` (the median volume of each 5-minute slot over the
+    previous ``TOD_SESSIONS`` sessions), the signal bar must also trade at
+    least ``TOD_MIN_X`` x its slot's normal volume, and quality scores volume
+    on the weaker of the two ratios. The 10-bar ratio alone passed bars that
+    were only "spikes" against a dried-up lunch window, a squeeze's own quiet
+    box or the afternoon volume ramp. Replaying 104 stocks' stored bars, the
+    check moved the average from -0.078R to -0.073R a trade (-174R to -155R
+    over ~2,100 trades; 13:35-14:45 from -0.106R to -0.093R) - better, not an
+    edge: the setups still lose after costs (``scripts/day_trade_efficacy.py``);
   * signals below ``min_quality`` are not taken;
   * each setup fires at most once per side per session;
   * with ``prev_close``, a long needs the close above the previous session's
@@ -90,6 +99,9 @@ MAX_TRADES_PER_DAY = 2
 COOLDOWN_BARS = 3            # 15 minutes after an exit before a new entry
 RECLAIM_VOL = 1.2
 MIN_QUALITY = 60             # default floor used by the panel and the strategy
+TOD_SESSIONS = 20            # sessions behind each slot's normal volume
+TOD_MIN_OBS = 10             # a slot needs this many of them, else only the 10-bar ratio applies
+TOD_MIN_X = 1.2              # signal bar vs its slot's normal volume
 
 SETUP_LABEL = {
     "ORB": "Opening-range breakout",
@@ -99,6 +111,26 @@ SETUP_LABEL = {
     "SQUEEZE": "Squeeze breakout",
 }
 DEFAULT_SETUPS = ("ORB", "PD_BREAK", "VWAP_RECLAIM", "SQUEEZE")   # PULLBACK: see the module docstring
+
+
+def slot_volume_norm(bars: list[tuple[str, str, float]], sessions: int = TOD_SESSIONS,
+                     min_obs: int = TOD_MIN_OBS) -> dict[str, float]:
+    """Normal volume per time slot: ``{"HH:MM": median volume}`` over the last
+    ``sessions`` sessions in ``bars`` ((date, "HH:MM", volume), earlier
+    sessions only). Slots seen in fewer than ``min_obs`` of them are left out."""
+    days = sorted({d for d, _, _ in bars})[-sessions:]
+    keep = set(days)
+    by_slot: dict[str, list[float]] = {}
+    for d, slot, v in bars:
+        if d in keep:
+            by_slot.setdefault(slot, []).append(float(v))
+    out = {}
+    for slot, vols in by_slot.items():
+        if len(vols) >= min_obs:
+            vols.sort()
+            mid = len(vols) // 2
+            out[slot] = vols[mid] if len(vols) % 2 else (vols[mid - 1] + vols[mid]) / 2
+    return {k: v for k, v in out.items() if v > 0}
 
 
 def _ema(values: list[float], period: int) -> list[float]:
@@ -144,8 +176,11 @@ def _detect(
     orh: float | None, orl: float | None, prev_high: float | None, prev_low: float | None,
     atr: float, fired: set[tuple[str, int]], allowed_side: int | None = None,
     prev_close: float | None = None, setups: frozenset[str] = frozenset(DEFAULT_SETUPS),
+    tod_x: float | None = None, tod_min: float = TOD_MIN_X,
 ) -> tuple[str, int, float, str] | None:
     """(setup, side, natural stop, trigger description) for a signal on bar ``i``, if any."""
+    if tod_x is not None and tod_x < tod_min:
+        return None     # no busier than a normal bar at this time of day: not a real volume surge
     b, p = bars[i], bars[i - 1]
     vwap, ema9, ema20 = ind["vwap"], ind["ema9"], ind["ema20"]
     prior_vols = [x["v"] for x in bars[max(0, i - VOL_LOOKBACK):i]]
@@ -200,13 +235,28 @@ def _detect(
     return None
 
 
-def _quality(i: int, side: int, bars: list[dict[str, Any]], ind: dict[str, list[float]]) -> int:
+def _vol_x(i: int, bars: list[dict[str, Any]]) -> float:
+    """Bar ``i``'s volume against the mean of the previous ``VOL_LOOKBACK`` bars."""
+    prior = [x["v"] for x in bars[max(0, i - VOL_LOOKBACK):i]]
+    return bars[i]["v"] / (sum(prior) / len(prior)) if prior and sum(prior) else 1.0
+
+
+def _tod_x(bar: dict[str, Any], vol_norm: Optional[dict[str, float]]) -> float | None:
+    """The bar's volume against its time slot's normal (None without a normal)."""
+    normal = (vol_norm or {}).get(_hhmm(bar))
+    return bar["v"] / normal if normal else None
+
+
+def _quality(i: int, side: int, bars: list[dict[str, Any]], ind: dict[str, list[float]],
+             tod_x: float | None = None) -> int:
     """0-100 from the bars alone - volume 35, intraday trend 35, VWAP side 30 - so
     the panel, backtests, paper runs and replays score a setup identically.
+    Volume is the weaker of the 10-bar and the time-of-day ratio.
     (Money-flow agreement is applied as a direction filter, not a score.)"""
     b = bars[i]
-    prior = [x["v"] for x in bars[max(0, i - VOL_LOOKBACK):i]]
-    vol_x = b["v"] / (sum(prior) / len(prior)) if prior and sum(prior) else 1.0
+    vol_x = _vol_x(i, bars)
+    if tod_x is not None:
+        vol_x = min(vol_x, tod_x)
     score = 35 * min(vol_x / 2, 1.0)
     score += 35 if (ind["ema9"][i] - ind["ema20"][i]) * side > 0 else 0
     score += 30 if (b["c"] - ind["vwap"][i]) * side > 0 else 0
@@ -239,8 +289,12 @@ def analyze_session(
     direction: str | None = None, min_quality: float = 0,
     prev_close: float | None = None, setups: Any = None,
     market_bias: Optional[Callable[[str], Optional[str]]] = None, market_weight: float = MARKET_WEIGHT,
+    vol_norm: Optional[dict[str, float]] = None, tod_min: float = TOD_MIN_X,
 ) -> dict[str, Any]:
     """Replay completed 5-minute bars ``[{t, o, h, l, c, v}, ...]`` (oldest first).
+
+    ``vol_norm`` maps "HH:MM" to that slot's normal volume (``slot_volume_norm``);
+    with it a signal bar must also trade ``tod_min`` x its slot's normal.
 
     ``direction`` ("LONG" / "SHORT") restricts the session to that side;
     ``min_quality`` skips weaker setups (they are not taken at all).
@@ -284,13 +338,14 @@ def analyze_session(
             continue
         if last_exit_index is not None and i - last_exit_index < COOLDOWN_BARS:
             continue
+        tod_x = _tod_x(b, vol_norm)
         found = _detect(i, bars, ind, orh=orh, orl=orl, prev_high=prev_high, prev_low=prev_low,
                         atr=atr, fired=fired, allowed_side=locked_side,
-                        prev_close=prev_close, setups=allowed_setups)
+                        prev_close=prev_close, setups=allowed_setups, tod_x=tod_x, tod_min=tod_min)
         if not found:
             continue
         setup, side, natural_stop, why = found
-        base_quality = _quality(i, side, bars, ind)
+        base_quality = _quality(i, side, bars, ind, tod_x)
         mkt = market_bias(f"{str(b['t'])[:10]}T{_bar_close_time(b)}") if market_bias else None
         mkt_adj = market_adjustment(side, mkt, market_weight)
         quality = max(0, min(100, base_quality + mkt_adj))
@@ -308,6 +363,8 @@ def analyze_session(
             "trigger": why,
             "quality": quality,
             "base_quality": base_quality,       # from the bars alone
+            "vol_x": round(_vol_x(i, bars), 2),  # signal bar vs the previous 10 bars
+            "tod_x": None if tod_x is None else round(tod_x, 2),   # vs its slot's normal volume
             "market_bias": mkt,                 # index OI bias at the signal bar's close (None: no reading)
             "market_adj": mkt_adj,
             "status": "PENDING",

@@ -193,3 +193,18 @@ def test_signal_ids_are_unique_across_symbols():
     feed = tracker.snapshot(snap, NOW)["feed"]
     assert len(feed) == 2 and len({s["id"] for s in feed}) == 2
     assert {s["id"].split(":")[0] for s in feed} == {"A", "B"}
+
+
+def test_simulated_board_picks_at_any_hour_and_keeps_its_picks():
+    """The ``?demo=1`` board runs on synthetic, complete sessions: it must not
+    stand empty in the evening, and early picks must not churn before 09:20."""
+    tracker = DayTradeTracker(lambda s: None)
+    evening = datetime(2026, 10, 19, 20, 30)
+    tracker.update_selection(_snapshot({"A": 40, "B": 70}), evening)
+    assert tracker.symbols == []                                       # the live board waits for the market
+    tracker.update_selection(_snapshot({"A": 40, "B": 70}), evening, any_time=True)
+    assert tracker.symbols == ["B", "A"]
+    early = datetime(2026, 10, 20, 8, 0)
+    tracker.update_selection(_snapshot({"C": 50}), early, any_time=True)
+    tracker.update_selection(_snapshot({"C": 50}), early + timedelta(minutes=1), any_time=True)
+    assert tracker.symbols == ["C"] and tracker._tracked["C"]["since_at"] == "2026-10-20T08:00"

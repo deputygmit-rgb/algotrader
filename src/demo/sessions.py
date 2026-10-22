@@ -59,6 +59,7 @@ def _paths(uid: str) -> list[str]:
     return [
         os.path.join(data, "users", uid),
         os.path.join(data, "day_trade", uid),
+        os.path.join(data, "swing", uid),
         os.path.join(data, "scanner_cache", f"{uid}.json.gz"),
         os.path.join(default_log_dir(), uid),
         *glob.glob(os.path.join(data, f"fno_baseline_{uid}_*.json")),
@@ -154,7 +155,7 @@ class DemoSessions:
         from src.agent.activity import default_log_dir
 
         data = os.path.join(ROOT, "data")
-        patterns = [os.path.join(data, "users", "DEMO-*"), os.path.join(data, "day_trade", "DEMO-*"),
+        patterns = [os.path.join(data, "users", "DEMO-*"), os.path.join(data, "day_trade", "DEMO-*"), os.path.join(data, "swing", "DEMO-*"),
                     os.path.join(data, "scanner_cache", "DEMO-*"), os.path.join(data, "fno_baseline_DEMO-*"),
                     os.path.join(default_log_dir(), "DEMO-*")]
         for pattern in patterns:

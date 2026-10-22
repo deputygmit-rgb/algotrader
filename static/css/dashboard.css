@@ -818,9 +818,63 @@ tr:hover td { background: var(--bg-hover); }
 .dt-replay-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 12px; padding: 0 12px; }
 .dt-replay-grid .dt-table { margin-bottom: 10px; }
 .dt-state { color: var(--mf-txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Day Trade tab: feed | setup chart, board below */
+#tab-day-trade .dt { margin-top: 0; }
+#tab-day-trade .dt-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
+#tab-day-trade .dt-feed { max-height: 640px; }
+.dt-focus-wrap { min-width: 0; }
+.dt-focus-hd { display: flex; align-items: center; gap: 8px; }
+.dt-focus-hd .mf-dim { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dt-focus-hd .mf-btn { margin-left: auto; flex: none; }
+.dt-focus { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 10px; }
+.dt-focus-chart { display: block; width: 100%; height: 380px; background: var(--mf-panel); border: 1px solid var(--mf-line); border-radius: 6px; }
+.dt-focus-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px 18px; font-size: 11px; line-height: 1.5; }
+.dt-fi dd { white-space: nowrap; }
+.dt-fi dd.dt-fi-wrap, .dt-fi dd b { white-space: normal; }
+.dt-fi h4 { margin: 0 0 4px; font-size: 9.5px; letter-spacing: 1.4px; color: var(--mf-dim); font-weight: 700; }
+.dt-fi h4 .dt-side { margin-left: 2px; }
+.dt-fi p { margin: 0 0 5px; }
+.dt-fi ul { margin: 0; padding-left: 16px; }
+.dt-fi dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+.dt-fi dt { color: var(--mf-dim); }
+.dt-fi dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.dt-fi .dt-fi-sub { padding-left: 10px; font-size: 10px; }
+.dt-fi-trig { color: var(--mf-a); }
+.dt-fi-note { color: var(--mf-a); font-size: 10.5px; }
+.dt-fi-chips { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-chip { background: transparent; color: var(--mf-dim); border: 1px solid var(--mf-line); border-radius: 3px; padding: 2px 8px; font-size: 10px; letter-spacing: .6px; cursor: pointer; font-family: inherit; }
+.dt-chip.on, .dt-chip:hover { color: var(--mf-a); border-color: var(--mf-a); }
+.dt-table tr.sel { background: rgba(255,209,102,.10); box-shadow: inset 3px 0 0 var(--mf-a); }
+.dt-card.sel { border-color: var(--mf-a); box-shadow: 0 0 14px rgba(255,209,102,.12); }
+.dt-board-wrap { border-top: 1px solid var(--mf-line); }
+#tab-day-trade .dt-board { max-height: none; }
+/* Swing tab: same layout as Day Trade, with a 1-hour and a 1-day chart */
+#tab-swing .dt { margin-top: 0; }
+#tab-swing .dt-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
+#tab-swing .dt-feed { max-height: 760px; }
+#tab-swing .dt-board { max-height: none; }
+#tab-swing .dt-focus-chart { height: 330px; }
+.dt-eff { display: flex; flex-wrap: wrap; gap: 4px 6px; width: 100%; }
+.dt-eff:empty { display: none; }
+.dt-eff-chip { font-size: 9.5px; letter-spacing: .4px; padding: 1px 6px; border: 1px solid var(--mf-line); border-radius: 3px; color: var(--mf-dim); white-space: nowrap; }
+.dt-eff-chip b { font-weight: 700; }
+.dt-eff-chip.good { border-color: rgba(91,227,160,.45); color: var(--mf-g); }
+.dt-eff-chip.weak { border-color: rgba(255,159,67,.45); color: var(--mf-o); }
+.dt-eff-chip.off { border-color: rgba(255,90,110,.6); color: var(--mf-r); text-decoration: line-through; }
+.sw-chart-d { display: block; width: 100%; height: 200px; background: var(--mf-panel); border: 1px solid var(--mf-line); border-radius: 6px; }
+.sw-ch-hd { font-size: 10px; letter-spacing: 1.2px; color: var(--mf-txt); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin-bottom: -4px; }
+.sw-ch-hd .mf-dim { font-size: 10px; letter-spacing: .3px; }
+#sw-info { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
+#sw-info .dt-fi dd { white-space: normal; }
 @media (max-width: 1100px) {
-    .dt-body { grid-template-columns: 1fr; }
+    .dt-body, #tab-day-trade .dt-body, #tab-swing .dt-body { grid-template-columns: 1fr; }
+    #tab-swing .dt-feed { max-height: 360px; }
     .dt-feed-wrap { border-right: 0; border-bottom: 1px solid var(--mf-line); }
+    #tab-day-trade .dt-feed { max-height: 360px; }
+}
+@media (max-width: 640px) {
+    .dt-focus-chart, #tab-swing .dt-focus-chart { height: 280px; }
+    .sw-chart-d { height: 170px; }
 }
 .mf-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 14px; font-size: 10.5px; color: var(--mf-dim); }
 .mf-legend b { color: var(--mf-txt); font-weight: 700; }

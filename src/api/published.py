@@ -65,7 +65,27 @@ FLOW_ROW_KEYS = {
     "turnover_cr", "money_flow_cr", "zone", "s1", "s1_label", "r1", "r1_label", "r2", "r2_label", "prev_high",
     "prev_low", "imbalance", "nifty_points", "flow_score", "bias", "score", "factors", "plan", "rank",
 }
-BOARD_KEYS = {"as_of", "market_open", "session", "last_bar", "pending"}
+BOARD_KEYS = {"as_of", "market_open", "session", "last_bar", "pending", "efficacy", "efficacy_as_of"}
+SWING_KEYS = {"as_of", "market_open", "pending", "efficacy", "efficacy_as_of"}
+SWING_TRACKED_KEYS = {
+    "symbol", "since", "why", "trade_direction", "shortable", "loading", "sector", "ltp", "change_pct",
+    "flow_score", "bars", "indicators", "daily", "daily_indicators", "levels", "watch", "signal_count",
+}
+SWING_SIGNAL_KEYS = {
+    "id", "symbol", "setup", "label", "side", "time", "bar_time", "trigger", "quality", "vol_x", "tod_x", "atr",
+    "natural_stop", "geometry", "status", "entry_time", "entry", "stop", "target1", "target2", "risk_pct",
+    "bars_held", "mfe_r", "mae_r", "gross_r", "cost_r", "result_r", "exit_time", "exit_price", "t1_time",
+    "live_flag", "current_r", "backfilled", "is_latest_bar", "flow_bias", "pick", "efficacy", "base_quality_board",
+}
+
+
+def _efficacy_skips(feed: list[dict[str, Any]]) -> None:
+    """Re-mark signals the setup track record skipped (the portfolio cap is recomputed after)."""
+    for s in feed:
+        skip = (s.get("efficacy") or {}).get("skip")
+        if skip:
+            s["skipped"] = skip
+SWING_TTL_S = 30.0
 BOARD_TRACKED_KEYS = {
     "symbol", "since", "loading", "insufficient_history", "sector", "ltp", "change_pct", "flow_score", "bias",
     "trade_direction", "score", "vol_ratio", "prev_high", "prev_low", "bars", "indicators", "orh", "orl",
@@ -75,7 +95,7 @@ BOARD_SIGNAL_KEYS = {
     "id", "symbol", "setup", "label", "side", "time", "bar_time", "trigger", "quality", "base_quality",
     "market_bias", "market_adj", "status", "entry_time", "entry", "stop", "target1", "target2", "risk_pct",
     "bars_held", "mfe_r", "mae_r", "gross_r", "cost_r", "result_r", "exit_time", "live_flag", "current_r",
-    "natural_stop", "backfilled", "is_latest_bar",
+    "natural_stop", "backfilled", "is_latest_bar", "vol_x", "tod_x", "efficacy", "base_quality_board",
 }
 
 
@@ -150,11 +170,38 @@ def sanitize_board(snap: dict[str, Any]) -> dict[str, Any]:
             item["active"] = _pick(t["active"], BOARD_SIGNAL_KEYS)
         out["tracked"].append(item)
     feed = [_pick(s, BOARD_SIGNAL_KEYS) for s in snap.get("feed", []) if s.get("symbol") in auto]
+    _efficacy_skips(feed)
     _apply_portfolio_cap(feed)               # recomputed on what viewers see (no skip caused by hidden trades)
     out["feed"] = feed
     out["stats"] = session_stats(feed)
     out["replay_stats"] = _replay_stats(feed)
     out["autotrade"] = {"enabled": False, "view_only": True, "orders_today": 0}
+    out["shared"] = True
+    return out
+
+
+def sanitize_swing(snap: dict[str, Any]) -> dict[str, Any]:
+    """The swing board as viewers see it: the scanner picks only, market fields only."""
+    from src.analysis.swing_setups import swing_stats
+    from src.api.swing_trade import _apply_portfolio_cap
+
+    auto = {t["symbol"] for t in snap.get("tracked", []) if t.get("source") == "auto"}
+    out = _pick(snap, SWING_KEYS)
+    out["tracked"] = []
+    for t in snap.get("tracked", []):
+        if t.get("symbol") not in auto:
+            continue
+        item = _pick(t, SWING_TRACKED_KEYS)
+        item["source"] = "auto"
+        if t.get("active"):
+            item["active"] = _pick(t["active"], SWING_SIGNAL_KEYS)
+        out["tracked"].append(item)
+    feed = [_pick(s, SWING_SIGNAL_KEYS) for s in snap.get("feed", []) if s.get("symbol") in auto]
+    _efficacy_skips(feed)
+    _apply_portfolio_cap(feed)               # recomputed on what viewers see
+    out["feed"] = feed
+    out["stats"] = swing_stats(feed)
+    out["replay_stats"] = swing_stats([{**s, "backfilled": False, "skipped": None} for s in feed])
     out["shared"] = True
     return out
 
@@ -222,6 +269,22 @@ class Publisher:
             return self._put("board", sanitize_board(svc._day_trade.snapshot(flow, now)))
         except Exception as e:
             logger.warning("published_board_failed", error=str(e))
+            return {"error": UNAVAILABLE}
+
+    async def swing(self) -> dict[str, Any]:
+        hit = self._cached("swing", SWING_TTL_S)
+        if hit is not None:
+            return hit
+        svc = self._svc()
+        if svc is None:
+            return {"error": UNAVAILABLE}
+        try:
+            snap = await svc.get_swing()
+            if snap.get("error"):
+                return {"error": UNAVAILABLE}
+            return self._put("swing", sanitize_swing(snap))
+        except Exception as e:
+            logger.warning("published_swing_failed", error=str(e))
             return {"error": UNAVAILABLE}
 
     def scan(self, universe: str) -> dict[str, Any]:

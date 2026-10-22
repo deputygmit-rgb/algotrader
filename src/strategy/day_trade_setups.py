@@ -30,7 +30,9 @@ from src.analysis.intraday_setups import (
     SLIPPAGE_PCT,
     TARGET1_R,
     TARGET2_R,
+    TOD_SESSIONS,
     analyze_session,
+    slot_volume_norm,
 )
 from src.analysis.market_regime import MARKET_WEIGHT, MarketBiasHistory
 from src.analysis.money_flow import ATR_PERIOD, average_true_range
@@ -55,6 +57,19 @@ def _daily_context(prior: pd.DataFrame, days: pd.Series) -> dict[str, Any]:
         "prev_low": float(daily["low"].iloc[-1]),
         "prev_close": float(daily["close"].iloc[-1]),
     }
+
+
+def _slot_norm(prior: pd.DataFrame, prior_days: np.ndarray) -> dict[str, float]:
+    """Normal volume per 5-minute slot over the last ``TOD_SESSIONS`` earlier sessions."""
+    recent = np.unique(prior_days)[-TOD_SESSIONS:]
+    sub = prior[np.isin(prior_days, recent)]
+    ts = sub["timestamp"]
+    if pd.api.types.is_datetime64_any_dtype(ts):
+        slots = ts.dt.strftime("%H:%M")
+    else:
+        slots = ts.astype(str).str[11:16]
+    days = prior_days[np.isin(prior_days, recent)].astype(str)
+    return slot_volume_norm(list(zip(days, slots, sub["volume"].astype(float))))
 
 
 def _day_keys(timestamps: pd.Series) -> np.ndarray:
@@ -95,6 +110,7 @@ def session_inputs(data: pd.DataFrame, cache: Optional[dict] = None) -> Optional
         if len(np.unique(prior_days)) >= MIN_HISTORY_SESSIONS:
             day_labels = pd.Series(prior_days.astype(str), index=data.index[:start])
             context = _daily_context(data.iloc[:start], day_labels)
+            context["vol_norm"] = _slot_norm(data.iloc[:start], prior_days)
         entry = {"context": context}
         if cache is not None:
             cache.clear()
@@ -167,6 +183,7 @@ class DayTradeSetupsStrategy(BaseStrategy):
             prev_close=inputs["prev_close"], min_quality=float(self.params.get("min_quality") or 0),
             setups=self.params.get("setups") or None, market_bias=self._market_bias(),
             market_weight=float(self.params.get("market_weight", MARKET_WEIGHT)),
+            vol_norm=inputs.get("vol_norm"),
         )
         last_bar = inputs["bars"][-1]["t"]
         fresh = [s for s in result["signals"] if s["bar_time"] == last_bar]
@@ -265,7 +282,8 @@ def replay_sessions(data: pd.DataFrame, min_history_days: int = MIN_HISTORY_SESS
             continue
         result = analyze_session(inputs["bars"], atr=inputs["atr"], prev_high=inputs["prev_high"],
                                  prev_low=inputs["prev_low"], prev_close=inputs["prev_close"],
-                                 min_quality=MIN_QUALITY, setups=setups, market_bias=market_bias)
+                                 min_quality=MIN_QUALITY, setups=setups, market_bias=market_bias,
+                                 vol_norm=inputs.get("vol_norm"))
         day_signals = [{**s, "date": day} for s in result["signals"]]
         signals.extend(day_signals)
         days.append({"date": day, **session_stats(day_signals)})

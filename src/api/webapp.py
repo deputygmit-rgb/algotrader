@@ -38,6 +38,8 @@ from src.auth.access import AGENTIC, LEVEL_LABELS, VIEW, AccessDenied
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
 from src.api.request_limiter import api_limiter
+from src.utils.memory import run_hygiene
+from src.analysis.efficacy import run_rebuilder
 from src.api.response_cache import shared_json
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth, rate_limit_subject
@@ -80,11 +82,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     reaper = asyncio.create_task(demo_sessions.run_reaper())
     viewer_reaper = asyncio.create_task(_run_viewer_reaper())
     flusher = asyncio.create_task(metrics.run_flusher())
+    hygiene = asyncio.create_task(run_hygiene())        # gc + return freed memory to the OS
+    efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
     try:
         yield
     finally:
         reaper.cancel()
         viewer_reaper.cancel()
+        hygiene.cancel()
+        efficacy.cancel()
         flusher.cancel()
         await asyncio.to_thread(metrics.flush)
         await mcp_driver.shutdown()
@@ -2148,7 +2154,7 @@ async def _demo_day_trade_snapshot(symbol: str | None = None, action: str = "add
             return {"error": f"{symbol} is not in the F&O or NIFTY 500 universe"}
         else:
             _demo_day_trade.add(symbol, now, next(r for r in flow["rows"] if r["symbol"] == symbol))
-    _demo_day_trade.update_selection(flow, now)
+    _demo_day_trade.update_selection(flow, now, any_time=True)     # simulated sessions: picks at any hour
     await _demo_day_trade.refresh(now)
     # mark open trades to the simulated session's last close
     closes = {}
@@ -2231,6 +2237,39 @@ async def track_day_trade(request: Request) -> dict[str, Any]:
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
     return await svc.track_day_trade_symbol(symbol, action)
+
+
+@app.get("/api/market/swing")
+async def get_swing(request: Request) -> Any:
+    """Swing board: 1-hour setups with daily context on the scanner's picks (plus
+    symbols you track), signals with outcomes, hourly and daily bars.
+    ``?demo=1`` uses the simulated market."""
+    from src.api.service import _demo_flow_source
+
+    if request.query_params.get("demo") == "1":
+        return shared_json(request, await _demo_flow_source().get_swing())   # marked demo by the service
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Trading account not linked"}
+    return shared_json(request, await svc.get_swing())
+
+
+@app.post("/api/market/swing/track")
+async def track_swing(request: Request) -> dict[str, Any]:
+    """Add or remove a symbol from the swing board. Body: {symbol, action: add|remove}."""
+    from src.api.service import _demo_flow_source
+
+    body = await request.json()
+    symbol = str(body.get("symbol") or "").upper().strip()
+    action = body.get("action", "add")
+    if not re.fullmatch(r"[A-Z0-9&.-]{1,32}", symbol) or action not in ("add", "remove"):
+        raise HTTPException(400, "symbol and action (add|remove) required")
+    if request.query_params.get("demo") == "1":
+        return await _demo_flow_source().track_swing_symbol(symbol, action)
+    svc = get_user_service(request)
+    if not svc.is_authenticated:
+        return {"error": "Trading account not linked"}
+    return await svc.track_swing_symbol(symbol, action)
 
 
 @app.get("/api/market/fno-flow/history")

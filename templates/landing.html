@@ -54,7 +54,7 @@
                 </div>
                 <div class="term-tabs" role="tablist" aria-label="Terminal views">
                     <button role="tab" id="tab-flow" aria-controls="view-flow" aria-selected="true" data-view="flow" data-demo-tab="market-flow">Market Flow</button>
-                    <button role="tab" id="tab-day" aria-controls="view-day" aria-selected="false" tabindex="-1" data-view="day" data-demo-tab="market-flow">Day Trade</button>
+                    <button role="tab" id="tab-day" aria-controls="view-day" aria-selected="false" tabindex="-1" data-view="day" data-demo-tab="day-trade">Day Trade</button>
                     <button role="tab" id="tab-oi" aria-controls="view-oi" aria-selected="false" tabindex="-1" data-view="oi" data-demo-tab="oi-tracker">OI Tracker</button>
                     <button role="tab" id="tab-agents" aria-controls="view-agents" aria-selected="false" tabindex="-1" data-view="agents" data-demo-tab="agents">Agents</button>
                     <button role="tab" id="tab-bt" aria-controls="view-bt" aria-selected="false" tabindex="-1" data-view="bt" data-demo-tab="backtest">Backtest</button>
@@ -103,9 +103,15 @@
                     <div class="strip">
                         <b class="c-cyan">DAY TRADE BOARD</b>
                         <span>5-MIN SETUPS · <b id="dt-count">0</b> SIGNALS</span>
-                        <span class="c-dim">AUTO-TRADE OFF · SIGNALS JOURNALED</span>
+                        <span class="c-dim">TAP A SIGNAL TO CHART ITS SETUP</span>
                     </div>
-                    <div class="dt-list" id="dt-list"></div>
+                    <div class="dt-wrap">
+                        <div class="dt-list" id="dt-list"></div>
+                        <div class="dt-focus">
+                            <canvas class="dt-chart" id="dt-chart" role="img" aria-label="5-minute chart of the selected signal: its trigger, the signal bar's volume and the trade plan"></canvas>
+                            <div class="dt-why" id="dt-why" aria-live="polite"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- OI TRACKER -->
@@ -164,7 +170,7 @@
             <h2 class="section-title">One terminal. Every step of the trade.</h2>
             <div class="features">
                 <a class="feature spot" href="/app" data-start-demo="market-flow"><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="/app" data-start-demo="market-flow"><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day and squeeze setups on 5-minute bars, each with entry, stop and two targets.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="/app" data-start-demo="day-trade"><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="oi-tracker"><span class="f-tag">03 · OPTIONS</span><h3>OI Tracker</h3><p>Call and put walls, PCR, max pain and the market's options bias, minute by minute.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="analysis"><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="backtest"><span class="f-tag">05 · STRATEGY</span><h3>Backtest &amp; paper trade</h3><p>Test a strategy on history, replay sessions bar by bar, then paper trade it before going live.</p><span class="f-go">Open in demo →</span></a>

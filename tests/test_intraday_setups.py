@@ -188,3 +188,51 @@ def test_the_entry_cut_off_applies_to_the_signal_time():
     assert analyze_session(bars_from(OPENING + [BREAKOUT], start=datetime(2026, 10, 16, 14, 30)), atr=ATR)["signals"] == []
     early = analyze_session(bars_from(OPENING + [BREAKOUT], start=datetime(2026, 10, 16, 14, 25)), atr=ATR)["signals"]
     assert [s["time"] for s in early] == ["14:45"]
+
+
+# --- time-of-day volume ------------------------------------------------------------
+
+def test_breakout_needs_more_than_a_normal_bar_for_its_time_of_day():
+    """3x the previous bars is no surge when that slot normally trades 3000+."""
+    rows = OPENING + [BREAKOUT, (101.5, 101.9, 101.2, 101.6, 900)]
+    assert analyze_session(bars_from(rows), atr=ATR, vol_norm={"09:30": 2400.0})["signals"]   # 1.25x normal
+    assert analyze_session(bars_from(rows), atr=ATR, vol_norm={"09:30": 3000.0})["signals"] == []   # 1.0x
+    s = analyze_session(bars_from(rows), atr=ATR)["signals"][0]          # no normal yet: 10-bar ratio only
+    assert s["tod_x"] is None and s["vol_x"] == 3.0
+
+
+def test_quality_scores_the_weaker_volume_ratio():
+    rows = OPENING + [BREAKOUT, (101.5, 101.9, 101.2, 101.6, 900)]
+    strong = analyze_session(bars_from(rows), atr=ATR, vol_norm={"09:30": 1000.0})["signals"][0]   # 3x normal
+    weak = analyze_session(bars_from(rows), atr=ATR, vol_norm={"09:30": 2400.0})["signals"][0]     # 1.25x normal
+    assert strong["tod_x"] == 3.0 and weak["tod_x"] == 1.25
+    assert strong["base_quality"] - weak["base_quality"] == round(35 * 1.0) - round(35 * 1.25 / 2)
+
+
+def test_slot_volume_norm_uses_recent_sessions_and_enough_of_them():
+    from src.analysis.intraday_setups import slot_volume_norm
+
+    bars = [(f"2026-09-{d:02d}", "11:50", 100.0 * d) for d in range(1, 26)]   # 25 sessions
+    bars += [(f"2026-09-{d:02d}", "12:00", 50.0) for d in range(1, 6)]        # seen 5 times only
+    norm = slot_volume_norm(bars)
+    assert norm == {"11:50": 100.0 * 15.5}           # median of the last 20 sessions (6..25)
+
+
+def test_session_inputs_supply_the_slot_normal():
+    import pandas as pd
+
+    from src.strategy.day_trade_setups import MIN_HISTORY_SESSIONS, session_inputs
+
+    rows = []
+    day = datetime(2026, 9, 1)
+    n = 0
+    while n < MIN_HISTORY_SESSIONS + 1:
+        if day.weekday() < 5:
+            for i in range(6):
+                t = day.replace(hour=9, minute=15) + timedelta(minutes=5 * i)
+                rows.append({"timestamp": t.strftime("%Y-%m-%d %H:%M:00+05:30"), "open": 100, "high": 101,
+                             "low": 99, "close": 100, "volume": 1000 + 100 * i})
+            n += 1
+        day += timedelta(days=1)
+    inp = session_inputs(pd.DataFrame(rows))
+    assert inp["vol_norm"]["09:15"] == 1000 and inp["vol_norm"]["09:40"] == 1500

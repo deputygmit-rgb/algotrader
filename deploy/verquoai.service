@@ -11,6 +11,9 @@ EnvironmentFile=/opt/verquoai/app/.env
 Environment=PYTHONUNBUFFERED=1
 # Session times (09:15 open, 15:15 square-off) are compared with the local clock.
 Environment=TZ=Asia/Kolkata
+# Fewer glibc malloc arenas: memory freed by worker threads is reused and
+# returned (src/utils/memory.py trims it) instead of fragmenting per thread.
+Environment=MALLOC_ARENA_MAX=2
 # Single worker: sessions, rate limits and the Kite ticker live in process memory.
 ExecStart=/opt/verquoai/venv/bin/uvicorn src.api.webapp:app \
     --host 127.0.0.1 --port 5001 --workers 1 \

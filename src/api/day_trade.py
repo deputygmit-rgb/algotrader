@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable
 
 import pandas as pd
 
+from src.analysis.efficacy import apply_efficacy, get_efficacy
 from src.analysis.intraday_setups import BAR_MINUTES, MIN_QUALITY, OPEN_STATUSES, analyze_session, session_stats
 from src.strategy.day_trade_setups import session_inputs
 from src.utils.logger import get_logger
@@ -105,6 +106,7 @@ class DayTradeTracker:
         # when each signal first appeared (in-memory; a restart re-scores)
         self._quality: dict[str, int] = {}
         self._daily_cache: dict[str, dict] = {}    # per-symbol cache for session_inputs
+        self._efficacy_seen: dict[str, dict] = {}  # signal id -> setup track-record verdict, frozen at first sight
         self._lock = asyncio.Lock()
         # index OI bias at a bar close (market_regime.MarketBiasHistory.at); None = not used
         self.market_bias: Callable[[str], Any] | None = None
@@ -140,27 +142,33 @@ class DayTradeTracker:
             self._fetched_bucket.clear()
             self._quality.clear()
             self._daily_cache.clear()
+            self._efficacy_seen.clear()
 
-    def update_selection(self, snapshot: dict[str, Any], now: datetime) -> None:
+    def update_selection(self, snapshot: dict[str, Any], now: datetime, any_time: bool = False) -> None:
         """Add the flow's best longs / shorts to the working list (sticky for the session).
 
         Picks are made only between AUTO_SELECT_FROM and the close of a trading
         day. Automatic picks made before today's selection window - the list
         used to be filled at midnight from the previous session's closing flow,
         with that stale direction fixed for the whole day - are dropped first.
+
+        ``any_time`` is for the simulated sessions (``?demo=1``): their latest
+        session is synthetic and complete after the close, so the demo board
+        picks at any hour instead of standing empty in the evening.
         """
         self._roll_session(now)
-        if not (market_open(now) and now.time() >= AUTO_SELECT_FROM):
-            return
-        window = datetime.combine(now.date(), AUTO_SELECT_FROM).strftime("%Y-%m-%dT%H:%M")
-        # a stale pick that already produced a signal keeps its place: its trade is followed to the end
-        has_signal = {k.split(":", 1)[0] for k in self._quality}
-        stale = [s for s, v in self._tracked.items()
-                 if v["source"] == "auto" and (v.get("since_at") or "") < window and s not in has_signal]
-        for sym in stale:
-            self.remove(sym)
-        if stale:
-            logger.warning("day_trade_stale_picks_dropped", count=len(stale), before=window)
+        if not any_time:
+            if not (market_open(now) and now.time() >= AUTO_SELECT_FROM):
+                return
+            window = datetime.combine(now.date(), AUTO_SELECT_FROM).strftime("%Y-%m-%dT%H:%M")
+            # a stale pick that already produced a signal keeps its place: its trade is followed to the end
+            has_signal = {k.split(":", 1)[0] for k in self._quality}
+            stale = [s for s, v in self._tracked.items()
+                     if v["source"] == "auto" and (v.get("since_at") or "") < window and s not in has_signal]
+            for sym in stale:
+                self.remove(sym)
+            if stale:
+                logger.warning("day_trade_stale_picks_dropped", count=len(stale), before=window)
         rows = {r["symbol"]: r for r in snapshot.get("rows", [])}
         auto = [s for s, v in self._tracked.items() if v["source"] == "auto"]
         for sym in select_auto_symbols(snapshot):
@@ -223,7 +231,7 @@ class DayTradeTracker:
     def snapshot(self, flow: dict[str, Any], now: datetime) -> dict[str, Any]:
         rows = {r["symbol"]: r for r in flow.get("rows", [])}
         tracked, feed = [], []
-        for sym, meta in self._tracked.items():
+        for sym, meta in list(self._tracked.items()):     # may run in a worker thread
             r = rows.get(sym) or {}
             all_bars = self._bars.get(sym)
             # identical inputs to the day_trade_setups strategy: the latest session's
@@ -237,7 +245,7 @@ class DayTradeTracker:
                 prev_high=inputs["prev_high"] if inputs else None, prev_low=inputs["prev_low"] if inputs else None,
                 prev_close=inputs["prev_close"] if inputs else None,
                 ltp=r.get("ltp"), direction=bias, min_quality=MIN_QUALITY,
-                market_bias=self.market_bias,
+                market_bias=self.market_bias, vol_norm=inputs.get("vol_norm") if inputs else None,
             )
             last_bar = bars[-1] if bars else None
             for s in result["signals"]:
@@ -297,6 +305,8 @@ class DayTradeTracker:
                 "watch": result["watch"],
                 "signal_count": len(result["signals"]),
             })
+        # each setup's recent track record adjusts quality and can suspend it (src/analysis/efficacy.py)
+        apply_efficacy("day", feed, self._efficacy_seen, MIN_QUALITY)
         _apply_portfolio_cap(feed)
         feed.sort(key=lambda s: str(s["bar_time"]), reverse=True)
         last_bar = max((str(b["t"]) for t in tracked for b in t["bars"][-1:]), default=None)
@@ -311,6 +321,8 @@ class DayTradeTracker:
             "stats": session_stats(feed),
             # every signal as if it had been taken - hypothetical, for reviewing a past session
             "replay_stats": _replay_stats(feed),
+            "efficacy": get_efficacy().summary("day"),
+            "efficacy_as_of": get_efficacy().as_of,
         }
 
 
@@ -328,7 +340,7 @@ def _apply_portfolio_cap(feed: list[dict[str, Any]], limit: int = MAX_OPEN_TRADE
     """
     open_until: list[str] = []
     for s in sorted(feed, key=lambda x: str(x["bar_time"])):
-        if s.get("backfilled"):
+        if s.get("backfilled") or s.get("skipped"):       # never taken: holds no slot
             continue
         open_until = [t for t in open_until if t > s["time"]]
         if len(open_until) >= limit:
