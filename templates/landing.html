@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#05080c">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="VerquoAI">
     <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try backtests, strategies and paper trading on a simulated market.">
     <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
     {% if open_login %}<meta name="robots" content="noindex, follow">{% else %}<meta name="robots" content="index, follow, max-image-preview:large">{% endif %}
@@ -52,6 +57,7 @@
                 <a href="#contact">Contact</a>
             </nav>
             <div class="top-actions">
+                <button class="btn btn-ghost" type="button" data-pwa-install hidden>Install app</button>
                 <a class="btn btn-ghost" href="/login" data-open-login>Sign in</a>
                 <button class="btn btn-primary" type="button" data-start-demo>Try demo</button>
             </div>
@@ -259,7 +265,7 @@
     </main>
 
     <footer class="shell foot">
-        <span>© <span id="year"></span> VerquoAI™</span>
+        <span>© <span id="year"></span> VerquoAI™ · <a href="/privacy">Privacy</a></span>
         <span>Market analysis and trading workflow tools. Trading involves risk. We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</span>
     </footer>
 
@@ -303,5 +309,6 @@
     <script src="/static/js/landing.js?v={{ static_version('js/landing.js') }}" defer></script>
     <script src="/static/js/contact.js?v={{ static_version('js/contact.js') }}" defer></script>
     <script src="/static/js/metrics.js?v={{ static_version('js/metrics.js') }}" defer></script>
+    <script src="/static/js/pwa.js?v={{ static_version('js/pwa.js') }}" defer></script>
 </body>
 </html>

@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/img/icon-192.png">
+    <meta name="theme-color" content="#05080c">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="VerquoAI">
+
     <title>{{ symbol }} — VerquoAI Stock Research</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/dashboard.css">
@@ -13,6 +21,7 @@
     <script src="/static/js/secure_fetch.js?v={{ static_version('js/secure_fetch.js') }}" defer></script>
     <script src="/static/js/stock_detail.js?v={{ js_version }}" defer></script>
     <script src="/static/js/metrics.js?v={{ metrics_js_version }}" defer></script>
+    <script src="/static/js/pwa.js?v={{ static_version('js/pwa.js') }}" defer></script>
 </head>
 <body class="stock-detail-page" data-symbol="{{ symbol }}" data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}">
     <header class="header">

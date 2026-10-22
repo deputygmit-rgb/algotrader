@@ -247,6 +247,7 @@ class TradingService:
         self._execution.set_event_sink(self._lifecycle.event)
         self._execution.attach_state_store(self._market_store, zerodha_id or "")
         self._risk.attach_state_store(self._market_store, zerodha_id or "")      # a kill switch survives restarts
+        self._risk.on_kill_switch = lambda reason: self._emit("risk.kill_switch_on", reason=reason)
         # the board scores signals with the index OI bias at each bar close (market_regime)
         from src.analysis.market_regime import MarketBiasHistory
 
@@ -2056,6 +2057,31 @@ class TradingService:
         bus = self.__dict__.get("telemetry")
         if bus is not None:
             bus.emit(topic, **data)
+        if topic.startswith(self.PUSH_TOPICS):
+            self._push_alert(topic, data)
+
+    # events that can become a push alert on the account's devices (src/notify/push.py)
+    PUSH_TOPICS = ("lifecycle.", "board.signal", "risk.kill_switch_on")
+
+    def _push_alert(self, topic: str, data: dict[str, Any]) -> None:
+        """Fire-and-forget alert for a real account (not demo or view-only sessions)."""
+        account = self.__dict__.get("_zerodha_id")
+        if not account or self.__dict__.get("is_demo") or self.__dict__.get("is_shared_market"):
+            return
+        try:
+            from src.notify.push import PushService, alert_for
+
+            alert = alert_for(topic, data)
+            if alert is None:
+                return
+            category, title, body, tag = alert
+            url = {"signals": "/app#tab=day-trade", "trades": "/app#tab=positions"}.get(category, "/app#tab=agents")
+            asyncio.get_running_loop().create_task(
+                PushService.get_instance().notify(account, category, title, body, url, tag))
+        except RuntimeError:
+            pass                    # no running loop (sync caller in tests)
+        except Exception as e:
+            logger.warning("push_alert_failed", topic=topic, error=str(e))
 
     def _on_lifecycle_event(self, topic: str, **ev: Any) -> None:
         """A signal reached a new stage: tell the agents and stream it to the dashboard."""

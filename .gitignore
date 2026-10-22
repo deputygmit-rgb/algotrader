@@ -51,3 +51,10 @@ ENV/
 /data/.user_config.key
 .env
 .kite_session*.json
+
+# Android signing keys (never commit)
+*.keystore
+*.jks
+android/app-release*
+android/*.aab
+android/*.apk

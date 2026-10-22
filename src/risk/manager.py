@@ -82,6 +82,13 @@ class RiskManager:
             self._kill_switch_loss_date = datetime.now().date()
         self._save_state(reason, loss_only=loss_limit and not was_manual)
         logger.critical("kill_switch_activated", reason=reason, daily_pnl=self._daily_pnl, loss_limit=loss_limit)
+        notify = self.__dict__.get("on_kill_switch")
+        if notify is not None and not was_manual and not getattr(self, "_kill_notified", None) == datetime.now().date():
+            self._kill_notified = datetime.now().date()      # once a day: the loss check repeats every 30 s
+            try:
+                notify(reason)
+            except Exception as e:
+                logger.warning("kill_switch_notify_failed", error=str(e))
 
     def deactivate_kill_switch(self) -> None:
         if self.is_kill_switch_locked:

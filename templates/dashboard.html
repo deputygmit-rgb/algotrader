@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/img/icon-192.png">
+    <meta name="theme-color" content="#05080c">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="VerquoAI">
     <title>VerquoAI | Trading Workspace</title>
     <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
@@ -21,6 +28,8 @@
             <span class="t-head-meta"><span data-t-session></span><span class="t-clock" data-t-clock></span></span>
             <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
             <span id="t-access" class="t-access" hidden title="Your account's access level"></span>
+            <button class="btn btn-outline btn-sm" type="button" data-pwa-install hidden title="Install VerquoAI as an app on this device">Install app</button>
+            {% if demo_kind != 'public' %}<button id="pwa-alerts-btn" class="btn btn-outline btn-sm" type="button" hidden title="Trade and risk alerts on this device, even when the app is closed">Alerts</button>{% endif %}
             <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and financial reports (Alt+P)">MASK: ON</button>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
             <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
@@ -2900,6 +2909,7 @@
     <script src="/static/js/agents.js?v={{ agents_js_version }}"></script>
     <script src="/static/js/contact.js?v={{ contact_js_version }}"></script>
     <script src="/static/js/metrics.js?v={{ metrics_js_version }}"></script>
+    <script src="/static/js/pwa.js?v={{ static_version('js/pwa.js') }}"></script>
     <div class="t-pal-overlay" id="t-pal">
         <div class="t-pal">
             <input id="t-pal-input" type="text" placeholder="Jump to…  (↑↓ to move, Enter to open, Esc to close)" autocomplete="off">

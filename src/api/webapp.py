@@ -149,9 +149,11 @@ SESSION_COOKIE = "kta_session"
 
 PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-otp", "/auth/callback",
                 "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact",
-                "/robots.txt", "/sitemap.xml"}
+                "/robots.txt", "/sitemap.xml",
+                # installable app: manifest, service worker, offline screen, Android app link
+                "/manifest.webmanifest", "/sw.js", "/offline", "/.well-known/assetlinks.json", "/privacy"}
 # the only pages search engines may index; everything else is sent with noindex
-INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml"}
+INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml", "/privacy"}
 
 
 def _real_service(zerodha_id: str) -> TradingService:
@@ -353,6 +355,8 @@ def _content_security_policy(request: Request) -> str:
         "img-src 'self' data: https:",
         f"connect-src 'self' {ws_origin}",
         "object-src 'none'",
+        "worker-src 'self'",
+        "manifest-src 'self'",
         "base-uri 'self'",
         "form-action 'self'",
         "frame-ancestors 'none'",
@@ -936,9 +940,14 @@ async def logout(request: Request) -> Any:
 
 @app.post("/auth/logout-all")
 async def logout_all(request: Request) -> Any:
-    """End this user's sessions on every browser and device."""
+    """End this user's sessions on every browser and device (and their push alerts)."""
     zerodha_id = get_session_zerodha_id(request)
     count = otp_auth.logout_all(zerodha_id) if zerodha_id else 0
+    if zerodha_id:
+        try:
+            await asyncio.to_thread(_push().remove_account, zerodha_id)
+        except Exception as e:
+            logger.warning("push_cleanup_failed", error=str(e))
     response = JSONResponse({"success": True, "sessions_ended": count})
     response.delete_cookie(SESSION_COOKIE)
     return response
@@ -1010,6 +1019,196 @@ async def landing_page(request: Request) -> HTMLResponse:
                                                                 "form_token": _form_token()})
 
 
+# ── Installable app (Android Play Store via a Trusted Web Activity, Mac, iPhone) ──
+APP_THEME = "#05080c"
+
+
+def _static_digest(*names: str) -> str:
+    h = hashlib.sha256()
+    for name in names:
+        try:
+            with open(os.path.join(BASE_DIR, "static", name), "rb") as f:
+                h.update(f.read())
+        except OSError:
+            pass
+    return h.hexdigest()[:12]
+
+
+@app.get("/manifest.webmanifest")
+async def web_manifest() -> Response:
+    """What makes the terminal installable: name, icons, opening on the terminal, shortcuts."""
+    icons = [
+        {"src": "/static/img/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+        {"src": "/static/img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+        {"src": "/static/img/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        {"src": "/static/img/icon-mono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "monochrome"},
+    ]
+    shortcuts = [{"name": name, "short_name": short, "url": f"/app#tab={tab}",
+                  "icons": [{"src": "/static/img/icon-192.png", "sizes": "192x192"}]}
+                 for name, short, tab in (("Market Flow", "Flow", "market-flow"), ("Day Trade board", "Day Trade", "day-trade"),
+                                          ("Positions", "Positions", "positions"), ("Orders", "Orders", "orders"))]
+    manifest = {
+        "id": "/app", "name": "VerquoAI Trading Terminal", "short_name": "VerquoAI",
+        "description": "Market flow, intraday setups, options OI, AI agents, backtests and risk controls for Indian markets.",
+        "start_url": "/app?source=app", "scope": "/", "display": "standalone",
+        "display_override": ["window-controls-overlay", "standalone"],
+        "orientation": "any", "background_color": APP_THEME, "theme_color": APP_THEME,
+        "categories": ["finance", "business", "productivity"], "lang": "en-IN", "dir": "ltr",
+        "icons": icons, "shortcuts": shortcuts,
+        "screenshots": [
+            {"src": "/static/img/screen-phone-1.png", "sizes": "1080x2340", "type": "image/png", "form_factor": "narrow",
+             "label": "The terminal on a phone"},
+            {"src": "/static/img/screen-phone-2.png", "sizes": "1080x2340", "type": "image/png", "form_factor": "narrow",
+             "label": "Backtests on a phone"},
+            {"src": "/static/img/screen-wide-1.png", "sizes": "1920x1080", "type": "image/png", "form_factor": "wide",
+             "label": "AI agents on a desktop"},
+        ],
+        "prefer_related_applications": False,
+    }
+    package = os.environ.get("ANDROID_PACKAGE_NAME", "").strip()
+    if package:
+        manifest["related_applications"] = [{"platform": "play", "id": package,
+                                             "url": f"https://play.google.com/store/apps/details?id={package}"}]
+    return Response(json.dumps(manifest), media_type="application/manifest+json",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/sw.js")
+async def service_worker() -> Response:
+    """The service worker, served from the site root so it controls the whole app. Its
+    cache version follows the static files it caches, so a release replaces old copies."""
+    path = os.path.join(BASE_DIR, "static", "sw.js")
+    with open(path, encoding="utf-8") as f:
+        body = f.read()
+    version = _static_digest("sw.js", "js/dashboard.js", "js/pwa.js", "css/terminal.css", "css/landing.css")
+    return Response(body.replace("__VERSION__", version), media_type="text/javascript",
+                    headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/offline", response_class=HTMLResponse)
+async def offline_page(request: Request) -> HTMLResponse:
+    """Shown by the service worker when the server cannot be reached (instead of a browser error)."""
+    return templates.TemplateResponse(request, "offline.html", {"request": request})
+
+
+@app.get("/.well-known/assetlinks.json")
+async def asset_links() -> Response:
+    """Digital Asset Links: proves the Android app (Trusted Web Activity) and this site have one
+    owner, so it opens full screen with no browser bar. ``ANDROID_PACKAGE_NAME`` and
+    ``ANDROID_CERT_SHA256`` (the Play app-signing certificate; several, comma-separated) in .env."""
+    package = os.environ.get("ANDROID_PACKAGE_NAME", "").strip()
+    prints = [p.strip().upper() for p in os.environ.get("ANDROID_CERT_SHA256", "").split(",") if p.strip()]
+    if not package or not all(re.fullmatch(r"([0-9A-F]{2}:){31}[0-9A-F]{2}", p) for p in prints) or not prints:
+        statements: list[dict[str, Any]] = []
+    else:
+        statements = [{"relation": ["delegate_permission/common.handle_all_urls"],
+                       "target": {"namespace": "android_app", "package_name": package,
+                                  "sha256_cert_fingerprints": prints}}]
+    return Response(json.dumps(statements), media_type="application/json",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request) -> HTMLResponse:
+    """Privacy policy (linked from the landing page, the app stores and the manifest)."""
+    landing = os.path.join(BASE_DIR, "templates", "privacy.html")
+    updated = datetime.fromtimestamp(os.path.getmtime(landing)).strftime("%d %B %Y")
+    contact = (os.environ.get("PRIVACY_CONTACT_EMAIL") or os.environ.get("ADMIN_EMAIL") or "").split(",")[0].strip()
+    return templates.TemplateResponse(request, "privacy.html", {"request": request, "site_url": _public_url(),
+                                                                "updated": updated, "contact_email": contact})
+
+
+# ── Push alerts (src/notify/push.py) ──
+def _push() -> Any:
+    from src.notify.push import PushService
+
+    return PushService.get_instance()
+
+
+def _push_account(request: Request) -> str:
+    """The signed-in account alerts belong to (never a public demo)."""
+    zid = get_session_zerodha_id(request)
+    if not zid or is_public_demo_id(zid):
+        raise HTTPException(403, "Alerts need your own account")
+    return zid
+
+
+@app.get("/api/push/key")
+async def push_key(request: Request) -> dict[str, Any]:
+    _push_account(request)
+    return {"key": await asyncio.to_thread(_push().public_key)}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request) -> dict[str, Any]:
+    from src.notify.push import PushError
+
+    account = _push_account(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object expected")
+    service = _push()
+    prefs = body.get("prefs")
+    sub = body.get("subscription") or {}
+    if prefs is None and isinstance(sub, dict):
+        # a refresh from the app's start-up: keep this device's saved choices
+        prefs = await asyncio.to_thread(service.prefs_for, account, str(sub.get("endpoint") or ""))
+    try:
+        return await asyncio.to_thread(service.subscribe, account, sub, prefs,
+                                       request.headers.get("user-agent", ""))
+    except PushError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/push/resubscribe")
+async def push_resubscribe(request: Request) -> dict[str, Any]:
+    """The browser rotated a subscription (service worker): the new one replaces the old,
+    with the old one's choices."""
+    from src.notify.push import PushError
+
+    account = _push_account(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object expected")
+    service = _push()
+    old = str(body.get("old_endpoint") or "")
+    prefs = await asyncio.to_thread(service.prefs_for, account, old) if old else None
+    try:
+        result = await asyncio.to_thread(service.subscribe, account, body.get("subscription"), prefs,
+                                         request.headers.get("user-agent", ""))
+    except PushError as e:
+        raise HTTPException(400, str(e)) from e
+    if old:
+        await asyncio.to_thread(service.unsubscribe, account, old)
+    return result
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request) -> dict[str, Any]:
+    account = _push_account(request)
+    body = await request.json()
+    endpoint = str((body or {}).get("endpoint") or "") if isinstance(body, dict) else ""
+    return {"removed": await asyncio.to_thread(_push().unsubscribe, account, endpoint)}
+
+
+@app.get("/api/push/devices")
+async def push_devices(request: Request, endpoint: str = "") -> dict[str, Any]:
+    """This device's alert choices (``endpoint``), or how many devices get alerts."""
+    account = _push_account(request)
+    service = _push()
+    if endpoint:
+        return {"prefs": await asyncio.to_thread(service.prefs_for, account, endpoint)}
+    return {"devices": len(await asyncio.to_thread(service.devices, account))}
+
+
+@app.post("/api/push/test")
+async def push_test(request: Request) -> dict[str, Any]:
+    account = _push_account(request)
+    delivered = await _push().notify(account, "risk", "VerquoAI alerts are on",
+                                     "This is how trade and risk alerts will look.", "/app", "test")
+    return {"delivered": delivered}
+
+
 # Crawlers that collect pages to train AI models: refused everywhere (the product's
 # text and screens are ours). Search engines, including AI search, may read the
 # landing page only.
@@ -1024,7 +1223,7 @@ async def robots_txt() -> str:
     site = _public_url()
     blocked = "".join(f"User-agent: {bot}\n" for bot in AI_TRAINING_CRAWLERS)
     return (f"{blocked}Disallow: /\n\n"
-            "User-agent: *\nAllow: /$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
+            "User-agent: *\nAllow: /$\nAllow: /privacy$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
             "Allow: /static/js/landing.js\nDisallow: /\n\n"
             f"Sitemap: {site}/sitemap.xml\n")
 
@@ -1037,6 +1236,7 @@ async def sitemap_xml() -> Response:
     body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
             f"  <url><loc>{site}/</loc><lastmod>{updated}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n"
+            f"  <url><loc>{site}/privacy</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n"
             "</urlset>\n")
     return Response(body, media_type="application/xml")
 

@@ -3260,6 +3260,7 @@ function renderDeepProfile(el, d) {
 }
 
 async function logoutUser() {
+    if (window.vqBeforeLogout) await window.vqBeforeLogout();     // this device's alerts end with the session
     try {
         await API.post('/auth/logout', {});
     } catch (e) {}
@@ -3268,6 +3269,7 @@ async function logoutUser() {
 
 // Leave a public demo (ends its sandbox) and go somewhere else, e.g. the login panel.
 async function exitDemoTo(url) {
+    if (window.vqBeforeLogout) await window.vqBeforeLogout();     // this device's alerts end with the session
     try {
         await API.post('/auth/logout', {});
     } catch (e) {}
@@ -3276,6 +3278,7 @@ async function exitDemoTo(url) {
 
 async function logoutAllDevices() {
     if (!confirm('Log out of VerquoAI on every browser and device?')) return;
+    if (window.vqBeforeLogout) await window.vqBeforeLogout();
     try {
         await API.post('/auth/logout-all', {});
     } catch (e) {}

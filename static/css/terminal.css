@@ -644,3 +644,37 @@ body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-
     .btn, .mf-btn, .mf-tabs button, .t-demo-actions .btn, .t-demo-actions a { min-height: 34px; }
     .card-title[role="button"] { padding-top: 8px; padding-bottom: 8px; }
 }
+
+
+/* ── installed app (static/js/pwa.js) ───────────────────────────────── */
+[data-pwa-install][hidden], #pwa-alerts-btn[hidden] { display: none !important; }
+#pwa-alerts-btn.on { border-color: var(--t-g, #5be3a0); color: var(--t-g, #5be3a0); }
+.pwa-offline {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 400;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: #3a1d22; color: #ffd9de; border-top: 1px solid #ff5a6e;
+    font: 600 12px/1.4 "JetBrains Mono", ui-monospace, monospace; text-align: center;
+}
+.pwa-offline[hidden] { display: none; }
+.pwa-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pwa-modal-head .modal-title { margin: 0; }
+.pwa-close { background: none; border: 0; color: var(--t-dim, #8aa0ad); font-size: 26px; line-height: 1;
+             min-width: 44px; min-height: 44px; cursor: pointer; }
+.pwa-note { color: var(--t-dim, #8aa0ad); font-size: 12.5px; line-height: 1.5; margin: 8px 0 14px; }
+.pwa-cats { display: grid; gap: 8px; }
+.pwa-cat { display: flex; gap: 12px; align-items: flex-start; padding: 12px; min-height: 44px; cursor: pointer;
+           border: 1px solid var(--t-line, #1d2a33); border-radius: 8px; }
+.pwa-cat input { width: 20px; height: 20px; margin-top: 2px; accent-color: #5be3a0; flex: none; }
+.pwa-cat span { display: grid; gap: 2px; }
+.pwa-cat small { color: var(--t-dim, #8aa0ad); font-size: 12px; }
+.pwa-status { min-height: 20px; margin: 12px 0 0; font-size: 12.5px; color: #5be3a0; }
+.pwa-status.bad { color: #ff8a98; }
+.pwa-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 14px; }
+.pwa-actions .btn { min-height: 40px; }
+
+/* installed on a phone: clear the notch / status bar and the gesture bar */
+.is-app .header { padding-top: max(8px, env(safe-area-inset-top)); }
+.is-app body { padding-bottom: env(safe-area-inset-bottom); }
+@media (display-mode: standalone) {
+    html, body { overscroll-behavior-y: contain; }     /* no accidental pull-to-refresh mid-trade */
+}

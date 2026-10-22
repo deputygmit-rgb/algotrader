@@ -361,3 +361,10 @@ body.login-open .login-panel { transform: none; }
     *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
     .js .reveal:not(.shown) { opacity: 1; transform: none; }
 }
+
+
+/* installed app (static/js/pwa.js) */
+[data-pwa-install][hidden] { display: none !important; }
+.pwa-offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 400; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: #3a1d22; color: #ffd9de; border-top: 1px solid #ff5a6e; font: 600 12px/1.4 ui-monospace, monospace; text-align: center; }
+.pwa-offline[hidden] { display: none; }
