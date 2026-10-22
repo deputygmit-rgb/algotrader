@@ -10,7 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
     <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
 </head>
-<body data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}">
+<body data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}"{% if demo_kind == 'public' %} data-demo-scope="public"{% endif %}>
     <header class="header">
         <div class="header-left">
             <a class="logo" href="/app" aria-label="VerquoAI workspace">VerquoAI™</a>
@@ -22,11 +22,11 @@
             <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
             <span id="t-access" class="t-access" hidden title="Your account's access level"></span>
             <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and financial reports (Alt+P)">MASK: ON</button>
-            <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
+            {% if demo_kind != 'public' %}<button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>{% endif %}
             <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
             <button id="btn-stop" class="btn btn-danger btn-sm" style="display:none" onclick="stopLive()">Stop Live</button>
-            <button class="btn btn-primary btn-sm" data-requires="agentic" onclick="showModal('modal-add-strategy')">+ Strategy</button>
+            {% if demo_kind != 'public' %}<button class="btn btn-primary btn-sm" data-requires="agentic" onclick="showModal('modal-add-strategy')">+ Strategy</button>{% endif %}
             {% if demo_kind == 'public' %}
             <button class="btn btn-outline btn-sm" onclick="logoutUser()" style="margin-left:8px;border-color:#ff5252;color:#ff5252">Exit demo</button>
             {% else %}
@@ -40,7 +40,7 @@
     <div class="t-demo-banner" id="demo-banner" data-demo="{{ demo_kind }}" role="status">
         <span class="t-demo-tag">DEMO</span>
         {% if demo_kind == 'public' %}
-        <span class="t-demo-text">Simulated market and broker. Prices, fills and P&amp;L are not real, and nothing reaches a broker. Every tab works &mdash; try a scan, a backtest, a Day Trade setup chart or Start Live.</span>
+        <span class="t-demo-text">Simulated market and broker. Prices, fills and P&amp;L are not real, and nothing reaches a broker. Explore Market Flow, the Day Trade and Swing boards and Analysis &mdash; backtesting, paper trading, strategies and live trading open in your own account.</span>
         <span class="t-demo-actions">
             <button class="btn btn-success btn-sm" onclick="showModal('modal-contact')" data-track="demo-request-access">Request access</button>
             <a class="btn btn-primary btn-sm" href="/login" onclick="event.preventDefault(); exitDemoTo('/login')">Log in</a>
@@ -67,29 +67,30 @@
 
     <main class="main">
         <div class="tabs">
-            <button class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
-            <button class="tab" data-tab="positions" onclick="switchTab('positions');loadPositions()">Positions</button>
-            <button class="tab" data-tab="orders" onclick="switchTab('orders');loadOrders()">Orders</button>
-            <button class="tab" data-tab="signals" onclick="switchTab('signals');loadSignals();loadVerifierFindings()">Signals</button>
-            <button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
-            <button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>
-            <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
-            <button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start()">Market Flow</button>
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="overview" onclick="demoLocked(this)" title="Available in your own account">Overview &#128274;</button>{% else %}<button class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="positions" onclick="demoLocked(this)" title="Available in your own account">Positions &#128274;</button>{% else %}<button class="tab" data-tab="positions" onclick="switchTab('positions');loadPositions()">Positions</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="orders" onclick="demoLocked(this)" title="Available in your own account">Orders &#128274;</button>{% else %}<button class="tab" data-tab="orders" onclick="switchTab('orders');loadOrders()">Orders</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="signals" onclick="demoLocked(this)" title="Available in your own account">Signals &#128274;</button>{% else %}<button class="tab" data-tab="signals" onclick="switchTab('signals');loadSignals();loadVerifierFindings()">Signals</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="strategies" onclick="demoLocked(this)" title="Available in your own account">Strategies &#128274;</button>{% else %}<button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="risk" onclick="demoLocked(this)" title="Available in your own account">Risk &#128274;</button>{% else %}<button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="oi-tracker" onclick="demoLocked(this)" title="Available in your own account">OI Tracker &#128274;</button>{% else %}<button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>{% endif %}
+            <button class="tab{% if demo_kind == 'public' %} active{% endif %}" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start()">Market Flow</button>
             <button class="tab" data-tab="day-trade" onclick="switchTab('day-trade');DayTrade.start()">Day Trade</button>
             <button class="tab" data-tab="swing" onclick="switchTab('swing');Swing.start()">Swing</button>
             <button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>
-            <button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>
-            <button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>
-            <button class="tab" data-tab="reports" onclick="switchTab('reports');loadReports()">Reports</button>
-            <button class="tab" data-tab="paper-trading" onclick="switchTab('paper-trading');loadCachedPaperResults()">Paper Trading</button>
-            <button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>
-            <button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>
-            <button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>
-            <button class="tab" data-tab="agents" onclick="switchTab('agents');AgentsView.start()">Agents</button>
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="charts" onclick="demoLocked(this)" title="Available in your own account">Charts &#128274;</button>{% else %}<button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="backtest" onclick="demoLocked(this)" title="Available in your own account">Backtest &#128274;</button>{% else %}<button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="reports" onclick="demoLocked(this)" title="Available in your own account">Reports &#128274;</button>{% else %}<button class="tab" data-tab="reports" onclick="switchTab('reports');loadReports()">Reports</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="paper-trading" onclick="demoLocked(this)" title="Available in your own account">Paper Trading &#128274;</button>{% else %}<button class="tab" data-tab="paper-trading" onclick="switchTab('paper-trading');loadCachedPaperResults()">Paper Trading</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="replay" onclick="demoLocked(this)" title="Available in your own account">Market Replay &#128274;</button>{% else %}<button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="strategy-builder" onclick="demoLocked(this)" title="Available in your own account">Strategy Builder &#128274;</button>{% else %}<button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="journal" onclick="demoLocked(this)" title="Available in your own account">Journal &#128274;</button>{% else %}<button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>{% endif %}
+            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="agents" onclick="demoLocked(this)" title="Available in your own account">Agents &#128274;</button>{% else %}<button class="tab" data-tab="agents" onclick="switchTab('agents');AgentsView.start()">Agents</button>{% endif %}
             <span class="t-kbd" onclick="Terminal.open()" title="Command palette"><kbd>Ctrl</kbd>+<kbd>K</kbd> jump</span>
         </div>
 
         <!-- Overview Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-overview" class="tab-content active">
             <div class="t-hud">
                 <div class="t-hud-l"><span class="t-hud-title">OVERVIEW</span><span class="t-hud-sub">ACCOUNT · PORTFOLIO · P&amp;L · LIVE BOOK</span></div>
@@ -198,8 +199,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Positions Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-positions" class="tab-content">
             <div class="card">
                 <div class="card-title">Net Positions</div>
@@ -223,8 +226,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Orders Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-orders" class="tab-content">
             <div class="card">
                 <div class="card-title">Orders</div>
@@ -249,8 +254,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Signals Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-signals" class="tab-content">
             <div id="verifier-findings-card" class="card" style="margin-bottom:16px;display:none">
                 <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
@@ -266,8 +273,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Strategies Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-strategies" class="tab-content">
             <div class="grid grid-2">
                 <div class="card">
@@ -294,8 +303,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Risk Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-risk" class="tab-content">
             <div class="grid grid-3">
                 <div class="card">
@@ -329,7 +340,9 @@
                 </div>
             </div>
         </div>
+        {% endif %}
         <!-- OI Tracker Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-oi-tracker" class="tab-content">
             <div class="t-hud">
                 <div class="t-hud-l"><span class="t-hud-title">OI TRACKER</span><span class="t-hud-sub">OPTIONS CHAIN · FUTURES BUILD-UP · OI STRATEGY · STREAM</span></div>
@@ -822,8 +835,9 @@
                 </div>
             </div>
         </div>
+        {% endif %}
         <!-- Analysis Tab -->
-        <div id="tab-market-flow" class="tab-content mf">
+        <div id="tab-market-flow" class="tab-content mf{% if demo_kind == 'public' %} active{% endif %}">
             <div class="mf-hud">
                 <div class="mf-hud-l">
                     <span class="mf-title">MARKET FLOW</span>
@@ -878,6 +892,7 @@
                 <div class="mf-sec-hd">SECTOR MONEY FLOW <span class="mf-dim">avg flow score · breadth · net ₹ flow · leader / laggard</span></div>
                 <div class="mf-sectors" id="mf-sectors"></div>
             </section>
+            {% if demo_kind == 'public' %}<div class="mf-legend"><span>How each signal is found, scored and filtered is documented in your own account.</span></div>{% else %}
             <div class="mf-legend">
                 <span><b>FLOW</b> −100…+100 money-flow score: signed money flow 20 · move in ATRs 15 · VWAP distance in ATRs 15 · relative strength vs NIFTY 10 · close location in day range 10 · futures OI build-up 10 · 15-min momentum 10 · previous-day high/low break 5 · order book 5 (missing factors are dropped and the rest re-weighted)</span>
                 <span><b>SCORE</b> 0–100 conviction = |flow| × participation (relative volume)</span>
@@ -889,6 +904,7 @@
                 <span><b>S / R</b> nearest previous-session floor pivots below / above price, with their names</span>
                 <span>Drag the time rail (left) to replay the last 60 min · click any strand, card or row to open its technical analysis</span>
             </div>
+            {% endif %}
         </div>
 
         <div id="tab-day-trade" class="tab-content mf">
@@ -904,7 +920,7 @@
                             <input id="dt-add" placeholder="Track symbol" maxlength="32" autocomplete="off" spellcheck="false">
                             <button class="mf-btn" type="submit">TRACK</button>
                         </form>
-                        <form id="dt-replay-form" class="dt-add" title="Replay the setups over past sessions (net of costs)">
+                        {% if demo_kind != 'public' %}<form id="dt-replay-form" class="dt-add" title="Replay the setups over past sessions (net of costs)">
                             <label class="sr-only" for="dt-replay-symbols">Symbols to replay</label>
                             <input id="dt-replay-symbols" placeholder="Replay: INFY,TCS (blank = top tracked)" maxlength="200" autocomplete="off" spellcheck="false" style="width:230px">
                             <label class="sr-only" for="dt-replay-days">Sessions</label>
@@ -912,10 +928,10 @@
                                 <option value="10">10d</option><option value="30" selected>30d</option><option value="60">60d</option><option value="90">90d</option>
                             </select>
                             <button class="mf-btn" type="submit">REPLAY</button>
-                        </form>
+                        </form>{% endif %}
                         <label class="mf-chk" title="Simulated sessions (same switch as Market Flow's DEMO)"><input type="checkbox" id="dt-demo"> DEMO</label>
                         <label class="mf-chk" title="Play a tone on new signals and outcome changes"><input type="checkbox" id="dt-alerts" checked> ALERTS</label>
-                        <button class="mf-btn dt-auto-btn" id="dt-auto-btn" type="button" title="Opt-in: send new board signals as real orders through the live-trading path">AUTO-TRADE: OFF</button>
+                        {% if demo_kind != 'public' %}<button class="mf-btn dt-auto-btn" id="dt-auto-btn" type="button" title="Opt-in: send new board signals as real orders through the live-trading path">AUTO-TRADE: OFF</button>{% endif %}
                         <div class="mf-tabs" id="dt-filter" role="group" aria-label="Feed filter">
                             <button class="on" data-v="all">ALL</button>
                             <button data-v="open">OPEN</button>
@@ -924,6 +940,7 @@
                         </div>
                     </div>
                 </div>
+                {% if demo_kind != 'public' %}
                 <div class="dt-auto" id="dt-auto" hidden>
                     <div class="dt-auto-hd"><b>BOARD AUTO-TRADE</b>
                         <span class="mf-dim">New signals on the latest closed bar are sent as real orders — the same order the live Day-Trade Setups strategy sends
@@ -941,6 +958,7 @@
                     </div>
                     <div class="dt-auto-status" id="dt-auto-status"></div>
                 </div>
+                {% endif %}
                 <div class="dt-body">
                     <div class="dt-feed-wrap">
                         <div class="dt-sub">SIGNAL FEED <span class="mf-dim">newest first · R = result, or live for open trades · click a signal to chart its setup</span></div>
@@ -961,6 +979,7 @@
                 </div>
                 <div class="dt-replay" id="dt-replay" hidden aria-live="polite"></div>
             </section>
+            {% if demo_kind == 'public' %}<div class="mf-legend"><span>How each signal is found, scored and filtered is documented in your own account.</span></div>{% else %}
             <div class="mf-legend">
                 <span><b>DAY TRADE</b> 5-minute setups on the money-flow picks (plus symbols you track), checked on closed bars only so signals never repaint: opening-range breakout (15-minute range, ≥1.3× volume) · previous-day high/low break (≥1.3× volume) · VWAP reclaim / rejection (≥1.2× volume, EMA 9 turning) · squeeze breakout (6-bar box under 0.35 daily ATR, ≥1.5× volume). Trend pullback is off by default.</span>
                 <span><b>WHY A SETUP IS NOT SHOWN</b> signal bar under 1.2× the normal volume for its time of day (median of the same 5-minute slot over 20 sessions — a quiet lunch window cannot make an ordinary bar look like a surge) · quality under 60 (volume 35 on the weaker of the two volume ratios + EMA trend 35 + VWAP side 30, ± the NIFTY options-OI bias) · against the stock's money-flow direction (one direction per stock per day) · against the day's move (a long needs a close above the previous close) · same setup already fired that day · 2 trades per stock per day, one at a time · 15-minute cooldown after an exit · no new entries after 14:45</span>
@@ -969,6 +988,7 @@
                 <span><b>TIMING</b> a signal fires at its bar's close (the time shown), is detected once that bar's data arrives (normally 20–50 s later) and is PENDING until it fills at the next bar's open plus 0.03% slippage. Auto-trade only acts within one bar of the close.</span>
                 <span><b>PLAN</b> stop at the setup's natural level bounded to 0.5–1.2 daily ATR · half booked at 1.5R, rest moved to breakeven · final target 3R · time exit after 3 hours or at 15:15 · if one bar touches stop and target, the stop counts · R is net of slippage and charges · an orange flag = the live price crossed the stop or a target before the bar closed</span>
             </div>
+            {% endif %}
         </div>
 
         <div id="tab-swing" class="tab-content mf">
@@ -1016,6 +1036,7 @@
                     <div class="dt-board" id="sw-board"></div>
                 </div>
             </section>
+            {% if demo_kind == 'public' %}<div class="mf-legend"><span>How each signal is found, scored and filtered is documented in your own account.</span></div>{% else %}
             <div class="mf-legend">
                 <span><b>SWING</b> setups on closed 1-hour bars, with daily context taken only from the days before: 20-day breakout (close beyond the previous 20 days' high / low) · pullback in a daily trend (close &gt; EMA 20 &gt; EMA 50; an hourly bar dips to the daily EMA 20 and closes back above it, above its hourly EMA 20) · inside-day / NR7 breakout · hourly flag (seven bars inside 0.6 daily ATR, then a breakout close).</span>
                 <span><b>VOLUME</b> the signal bar against the previous session's bars and against the normal volume for its hour (median of the same hourly slot over 20 sessions): breakouts need ≥ 1.3× on both, a pullback ≥ 1.0×. Quality = volume 35 (weaker ratio) + daily trend 35 + hourly trend 30, minimum 60.</span>
@@ -1023,8 +1044,10 @@
                 <span><b>TRACK RECORD</b> as on the Day Trade board: each swing setup's last 60 closed trades (net R, dated by exit) move its quality and can suspend it.</span>
                 <span><b>SIGNALS ONLY</b> the swing board places no orders. <i>bf</i> = fired before the stock joined the board, replayed from history and left out of the stats. A replay of 23 stocks' stored bars: longs +0.14R (breakout) to +0.26R (pullback) a trade, shorts mostly negative — a small sample, not a promise.</span>
             </div>
+            {% endif %}
         </div>
 
+        {% if demo_kind != 'public' %}
         <div id="tab-agents" class="tab-content">
             <div class="t-hud">
                 <div class="t-hud-l"><span class="t-hud-title">AGENT OPERATIONS</span><span class="t-hud-sub">AUTONOMOUS AGENTS · LIVE STATE · WORKLOAD · LOGS</span></div>
@@ -1076,6 +1099,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <div id="tab-analysis" class="tab-content">
             <div class="t-hud">
@@ -1112,7 +1136,7 @@
             <div id="analysis-view-super" class="analysis-view active">
                 <div class="card">
                     <div class="card-title" style="color:#00d4aa">Super Performance Stocks (Minervini Trend Template)</div>
-                    <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">Stocks meeting 9+ of 13 criteria: Price above major SMAs, rising 200 SMA, 25%+ from 52W low, within 25% of high, RSI > 50, strong ADX, above-avg volume, Stage 2 advancing, positive slope, high RS rating</p>
+                    {% if demo_kind == 'public' %}<p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">Stocks passing the trend template: strong, rising trends with leadership against the market.</p>{% else %}<p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">Stocks meeting 9+ of 13 criteria: Price above major SMAs, rising 200 SMA, 25%+ from 52W low, within 25% of high, RSI > 50, strong ADX, above-avg volume, Stage 2 advancing, positive slope, high RS rating</p>{% endif %}
                     <div class="table-wrap" style="max-height:500px">
                         <table>
                             <thead>
@@ -1413,6 +1437,7 @@
         </div>
 
         <!-- Charts Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-charts" class="tab-content">
             <div class="card" style="margin-bottom:16px">
                 <div class="card-title">Historical Chart</div>
@@ -1494,8 +1519,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Backtest Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-backtest" class="tab-content">
             <div class="t-hud">
                 <div class="t-hud-l"><span class="t-hud-title">BACKTEST</span><span class="t-hud-sub">STRATEGY SIMULATION · EQUITY CURVE · TRADE LOG · WALK-FORWARD</span></div>
@@ -1697,8 +1724,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Reports Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-reports" class="tab-content">
             <div class="sub-tabs" style="margin-bottom:16px;display:flex;gap:6px;flex-wrap:wrap">
                 <button class="btn btn-sm btn-outline report-tab active" onclick="switchReportTab('pnl')">P&L Summary</button>
@@ -1760,8 +1789,10 @@
                 <div class="grid grid-3" id="margins-cards"></div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Paper Trading Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-paper-trading" class="tab-content">
             <div class="grid grid-2" style="margin-bottom:16px">
                 <div class="card">
@@ -1967,8 +1998,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Market Replay Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-replay" class="tab-content">
             <div class="grid grid-2" style="margin-bottom:16px">
                 <div class="card">
@@ -2044,8 +2077,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Strategy Builder Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-strategy-builder" class="tab-content">
             <div class="grid grid-2" style="margin-bottom:16px">
                 <div class="card">
@@ -2248,8 +2283,10 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <!-- Journal Tab -->
+        {% if demo_kind != 'public' %}
         <div id="tab-journal" class="tab-content">
             <!-- Filters Bar -->
             <div class="card" style="margin-bottom:12px;padding:12px 16px">
@@ -2641,6 +2678,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
     </main>
 
@@ -2674,6 +2712,7 @@
         </div>
     </div>
 
+    {% if demo_kind != 'public' %}
     <div id="modal-add-strategy" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-add-strategy')">
         <div class="modal">
             <div class="modal-title">Add Strategy</div>
@@ -2721,7 +2760,9 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
+    {% if demo_kind != 'public' %}
     <div id="modal-futures-oi-detail" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-futures-oi-detail')">
         <div class="modal" style="max-width:620px;width:calc(100% - 32px)">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
@@ -2731,8 +2772,10 @@
             <div id="fut-oi-detail-body"></div>
         </div>
     </div>
+    {% endif %}
 
     <!-- OI Signal Execute Confirm Modal -->
+    {% if demo_kind != 'public' %}
     <div id="modal-oi-execute" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-oi-execute')">
         <div class="modal">
             <div class="modal-title">Execute OI Signal</div>
@@ -2746,8 +2789,10 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
     <!-- OI Position Close Modal -->
+    {% if demo_kind != 'public' %}
     <div id="modal-oi-close" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-oi-close')">
         <div class="modal">
             <div class="modal-title">Close Position</div>
@@ -2761,8 +2806,10 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
     <!-- Stock Strategy Test Modal -->
+    {% if demo_kind != 'public' %}
     <div id="modal-stock-test" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-stock-test')">
         <div class="modal" style="max-width:560px">
             <div class="modal-title">Test Strategy — <span id="stock-test-symbol"></span></div>
@@ -2808,8 +2855,10 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
     <!-- Start Live Modal -->
+    {% if demo_kind != 'public' %}
     <div id="modal-start-live" class="modal-overlay" onclick="if(event.target===this)hideModal('modal-start-live')">
 
         <div class="modal" style="max-width:650px;max-height:85vh;overflow-y:auto">
@@ -2882,6 +2931,7 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
     <script src="/static/js/secure_fetch.js?v={{ static_version('js/secure_fetch.js') }}"></script>
     <script src="/static/js/dashboard.js?v={{ js_version }}"></script>

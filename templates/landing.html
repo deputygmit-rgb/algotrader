@@ -5,8 +5,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#05080c">
-    <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try the full terminal on a simulated market.">
+    <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try market flow and the setup boards on a simulated market.">
     <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
+    {% if open_login %}<meta name="robots" content="noindex, follow">{% else %}<meta name="robots" content="index, follow, max-image-preview:large">{% endif %}
+    <link rel="canonical" href="{{ site_url }}/">
+    <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="VerquoAI">
+    <meta property="og:url" content="{{ site_url }}/">
+    <meta property="og:title" content="VerquoAI — Trading terminal for Indian markets">
+    <meta property="og:description" content="Live market flow, 5-minute intraday setups, options OI, AI agents, backtests and risk controls in one terminal. Try it on a simulated market.">
+    <meta property="og:image" content="{{ site_url }}/static/img/og-card.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="The VerquoAI terminal: market flow and intraday setups">
+    <meta property="og:locale" content="en_IN">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="VerquoAI — Trading terminal for Indian markets">
+    <meta name="twitter:description" content="Market flow, intraday setups, options OI, AI agents and backtests in one terminal.">
+    <meta name="twitter:image" content="{{ site_url }}/static/img/og-card.png">
+    <script type="application/ld+json">
+    {"@context": "https://schema.org", "@graph": [
+        {"@type": "Organization", "@id": "{{ site_url }}/#org", "name": "VerquoAI", "url": "{{ site_url }}/",
+         "logo": "{{ site_url }}/static/img/apple-touch-icon.png"},
+        {"@type": "WebSite", "@id": "{{ site_url }}/#site", "url": "{{ site_url }}/", "name": "VerquoAI",
+         "publisher": {"@id": "{{ site_url }}/#org"}, "inLanguage": "en-IN"},
+        {"@type": "SoftwareApplication", "name": "VerquoAI", "url": "{{ site_url }}/",
+         "applicationCategory": "FinanceApplication", "operatingSystem": "Web browser",
+         "description": "Trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls.",
+         "publisher": {"@id": "{{ site_url }}/#org"}}
+    ]}
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -39,7 +68,7 @@
                 <button class="btn btn-primary btn-lg" type="button" data-start-demo>Open the live demo →</button>
                 <a class="btn btn-ghost btn-lg" href="#contact">Request access</a>
             </div>
-            <p class="hero-note">The demo is the full terminal on a simulated market and broker. No account, nothing real at stake.</p>
+            <p class="hero-note">The demo opens Market Flow, the Day Trade and Swing boards and Analysis on a simulated market. No account, nothing real at stake.</p>
             <div class="demo-error" data-demo-error role="alert"></div>
         </section>
 
@@ -181,7 +210,7 @@
         <section class="shell section reveal" id="steps">
             <h2 class="section-title">From preview to your own terminal</h2>
             <ol class="steps">
-                <li><b>1 · Try the demo</b><span>The full terminal on a simulated market. Every tab works.</span></li>
+                <li><b>1 · Try the demo</b><span>Market Flow, the setup boards and Analysis on a simulated market.</span></li>
                 <li><b>2 · Request access</b><span>Choose view-only, trading or agentic access. We reply by email.</span></li>
                 <li><b>3 · Link your broker</b><span>Sign in with your Trading ID and link your broker account each trading day.</span></li>
             </ol>
@@ -196,7 +225,7 @@
                     <ul class="contact-points">
                         <li>Your own private workspace and trading account link</li>
                         <li>Help getting your broker API connected</li>
-                        <li>Try everything first in the demo, no account needed</li>
+                        <li>See market flow and live setups in the demo, no account needed</li>
                     </ul>
                 </div>
                 <form data-contact-form="landing" novalidate>

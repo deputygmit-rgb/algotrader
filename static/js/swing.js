@@ -9,12 +9,19 @@ const Swing = (() => {
         'STOPPED': 'loss', 'TIME EXIT': 'flat',
     };
     const OPEN = new Set(['PENDING', 'ACTIVE', 'T1 HIT']);
-    const RULE = {
-        BREAKOUT_20D: { vol: 1.3, long: 'An hourly close above the previous 20 days’ high, with the daily close above its EMA 50', short: 'An hourly close below the previous 20 days’ low, with the daily close below its EMA 50', stop: 'the lowest low of the last three hourly bars (short: highest high)' },
-        TREND_PULLBACK: { vol: 1.0, long: 'Daily uptrend (close > EMA 20 > EMA 50); an hourly bar dips to the daily EMA 20 and closes back above it, bullish and above its hourly EMA 20', short: 'Daily downtrend; an hourly bar rallies to the daily EMA 20 and closes back below it, bearish and below its hourly EMA 20', stop: 'the signal bar’s low (short: high)' },
-        INSIDE_DAY: { vol: 1.3, long: 'Yesterday was an inside day or the narrowest of 7 (NR7); an hourly close above its high', short: 'Yesterday was an inside day or NR7; an hourly close below its low', stop: 'the far side of yesterday’s range' },
-        FLAG: { vol: 1.3, long: 'Daily uptrend; seven hourly bars inside a box narrower than 0.6 daily ATR, then a close above the box', short: 'Daily downtrend; seven tight hourly bars, then a close below the box', stop: 'the far side of the box' },
-    };
+    // the public demo shows signals and plans, not the rules behind them (src/api/demo_scope.py)
+    const PUBLIC_DEMO = document.body?.dataset.demoScope === 'public';
+    // setup rules come from the server for signed-in accounts (src/api/setup_rules.py)
+    let RULE = {};
+    async function loadRules() {
+        if (PUBLIC_DEMO || Object.keys(RULE).length) return;
+        try {
+            const res = await fetch('/api/market/setup-rules');
+            if (!res.ok) return;
+            RULE = (await res.json()).swing || {};
+            if (data) render();
+        } catch (e) { /* the detail shows without the rule text */ }
+    }
 
     let started = false, timer = null, inFlight = false, data = null, filter = 'all', seen = null, focus = null;
     const $ = id => document.getElementById(id);
@@ -89,7 +96,7 @@ const Swing = (() => {
         const r = rValue(s);
         const rCls = r === null ? '' : r > 0 ? 'mf-gt' : r < 0 ? 'mf-rt' : '';
         return `<tr data-sym="${esc(s.symbol)}" data-id="${esc(s.id)}" class="${OPEN.has(s.status) ? 'is-open' : ''}${s.backfilled || s.skipped ? ' bf' : ''}${focus?.id === s.id ? ' sel' : ''}"
-            title="${esc(`${s.trigger} · signal at the ${when(s.time)} bar close · ${s.entry_time ? `filled ${when(s.entry_time)}` : 'fills at the next hourly open'} · T2 ${num(s.target2)}`)}">
+            title="${esc(`${s.trigger ?? s.label} · signal at the ${when(s.time)} bar close · ${s.entry_time ? `filled ${when(s.entry_time)}` : 'fills at the next hourly open'} · T2 ${num(s.target2)}`)}">
             <td>${esc(when(s.time))}${s.backfilled ? '<i title="Fired before the stock joined the board; replayed from history and left out of the stats">bf</i>' : ''}${s.skipped ? `<i title="Not taken: ${esc(s.skipped)}">skip</i>` : ''}</td>
             <th>${esc(s.symbol)}</th>
             <td><span class="dt-side ${s.side === 'LONG' ? 'long' : 'short'}">${s.side}</span></td>
@@ -449,23 +456,27 @@ const Swing = (() => {
             s.backfilled ? 'Replayed: it fired before the stock joined the board, so it is left out of the stats.' : '',
             s.skipped ? `Not taken: ${esc(s.skipped)}.` : '',
         ].filter(Boolean).map(n => `<p class="dt-fi-note">${n}</p>`).join('');
-        return `${chips}
-            <div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
-                <p>${esc(long ? rule.long : rule.short)}, on ≥ ${rule.vol}× volume against both the previous session and the normal for that hour. Stop: ${esc(rule.stop)}, kept 0.6–1.5 daily ATR from the fill.</p>
+        const method = PUBLIC_DEMO
+            ? `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
+                <p>Quality <b>${s.quality}</b>. The trigger rule and quality breakdown are shown in your own account.</p></div>`
+            : `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
+                ${rule.long ? `<p>${esc(long ? rule.long : rule.short)}, on ≥ ${rule.vol}× volume against both the previous session and the normal for that hour. Stop: ${esc(rule.stop)}, kept 0.6–1.5 daily ATR from the fill.</p>` : ''}
                 <p class="dt-fi-trig">${esc(s.trigger)}</p></div>
             <div class="dt-fi"><h4>WHY IT QUALIFIED</h4><dl>
-                <dt>Vs previous session</dt><dd>${num(s.vol_x)}× / needs ${rule.vol}×</dd>
-                <dt>Vs normal at ${esc(hhmm(s.bar_time))}</dt><dd>${s.tod_x == null ? '<span class="mf-dim">no 20-session normal yet</span>' : `${num(s.tod_x)}× / needs ${rule.vol}×`}</dd>
+                <dt>Vs previous session</dt><dd>${num(s.vol_x)}×${rule.vol ? ` / needs ${rule.vol}×` : ''}</dd>
+                <dt>Vs normal at ${esc(hhmm(s.bar_time))}</dt><dd>${s.tod_x == null ? '<span class="mf-dim">no 20-session normal yet</span>' : `${num(s.tod_x)}×${rule.vol ? ` / needs ${rule.vol}×` : ''}`}</dd>
                 <dt>Quality</dt><dd><b>${s.quality}</b> <span class="mf-dim">(min 60)</span></dd>
                 <dt class="dt-fi-sub">volume · daily trend · hourly trend</dt><dd class="mf-dim">35 · 35 · 30</dd>
                 ${effRows(s)}
                 <dt>Daily ATR then</dt><dd>${num(s.atr)}</dd>
-            </dl></div>
+            </dl></div>`;
+        return `${chips}
+            ${method}
             <div class="dt-fi"><h4>TRADE PLAN</h4><dl>
                 <dt>Signal</dt><dd>${esc(when(s.time))} close</dd>
                 <dt>Entry</dt><dd>${num(s.entry)} · ${s.entry_time ? `filled ${esc(when(s.entry_time))}` : 'est. · next open'}</dd>
                 <dt>Stop</dt><dd class="mf-rt">${num(s.stop)}</dd>
-                <dt class="dt-fi-sub">setup level</dt><dd class="mf-dim">${num(s.natural_stop)}</dd>
+                ${PUBLIC_DEMO ? '' : `<dt class="dt-fi-sub">setup level</dt><dd class="mf-dim">${num(s.natural_stop)}</dd>`}
                 <dt title="Half is booked at T1 and the stop on the rest moves to breakeven">T1 · 1.5R · ½ off</dt><dd class="mf-gt">${num(s.target1)}</dd>
                 <dt>T2 · 3R</dt><dd class="mf-gt">${num(s.target2)}</dd>
                 <dt>Risk</dt><dd>${num(s.risk_pct)}% of price</dd>
@@ -546,7 +557,7 @@ const Swing = (() => {
     }
 
     function start() {
-        if (!started) { bind(); started = true; }
+        if (!started) { bind(); started = true; loadRules(); }
         poll();
     }
 

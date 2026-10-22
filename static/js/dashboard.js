@@ -189,12 +189,12 @@ function restoreView() {
     const tab = params.get('tab');
     const view = params.get('view');
     const button = tab && document.querySelector(`.tabs .tab[data-tab="${CSS.escape(tab)}"]`);
-    if (!button || tab === 'overview') return;
+    if (!button || tab === 'overview') return false;
     button.click();                      // runs the tab's own loaders (onclick)
     if (view && typeof switchAnalysisView === 'function') switchAnalysisView(view);
     let saved = null;
     try { saved = JSON.parse(sessionStorage.getItem('dash.scroll') || 'null'); } catch (e) { saved = null; }
-    if (!saved || saved.tab !== tab || !saved.y) return;
+    if (!saved || saved.tab !== tab || !saved.y) return true;
     // content loads asynchronously: retry until the page is tall enough, unless the user scrolls first
     let userScrolled = false;
     const mark = () => { userScrolled = true; };
@@ -203,12 +203,22 @@ function restoreView() {
     [150, 600, 1500, 3000].forEach(ms => setTimeout(() => {
         if (!userScrolled && Math.abs(window.scrollY - saved.y) > 4) window.scrollTo(0, saved.y);
     }, ms));
+    return true;
 }
 
 window.addEventListener('pagehide', saveScroll);
 document.addEventListener('click', e => { if (e.target.closest('[data-stock], a[href^="/app/stock/"]')) saveScroll(); }, true);
 
+// the public demo shows Market Flow, the boards and Analysis; other tabs are locked
+// (the server leaves their panels out and refuses their endpoints: src/api/demo_scope.py)
+const PUBLIC_DEMO = document.body?.dataset.demoScope === 'public';
+
+function demoLocked(btn) {
+    showToast(`${btn.textContent.replace(/\W+$/, '').trim()} is available in your own account - request access to use it.`, 'info');
+}
+
 function switchTab(tabName) {
+    if (!document.getElementById(`tab-${tabName}`)) tabName = 'market-flow';
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     const tabBtn = document.querySelector(`[data-tab="${tabName}"]`);
@@ -354,8 +364,9 @@ function updateStatusBadge(data) {
         statusBadge.textContent = data.running ? 'DEMO · LIVE' : 'DEMO';
         statusBadge.className = 'status-badge status-demo';
         btnLogin.style.display = data.demo === 'user' ? '' : 'none';
-        btnStart.style.display = data.running ? 'none' : '';
-        btnStop.style.display = data.running ? '' : 'none';
+        const canRun = data.demo !== 'public';         // live trading is locked in the public demo
+        btnStart.style.display = canRun && !data.running ? '' : 'none';
+        btnStop.style.display = canRun && data.running ? '' : 'none';
         return;
     }
     if (data.market_feed === 'shared') {
@@ -6631,6 +6642,15 @@ function _getKeyMetricsForPillar(key, metrics) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    if (PUBLIC_DEMO) {
+        const badge = () => API.get('/api/status').then(updateStatusBadge).catch(() => {});
+        badge();
+        connectWS();
+        statusInterval = setInterval(badge, 10000);
+        initAnalysisTableSorting();
+        if (!restoreView()) MarketFlow.start();
+        return;
+    }
     loadFullStatus();
     loadSignals();
     connectWS();

@@ -25,8 +25,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.routing import Match
 
@@ -56,6 +55,8 @@ from src.demo.sessions import (
     shutdown_service,
     user_demo_id,
 )
+from src.api.static_files import MinifiedStaticFiles
+from src.api.demo_scope import LOCKED_MESSAGE, public_demo_blocked, trim_day_trade, trim_flow
 from src.utils.exceptions import KiteError, KillSwitchError
 from src.utils.logger import get_logger
 
@@ -110,13 +111,17 @@ async def _access_denied(request: Request, exc: AccessDenied) -> JSONResponse:
 app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+# scripts are served minified (src/api/static_files.py); nginx sends /static/js/ here for that
+app.mount("/static", MinifiedStaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 SESSION_COOKIE = "kta_session"
 
 PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-otp", "/auth/callback",
-                "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact"}
+                "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact",
+                "/robots.txt", "/sitemap.xml"}
+# the only pages search engines may index; everything else is sent with noindex
+INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml"}
 
 
 def _real_service(zerodha_id: str) -> TradingService:
@@ -235,6 +240,11 @@ def get_real_user_service(request: Request) -> TradingService:
     return _real_service(zerodha_id)
 
 
+def _is_public_demo(request: Request) -> bool:
+    cookies = getattr(request, "cookies", None) or {}
+    return is_public_demo_id(otp_auth.get_session_user(cookies.get(SESSION_COOKIE, "")) or "")
+
+
 def demo_kind(svc: TradingService) -> str:
     """'public', 'user' (not connected to Zerodha yet) or '' for a real service."""
     if not getattr(svc, "is_demo", False):
@@ -325,6 +335,9 @@ def _apply_security_headers(response, request: Request):
         # personal data and account settings: never cached, never indexed
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    elif request.url.path not in INDEXABLE_PATHS and not request.url.path.startswith("/static/"):
+        # the terminal, its API and the sign-in page stay out of search results
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -343,12 +356,17 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     response = None
 
-    if path.startswith("/static/") or path in PUBLIC_PATHS:
+    if path != "/robots.txt" and _AI_CRAWLER.search(request.headers.get("user-agent", "")):
+        # robots.txt asks them to stay away; this is for the ones that do not ask
+        response = PlainTextResponse("Crawling for AI training is not permitted.", status_code=403)
+    elif path.startswith("/static/") or path in PUBLIC_PATHS:
         response = await call_next(request)
     elif path.startswith("/ws/"):
         token = request.cookies.get(SESSION_COOKIE, "")
         if not otp_auth.validate_session(token):
             response = JSONResponse({"error": "Not authenticated"}, status_code=401)
+        elif is_public_demo_id(otp_auth.get_session_user(token) or "") and public_demo_blocked(path, "WS"):
+            response = JSONResponse({"error": LOCKED_MESSAGE, "demo_locked": True}, status_code=403)
         else:
             response = await call_next(request)
     elif not is_logged_in(request):
@@ -363,6 +381,10 @@ async def auth_middleware(request: Request, call_next):
         # per account, on top of nginx's per-IP limit (src/api/request_limiter.py)
         response = JSONResponse({"error": "Too many requests - please slow down"}, status_code=429,
                                 headers={"Retry-After": "2"})
+    elif is_public_demo_id(otp_auth.get_session_user(request.cookies.get(SESSION_COOKIE, "")) or "") \
+            and public_demo_blocked(path, request.method):
+        # the public demo shows Market Flow and Analysis only (src/api/demo_scope.py)
+        response = JSONResponse({"error": LOCKED_MESSAGE, "demo_locked": True}, status_code=403)
     elif request.method not in CSRF_EXEMPT_METHODS:
         token = request.cookies.get(SESSION_COOKIE, "")
         csrf_header = request.headers.get("X-CSRF-Token", "")
@@ -710,7 +732,7 @@ async def contact(request: Request) -> Any:
 async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
-    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True,
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True, "site_url": _public_url(),
                                                                 "form_token": _form_token()})
 
 
@@ -793,11 +815,51 @@ async def verify_otp(request: Request) -> Any:
         return {"success": False, "message": "Invalid or expired OTP"}
 
 
+DEMO_TOKEN_MIN_AGE = 1           # seconds between the page loading and the demo starting
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _demo_start_refusal(request: Request, body: dict[str, Any]) -> tuple[str, str, int] | None:
+    """Why a demo start looks scripted: (reason, message, status), or None.
+
+    A demo costs a simulated market and four agents, so it is only started from
+    our own page, by a browser, at least a second after that page was rendered
+    (the page's signed ``form_token``)."""
+    if device_of(request.headers.get("user-agent", "")) == "bot":
+        return "bot_agent", "The demo opens in a web browser.", 403
+    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+        return "cross_site", "Open the demo from verquoai.com.", 403
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host", ""):
+        return "cross_origin", "Open the demo from verquoai.com.", 403
+    token = str(body.get("form_token") or "")
+    ts, _, _ = token.partition(".")
+    state = _form_token_state(token)
+    if state == "fast" and ts.isdigit() and time.time() - int(ts) >= DEMO_TOKEN_MIN_AGE:
+        state = "ok"
+    if state == "fast":
+        return "too_fast", "One moment - starting the demo…", 429
+    if state != "ok":
+        return "no_token", "This page has expired. Please reload it and try again.", 400
+    return None
+
+
 @app.post("/demo/start")
 async def demo_start(request: Request) -> Any:
     """Open the terminal on a simulated market and broker, no account needed."""
     if is_logged_in(request):
         return {"success": True, "redirect": "/app"}
+    refusal = _demo_start_refusal(request, await _json_body(request))
+    if refusal:
+        logger.info("demo_start_refused", reason=refusal[0], ip=_client_ip(request))
+        return JSONResponse({"success": False, "message": refusal[1]}, status_code=refusal[2])
     if not otp_auth.check_ip_rate_limit("demo-start", _client_ip(request), max_requests=6, window_seconds=3600):
         return JSONResponse({"success": False, "message": "Too many demo sessions from this network. Try again later."},
                             status_code=429)
@@ -917,8 +979,39 @@ templates.env.globals["static_version"] = _static_version
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False, "site_url": _public_url(),
                                                                 "form_token": _form_token()})
+
+
+# Crawlers that collect pages to train AI models: refused everywhere (the product's
+# text and screens are ours). Search engines, including AI search, may read the
+# landing page only.
+AI_TRAINING_CRAWLERS = ("GPTBot", "CCBot", "Google-Extended", "ClaudeBot", "anthropic-ai", "Bytespider",
+                        "Applebot-Extended", "meta-externalagent", "FacebookBot", "Diffbot", "ImagesiftBot",
+                        "omgili", "cohere-ai", "AI2Bot", "Timpibot", "img2dataset")
+_AI_CRAWLER = re.compile("|".join(re.escape(b) for b in AI_TRAINING_CRAWLERS), re.IGNORECASE)
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt() -> str:
+    site = _public_url()
+    blocked = "".join(f"User-agent: {bot}\n" for bot in AI_TRAINING_CRAWLERS)
+    return (f"{blocked}Disallow: /\n\n"
+            "User-agent: *\nAllow: /$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
+            "Allow: /static/js/landing.js\nDisallow: /\n\n"
+            f"Sitemap: {site}/sitemap.xml\n")
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml() -> Response:
+    site = _public_url()
+    landing = os.path.join(BASE_DIR, "templates", "landing.html")
+    updated = datetime.fromtimestamp(os.path.getmtime(landing)).date().isoformat()
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f"  <url><loc>{site}/</loc><lastmod>{updated}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n"
+            "</urlset>\n")
+    return Response(body, media_type="application/xml")
 
 
 @app.get("/app", response_class=HTMLResponse)
@@ -998,6 +1091,10 @@ async def api_status(request: Request, full: bool = False) -> dict[str, Any]:
         "zerodha_id": svc.zerodha_id,
         "access_level": svc.access_level,
         "access_label": _access_label(request, svc),
+    }
+    if _is_public_demo(request):
+        return result           # header state only: no strategies, risk, journal or execution internals
+    result |= {
         "strategies": svc.get_strategies_info(),
         "risk": svc.get_risk_summary(),
         "journal": svc.get_journal_summary(),
@@ -2126,10 +2223,13 @@ async def get_fno_flow(request: Request) -> Any:
             sim.universe, sim.quotes(), sim.baselines, now, _fno_demo_history.changes_ago(15, now),
         )
         _fno_demo_history.record(result, now)
-        return {**result, "demo": True, "baseline_loading": False}
+        result = {**result, "demo": True, "baseline_loading": False}
+        return trim_flow(result) if _is_public_demo(request) else result
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
+    if _is_public_demo(request):
+        return trim_flow(await svc.get_fno_flow())
     # the same snapshot object for ~2 s (and for every viewer): serialise it once
     return shared_json(request, await svc.get_fno_flow())
 
@@ -2174,11 +2274,22 @@ async def get_day_trade(request: Request) -> Any:
     symbols): bars, VWAP / EMA / opening range, signals with outcomes, open
     trades and the session feed. ``?demo=1`` uses simulated sessions."""
     if request.query_params.get("demo") == "1":
-        return await _demo_day_trade_snapshot()
+        snap = await _demo_day_trade_snapshot()
+        return trim_day_trade(snap) if _is_public_demo(request) else snap
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
+    if _is_public_demo(request):
+        return trim_day_trade(await svc.get_day_trade())
     return shared_json(request, await svc.get_day_trade())
+
+
+@app.get("/api/market/setup-rules")
+async def get_setup_rules() -> dict[str, Any]:
+    """The boards' setup rules in words (refused to the public demo: src/api/demo_scope.py)."""
+    from src.api.setup_rules import setup_rules
+
+    return setup_rules()
 
 
 @app.get("/api/market/day-trade/replay")
@@ -2249,10 +2360,14 @@ async def get_swing(request: Request) -> Any:
     from src.api.service import _demo_flow_source
 
     if request.query_params.get("demo") == "1":
+        if _is_public_demo(request):
+            return trim_day_trade(await _demo_flow_source().get_swing())
         return shared_json(request, await _demo_flow_source().get_swing())   # marked demo by the service
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
+    if _is_public_demo(request):
+        return trim_day_trade(await svc.get_swing())
     return shared_json(request, await svc.get_swing())
 
 

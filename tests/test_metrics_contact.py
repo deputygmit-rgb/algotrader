@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import re
 import sqlite3
 
@@ -107,7 +108,8 @@ def test_contact_validation_and_honeypot(store, monkeypatch):
 
 def test_funnel_event_on_demo_start(store, monkeypatch):
     monkeypatch.setattr(webapp.demo_sessions, "has_capacity", lambda: True)
-    _call("POST", "/demo/start")
+    _call("POST", "/demo/start", body={"form_token": webapp._form_token(time.time() - 10)},
+          headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36"})
     events = _rows(store, "SELECT event, kind, user_id FROM events")
     assert any(e == "demo_start" and k == "demo" and u.startswith("DEMO-P-") for e, k, u in events)
 

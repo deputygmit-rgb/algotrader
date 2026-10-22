@@ -618,7 +618,7 @@ def test_futures_analyze_mock():
 
     client.get_historical_data = AsyncMock(side_effect=historical_oi)
 
-    report = asyncio.get_event_loop().run_until_complete(fa.analyze(client))
+    report = asyncio.run(fa.analyze(client))
 
     assert isinstance(report, FuturesOIReport)
     assert report.timestamp != ""
@@ -691,7 +691,7 @@ def test_options_analyze_mock():
     client.get_quote = AsyncMock(return_value=mock_quotes)
     client.get_ltp = AsyncMock(return_value=mock_ltp)
 
-    report = asyncio.get_event_loop().run_until_complete(
+    report = asyncio.run(
         oa.analyze("NIFTY", client)
     )
 
@@ -777,7 +777,7 @@ def test_options_comparison_mock():
     client.get_quote = AsyncMock(return_value=mock_quotes)
     client.get_ltp = AsyncMock(return_value=mock_ltp)
 
-    comp = asyncio.get_event_loop().run_until_complete(
+    comp = asyncio.run(
         oa.analyze_comparison("NIFTY", client)
     )
 
@@ -963,7 +963,7 @@ def test_edge_cases():
     # Empty instruments -> empty report
     client = AsyncMock()
     client.get_instruments = AsyncMock(return_value=[])
-    report = asyncio.get_event_loop().run_until_complete(fa.analyze(client))
+    report = asyncio.run(fa.analyze(client))
     assert report.timestamp != ""
     assert len(report.stock_futures) == 0
     assert len(report.index_futures) == 0
@@ -971,7 +971,7 @@ def test_edge_cases():
     # Empty instruments -> empty options report
     client2 = AsyncMock()
     client2.get_instruments = AsyncMock(return_value=[])
-    opt_report = asyncio.get_event_loop().run_until_complete(
+    opt_report = asyncio.run(
         oa.analyze("NIFTY", client2)
     )
     assert opt_report.underlying == "NIFTY"
@@ -980,10 +980,10 @@ def test_edge_cases():
     # Instruments error -> empty report
     client3 = AsyncMock()
     client3.get_instruments = AsyncMock(side_effect=Exception("Network error"))
-    report3 = asyncio.get_event_loop().run_until_complete(fa.analyze(client3))
+    report3 = asyncio.run(fa.analyze(client3))
     assert len(report3.stock_futures) == 0
 
-    opt_report3 = asyncio.get_event_loop().run_until_complete(
+    opt_report3 = asyncio.run(
         oa.analyze("NIFTY", client3)
     )
     assert len(opt_report3.strikes) == 0

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -52,9 +53,17 @@ async def _done(value):
     return value
 
 
+BROWSER = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15"}
+
+
 def _client(cookies=None):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=webapp.app), base_url="https://testserver",
-                             cookies=cookies)
+                             cookies=cookies, headers=BROWSER)
+
+
+def _start(c, age=10):
+    """Start a demo as the landing page does: its signed render time, sent ``age`` seconds later."""
+    return c.post("/demo/start", json={"form_token": webapp._form_token(time.time() - age)})
 
 
 def _user(monkeypatch, zid="AB1234"):
@@ -70,7 +79,7 @@ def _user(monkeypatch, zid="AB1234"):
 def test_public_demo_gets_simulated_service_and_no_zerodha(_isolated):
     async def go():
         async with _client() as c:
-            assert (await c.post("/demo/start")).json()["success"] is True
+            assert (await _start(c)).json()["success"] is True
             status = (await c.get("/api/status")).json()
             assert status["demo"] == "public"
             assert (await c.get("/api/login-url")).status_code == 403
@@ -104,12 +113,14 @@ def test_demo_skips_confirmation_code_but_real_account_does_not(_isolated, monke
 
     async def demo():
         async with _client() as c:
-            await c.post("/demo/start")
+            await _start(c)
             tok = c.cookies.get("kta_session")
             return await start({"kta_session": tok}, webapp.otp_auth.get_csrf_token(tok))
-    assert asyncio.run(demo()).status_code == 200
+    locked = asyncio.run(demo())            # live trading is not part of the public demo
+    assert locked.status_code == 403 and locked.json()["demo_locked"]
 
     token = _user(monkeypatch)
+    assert asyncio.run(start({"kta_session": token}, webapp.otp_auth.get_csrf_token(token))).status_code == 200
     _isolated.mgr.get_service("AB1234").is_authenticated = True
     real = asyncio.run(start({"kta_session": token}, webapp.otp_auth.get_csrf_token(token)))
     assert real.status_code == 403 and real.json()["detail"] == "step_up_required"
@@ -120,7 +131,7 @@ def test_demo_start_respects_capacity(_isolated, monkeypatch):
 
     async def go():
         async with _client() as c:
-            return await c.post("/demo/start")
+            return await _start(c)
     assert asyncio.run(go()).status_code == 503
 
 
@@ -195,3 +206,75 @@ def test_demo_service_uses_its_own_market_store(tmp_path, monkeypatch):
     svc = TradingService(zerodha_id="DEMO-P-TEST0002", demo=True)
     assert svc.is_demo and svc._market_store is not shared()
     assert "DEMO-P-TEST0002" in svc._market_store._db_path
+
+
+# --- the public demo shows Market Flow and Analysis only (src/api/demo_scope.py) -----
+
+def test_public_demo_reaches_market_flow_and_analysis_only(_isolated):
+    async def go():
+        async with _client() as c:
+            await _start(c)
+            csrf = webapp.otp_auth.get_csrf_token(c.cookies.get("kta_session"))
+            locked = {path: (await c.request(m, path, headers={"X-CSRF-Token": csrf})).status_code
+                      for m, path in [("GET", "/api/strategies"), ("POST", "/api/backtest"), ("GET", "/api/signals"),
+                                      ("GET", "/api/market/day-trade/replay?symbols=INFY"),
+                                      ("GET", "/api/market/day-trade/autotrade"), ("GET", "/api/agents/log"),
+                                      ("GET", "/api/journal"), ("GET", "/api/oi/bias-history"),
+                                      ("GET", "/api/portfolio/positions")]}
+            status = (await c.get("/api/status")).json()
+            page = (await c.get("/app")).text
+            return locked, status, page
+    locked, status, page = asyncio.run(go())
+    assert set(locked.values()) == {403}, locked
+    assert status["demo"] == "public" and "strategies" not in status and "risk" not in status
+    assert 'data-demo-scope="public"' in page and 'id="tab-market-flow"' in page and 'id="tab-analysis"' in page
+    for hidden in ("tab-backtest", "tab-strategy-builder", "tab-paper-trading", "tab-replay", "tab-journal",
+                   "dt-replay-form", "dt-auto-toggle"):
+        assert f'id="{hidden}"' not in page, hidden
+    assert 'data-locked="backtest"' in page
+
+
+def test_logged_in_user_on_the_demo_broker_keeps_every_tab(_isolated, monkeypatch):
+    token = _user(monkeypatch)
+
+    async def go():
+        async with _client({"kta_session": token}) as c:
+            return (await c.get("/app")).text
+    page = asyncio.run(go())
+    assert "data-demo-scope" not in page and 'id="tab-backtest"' in page and 'id="dt-replay-form"' in page
+
+
+def test_setup_rules_reach_signed_in_users_but_not_the_public_demo(_isolated, monkeypatch):
+    token = _user(monkeypatch)
+
+    async def go():
+        async with _client({"kta_session": token}) as c:
+            user = await c.get("/api/market/setup-rules")
+        async with _client() as c:
+            await _start(c)
+            demo = await c.get("/api/market/setup-rules")
+        return user, demo
+    user, demo = asyncio.run(go())
+    assert user.status_code == 200 and "ORB" in user.json()["day"]
+    assert demo.status_code == 403
+
+
+def test_demo_start_refuses_scripts(_isolated):
+    async def go():
+        async with _client() as c:
+            no_token = await c.post("/demo/start")
+            too_fast = await _start(c, age=0)
+            forged = await c.post("/demo/start", json={"form_token": "1700000000.deadbeef"})
+            other_site = await c.post("/demo/start", json={"form_token": webapp._form_token(time.time() - 10)},
+                                      headers={"Sec-Fetch-Site": "cross-site"})
+            other_origin = await c.post("/demo/start", json={"form_token": webapp._form_token(time.time() - 10)},
+                                        headers={"Origin": "https://evil.example"})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=webapp.app), base_url="https://testserver") as c:
+            script = await _start(c)                   # python-httpx user agent
+        async with _client() as c:
+            browser = await _start(c)
+        return no_token, too_fast, forged, other_site, other_origin, script, browser
+    no_token, too_fast, forged, other_site, other_origin, script, browser = asyncio.run(go())
+    assert (no_token.status_code, too_fast.status_code, forged.status_code) == (400, 429, 400)
+    assert other_site.status_code == other_origin.status_code == script.status_code == 403
+    assert browser.json()["success"] is True

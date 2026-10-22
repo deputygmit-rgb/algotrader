@@ -869,7 +869,17 @@
         errors.forEach(e => { e.textContent = ''; });
         button?.setAttribute('aria-busy', 'true');
         try {
-            const res = await fetch('/demo/start', { method: 'POST' });
+            // the page's signed render time: the server starts demos for this page only
+            const formToken = document.querySelector('input[name="form_token"]')?.value || '';
+            const start = () => fetch('/demo/start', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ form_token: formToken }),
+            });
+            let res = await start();
+            if (res.status === 429 && /moment/.test((await res.clone().json().catch(() => ({}))).message || '')) {
+                await new Promise(r => setTimeout(r, 1200));      // clicked within a second of the page loading
+                res = await start();
+            }
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) throw new Error(data.message || 'The demo could not start. Please try again.');
             window.location.href = `/app${tab ? '#tab=' + encodeURIComponent(tab) : ''}`;
