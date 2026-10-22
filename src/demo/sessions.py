@@ -76,10 +76,11 @@ async def shutdown_service(service: Any) -> None:
         for task in (value.values() if isinstance(value, dict) else [value]):
             if isinstance(task, asyncio.Task) and not task.done():
                 task.cancel()
-    try:
-        service._market_store.close()
-    except Exception:
-        pass
+    if getattr(service, "is_demo", False):    # only a demo owns its store; others use the shared one
+        try:
+            service._market_store.close()
+        except Exception:
+            pass
 
 
 class DemoSessions:

@@ -113,6 +113,20 @@ def _shared_demo_scanner() -> StockScanner:
     return _DEMO_SCANNER
 
 
+# Demo sessions also share one market flow: every one of them watches the same
+# simulated market (src/demo/market.py), so the universe, the ~1000 baseline
+# history loads and the 500-row flow are computed once, not once per session.
+DEMO_FLOW_ID = "DEMO-FLOW"               # never a session id (those are DEMO-P- / DEMO-U-)
+_DEMO_FLOW_SOURCE: Optional["TradingService"] = None
+
+
+def _demo_flow_source() -> "TradingService":
+    global _DEMO_FLOW_SOURCE
+    if _DEMO_FLOW_SOURCE is None:
+        _DEMO_FLOW_SOURCE = TradingService(zerodha_id=DEMO_FLOW_ID, demo=True)
+    return _DEMO_FLOW_SOURCE
+
+
 class TradingService:
     _instance: Optional[TradingService] = None
 
@@ -2923,6 +2937,8 @@ class TradingService:
         pub = self._published()
         if pub is not None:
             return await pub.flow()          # computed once by the source account, market fields only
+        if self.is_demo and self._zerodha_id != DEMO_FLOW_ID:
+            return await self._shared_demo_flow(max_age_s)
         async with self._fno_lock:
             cached = self._fno_cache
             if cached and time.monotonic() - cached[0] < max_age_s:
@@ -2957,6 +2973,18 @@ class TradingService:
             self._record_flow_snapshot(result, now)
             return result
 
+    async def _shared_demo_flow(self, max_age_s: float) -> dict[str, Any]:
+        """The demo market's flow, computed once for every demo session."""
+        source = _demo_flow_source()
+        flow = await source.get_fno_flow(max_age_s=max_age_s)
+        # what this session's own computation used to leave behind: the universe
+        # (Day Trade bars look contracts up in it) and its own flow snapshots
+        self._fno_universe, self._fno_universe_date = source._fno_universe, source._fno_universe_date
+        self._fno_baselines = source._fno_baselines
+        if not flow.get("error"):
+            self._record_flow_snapshot(flow, datetime.now())
+        return flow
+
     def _record_flow_snapshot(self, flow: dict[str, Any], now: datetime) -> None:
         """Persist the flow once per 5-minute bar close, stamped with that close
         (HH:MM), so back-tests see exactly what the board saw when a bar closed."""
@@ -2977,6 +3005,8 @@ class TradingService:
         pub = self._published()
         if pub is not None:
             return pub.flow_history(minutes)
+        if self.is_demo and self._zerodha_id != DEMO_FLOW_ID:
+            return _demo_flow_source()._fno_history.since(minutes, datetime.now())
         return self._fno_history.since(minutes, datetime.now())
 
     # ── 5-minute day-trade tracking ───────────────────────────

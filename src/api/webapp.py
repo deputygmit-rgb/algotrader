@@ -37,6 +37,8 @@ from src.api.shared_market import SharedMarketHub, shared_market_id
 from src.auth.access import AGENTIC, LEVEL_LABELS, VIEW, AccessDenied
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
+from src.api.request_limiter import api_limiter
+from src.api.response_cache import shared_json
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth, rate_limit_subject
 from src.auth.user_config import UserConfigService
@@ -49,6 +51,7 @@ from src.demo.sessions import (
     demo_sessions,
     is_public_demo_id,
     new_public_id,
+    shutdown_service,
     user_demo_id,
 )
 from src.utils.exceptions import KiteError, KillSwitchError
@@ -75,11 +78,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await mcp_driver.startup()
     demo_sessions.purge_orphans()
     reaper = asyncio.create_task(demo_sessions.run_reaper())
+    viewer_reaper = asyncio.create_task(_run_viewer_reaper())
     flusher = asyncio.create_task(metrics.run_flusher())
     try:
         yield
     finally:
         reaper.cancel()
+        viewer_reaper.cancel()
         flusher.cancel()
         await asyncio.to_thread(metrics.flush)
         await mcp_driver.shutdown()
@@ -146,21 +151,68 @@ def _shared_market_service(zerodha_id: str, real: TradingService) -> TradingServ
     while it is logged in to Zerodha (src/api/shared_market.py)."""
     if real.access_level != VIEW or not SharedMarketHub.get_instance().available_for(zerodha_id):
         return None
-    return TradingServiceManager.get_instance().get_service(shared_market_id(zerodha_id), shared_market=True)
+    uid = shared_market_id(zerodha_id)
+    _viewer_seen[uid] = time.time()
+    return TradingServiceManager.get_instance().get_service(uid, shared_market=True)
 
 
-async def _end_shared_market(zerodha_id: str) -> None:
-    """The user connected their own Zerodha account: drop their shared-market session."""
-    mgr, uid = TradingServiceManager.get_instance(), shared_market_id(zerodha_id)
+# A view-only user's service (and its agents) is retired after this long without
+# a request; the next request starts a fresh one. An open dashboard tab polls
+# every few seconds (at least once a minute in a background tab), so only
+# closed tabs are retired.
+VIEWER_IDLE_SECONDS = int(os.environ.get("VIEWER_IDLE_MINUTES", "30")) * 60
+_viewer_seen: dict[str, float] = {}
+
+
+async def _retire_shared_market(uid: str) -> None:
+    """Stop a shared-market (view-only) service: agents, tasks, feed subscriptions."""
+    _viewer_seen.pop(uid, None)
+    mgr = TradingServiceManager.get_instance()
     if not mgr.has_service(uid):
         return
     svc = mgr.get_service(uid, shared_market=True)
     try:
-        if svc.is_running:
-            await svc.stop_live()
+        await svc._ticker.disconnect()          # leave the hub's shared feed
     except Exception as e:
         logger.warning("shared_market_stop_failed", error=str(e))
+    await shutdown_service(svc)
     mgr.remove_service(uid)
+
+
+async def _end_shared_market(zerodha_id: str) -> None:
+    """The user connected their own Zerodha account: drop their shared-market session."""
+    await _retire_shared_market(shared_market_id(zerodha_id))
+
+
+def _has_open_sockets(svc: TradingService) -> bool:
+    oi = getattr(svc, "oi_tracker", None)
+    return bool(getattr(svc, "_ws_clients", None) or getattr(oi, "_ws_clients", None))
+
+
+async def reap_idle_viewers() -> int:
+    cutoff = time.time() - VIEWER_IDLE_SECONDS
+    mgr, reaped = TradingServiceManager.get_instance(), 0
+    for uid, seen in list(_viewer_seen.items()):
+        if seen >= cutoff:
+            continue
+        if not mgr.has_service(uid):
+            _viewer_seen.pop(uid, None)
+            continue
+        if _has_open_sockets(mgr.get_service(uid, shared_market=True)):
+            continue                            # a tab is still connected
+        await _retire_shared_market(uid)
+        logger.info("viewer_service_retired", viewer=uid)
+        reaped += 1
+    return reaped
+
+
+async def _run_viewer_reaper(every_seconds: int = 60) -> None:
+    while True:
+        await asyncio.sleep(every_seconds)
+        try:
+            await reap_idle_viewers()
+        except Exception as e:
+            logger.error("viewer_reaper_failed", error=str(e))
 
 
 def get_user_service(request: Request) -> TradingService:
@@ -298,6 +350,11 @@ async def auth_middleware(request: Request, call_next):
             response = RedirectResponse("/login", status_code=302)
         else:
             response = await call_next(request)
+    elif path.startswith("/api/") and not api_limiter.allow(
+            otp_auth.get_session_user(request.cookies.get(SESSION_COOKIE, "")) or "?"):
+        # per account, on top of nginx's per-IP limit (src/api/request_limiter.py)
+        response = JSONResponse({"error": "Too many requests - please slow down"}, status_code=429,
+                                headers={"Retry-After": "2"})
     elif request.method not in CSRF_EXEMPT_METHODS:
         token = request.cookies.get(SESSION_COOKIE, "")
         csrf_header = request.headers.get("X-CSRF-Token", "")
@@ -2048,7 +2105,7 @@ async def get_nifty_contribution(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/market/fno-flow")
-async def get_fno_flow(request: Request) -> dict[str, Any]:
+async def get_fno_flow(request: Request) -> Any:
     """Market flow for the F&O + NIFTY 500 universe: per-stock price, money flow,
     futures OI build-up, levels, bias/score, trade plans, best longs/shorts and
     sector flow per universe. ``?demo=1`` returns simulated data."""
@@ -2065,7 +2122,8 @@ async def get_fno_flow(request: Request) -> dict[str, Any]:
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
-    return await svc.get_fno_flow()
+    # the same snapshot object for ~2 s (and for every viewer): serialise it once
+    return shared_json(request, await svc.get_fno_flow())
 
 
 _demo_day_trade: Optional[DayTradeTracker] = None
@@ -2103,7 +2161,7 @@ async def _demo_day_trade_snapshot(symbol: str | None = None, action: str = "add
 
 
 @app.get("/api/market/day-trade")
-async def get_day_trade(request: Request) -> dict[str, Any]:
+async def get_day_trade(request: Request) -> Any:
     """5-minute day-trade setups for the tracked list (money-flow picks + manual
     symbols): bars, VWAP / EMA / opening range, signals with outcomes, open
     trades and the session feed. ``?demo=1`` uses simulated sessions."""
@@ -2112,7 +2170,7 @@ async def get_day_trade(request: Request) -> dict[str, Any]:
     svc = get_user_service(request)
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
-    return await svc.get_day_trade()
+    return shared_json(request, await svc.get_day_trade())
 
 
 @app.get("/api/market/day-trade/replay")
