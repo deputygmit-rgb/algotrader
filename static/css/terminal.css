@@ -678,3 +678,143 @@ body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-
 @media (display-mode: standalone) {
     html, body { overscroll-behavior-y: contain; }     /* no accidental pull-to-refresh mid-trade */
 }
+
+
+/* ══ Every screen size: layout that fits, app navigation, smooth motion ══════════
+   (static/js/app_shell.js builds the Menu sheet, the bottom bar and the More sheet) */
+
+/* nothing wider than the screen: grid cells may shrink, wide tables scroll inside their card */
+.grid > *, .card, .tab-content, .main { min-width: 0; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); }
+.table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+img, svg, canvas, video { max-width: 100%; }
+
+/* touch: no double-tap zoom delay, no grey flash; a pressed state instead */
+button, a, .tab, .btn, [role="button"], label, select, input { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.btn, .tab, .mf-btn, .mf-tabs button, .dt-chip, .vq-bnav button, .vq-more-item {
+    transition: transform .12s ease, background-color .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.btn:active, .tab:active, .mf-btn:active, .mf-tabs button:active, .dt-chip:active, .vq-more-item:active { transform: scale(.97); }
+
+/* tab change and pop-ups: a short, soft entrance */
+@keyframes vq-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes vq-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vq-up { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+.tab-content.active { animation: vq-in .22s cubic-bezier(.2,.7,.2,1); }
+.modal-overlay.show { animation: vq-fade .16s ease-out; }
+.modal-overlay.show > .modal { animation: vq-up .24s cubic-bezier(.2,.8,.2,1); }
+
+/* ── header below 1280 px: essentials + Menu ───────────────────────── */
+.vq-menu-btn[hidden] { display: none !important; }
+@media (max-width: 1279.98px) {
+    .header { flex-wrap: nowrap; gap: 10px; }
+    .header-right { flex-wrap: nowrap; gap: 8px; overflow: visible; }
+    .vq-menu-btn { display: inline-flex; align-items: center; gap: 6px; }
+}
+/* the Menu / More sheets */
+.vq-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.vq-sheet-head b { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--t-c); }
+.vq-sheet-grip { display: none; width: 40px; height: 4px; border-radius: 2px; background: var(--t-line-2); margin: -10px auto 12px; }
+.vq-sheet { width: 420px; }
+.vq-sheet-body { display: grid; gap: 8px; }
+.vq-sheet-body > .btn, .vq-sheet-body > a.btn, .vq-sheet-body > .ag-pill, .vq-sheet-body > .t-access {
+    width: 100%; min-height: 44px; margin: 0 !important; justify-content: center; text-align: center;
+    display: flex; align-items: center;
+}
+.vq-sheet-body > [hidden], .vq-sheet-body > [style*="display: none"], .vq-sheet-body > [style*="display:none"] { display: none !important; }
+.vq-more-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.vq-more-item {
+    position: relative; display: grid; justify-items: center; gap: 6px; padding: 12px 6px; min-height: 76px;
+    background: var(--t-panel); border: 1px solid var(--t-line); border-radius: 10px; color: var(--t-dim);
+    font: 700 10px/1.25 inherit; letter-spacing: .8px; text-transform: uppercase; text-align: center; cursor: pointer;
+}
+.vq-more-item svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.vq-more-item.on { color: var(--t-c); border-color: rgba(56,214,255,.45); background: rgba(56,214,255,.08); }
+.vq-more-item.locked { opacity: .55; }
+.vq-more-item i { position: absolute; top: 6px; right: 8px; font-style: normal; font-size: 10px; }
+
+/* ── bottom navigation (phones) ────────────────────────────────────── */
+.vq-bnav { display: none; }
+body.has-bnav .vq-bnav {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 150;
+    padding: 4px 4px env(safe-area-inset-bottom);
+    background: rgba(7,11,16,.97); border-top: 1px solid var(--t-line);
+    box-shadow: 0 -8px 24px rgba(0,0,0,.45);
+}
+.vq-bnav button {
+    display: grid; justify-items: center; align-content: center; gap: 3px; min-height: 56px; padding: 4px 2px;
+    background: none; border: 0; border-radius: 10px; color: var(--t-mute, #5d717d); cursor: pointer;
+    font: 700 9.5px/1.1 inherit; letter-spacing: .6px; text-transform: uppercase; position: relative;
+}
+.vq-bnav svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+               transition: transform .18s cubic-bezier(.2,.8,.2,1); }
+.vq-bnav button.on { color: var(--t-c); }
+.vq-bnav button.on::before { content: ''; position: absolute; top: 0; left: 28%; right: 28%; height: 2px; border-radius: 2px;
+                             background: var(--t-c); box-shadow: 0 0 10px var(--t-c); }
+.vq-bnav button.on svg { transform: translateY(-1px) scale(1.06); }
+.vq-bnav button:active { background: rgba(56,214,255,.06); }
+body.has-bnav .tabs { display: none; }                      /* the bottom bar and "More" replace it */
+body.has-bnav .main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+body.has-bnav .pwa-offline { bottom: calc(60px + env(safe-area-inset-bottom)); }
+@media (max-width: 340px) { .vq-bnav span { font-size: 8.5px; letter-spacing: .2px; } }
+
+/* ── phones: compact single-row header, pop-ups as bottom sheets, lighter effects ── */
+@media (max-width: 767.98px) {
+    .header { flex-direction: row; align-items: center; padding: 8px 12px; gap: 8px; }
+    .header-left { width: auto; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; justify-content: flex-start; }
+    .header-left #t-zid { display: none; }
+    .header-left .logo { font-size: 13px; letter-spacing: 2px; white-space: nowrap; }
+    .header-right { width: auto; flex: 0 0 auto; overflow: visible; padding: 0; }
+    .header-right #t-agents-pill { display: none; }        /* in "More" -> Agents */
+    #btn-start, #btn-stop, .vq-menu-btn { min-height: 40px; padding: 0 12px; }
+    .vq-menu-btn { padding: 0 12px; }
+    /* pop-ups slide up from the bottom, full width, thumb-reachable */
+    .modal-overlay { align-items: flex-end; }
+    .modal-overlay > .modal { width: 100% !important; max-width: 100% !important; max-height: 88vh; border-radius: 16px 16px 0 0;
+                              padding: 22px 16px calc(18px + env(safe-area-inset-bottom)); }
+    .vq-sheet-grip { display: block; }
+    /* smoother scrolling: no blur behind the header, no endless decorative animations */
+    .header { backdrop-filter: none; -webkit-backdrop-filter: none; background: #05080c; }
+    .t-hud::after, .logo::before { animation: none; }
+}
+@media (max-width: 380px) {
+    .header-left .logo { font-size: 12px; letter-spacing: 1.5px; }
+    .header-left .status-badge { padding: 3px 6px; letter-spacing: 1px; }
+    #btn-start, #btn-stop, .vq-menu-btn { padding: 0 10px; font-size: 10px; }
+}
+/* landscape phones and small tablets: the Menu keeps the header to one row */
+@media (max-height: 500px) and (orientation: landscape) {
+    .header { padding-top: 6px; padding-bottom: 6px; }
+    .t-demo-banner .t-demo-text { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}
+/* labels in the bottom bar: sentence case fits "Positions" on a 360 px phone */
+.vq-bnav button { text-transform: none; letter-spacing: 0; font-size: 10.5px; font-weight: 600; }
+@media (max-width: 340px) { .vq-bnav span { font-size: 9.5px; letter-spacing: 0; } }
+/* any touch screen (phones in landscape and tablets too): controls a finger can hit */
+@media (pointer: coarse) {
+    .header .btn, .header .ag-pill, .header-right .btn-sm, .vq-sheet-body .btn, .t-demo-actions .btn, .t-demo-actions a { min-height: 40px; }
+    .tabs .tab { min-height: 40px; }
+}
+@media (max-width: 767.98px) {
+    .header-right #btn-start, .header-right #btn-stop, .header-right .vq-menu-btn { min-height: 40px; }
+}
+@media (pointer: coarse) { .btn, .btn-sm { min-height: 36px; } }
+/* phones: the account / margin / holdings / P&L tiles two to a row (one each was a long scroll) */
+@media (max-width: 767.98px) { .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } }
+@media (max-width: 300px) { .grid-4 { grid-template-columns: minmax(0, 1fr); } }
+/* phones: rows of controls wrap instead of running past the card edge */
+@media (max-width: 767.98px) {
+    #j-subtabs { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+    #j-subtabs::-webkit-scrollbar { display: none; }
+    #j-subtabs > .btn { flex: 0 0 auto; }
+    .dt-add { flex-wrap: wrap; max-width: 100%; }
+    .dt-add input { width: auto !important; flex: 1 1 150px; min-width: 0; }
+    .dt-hd-r { flex-wrap: wrap; max-width: 100%; }
+    input, select, textarea { max-width: 100%; }
+}
