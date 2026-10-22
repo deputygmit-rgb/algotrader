@@ -190,6 +190,7 @@ class DemoMarket:
         self._instrument_day: Optional[date] = None
         self._instruments: dict[str, list[Instrument]] = {}
         self._history_cache: dict[tuple, list[HistoricalCandle]] = {}
+        self._history_slot = -1
         self._build_underlyings()
 
     # ── universe ──────────────────────────────────────────────────────────
@@ -465,7 +466,9 @@ class DemoMarket:
 
     def tick(self, token: int, mode: str) -> Tick:
         s = self._snapshot(token)
-        now = now_ist()
+        # naive IST wall-clock time, as the real ticker decodes Kite's epoch seconds
+        # (datetime.fromtimestamp under TZ=Asia/Kolkata); code compares it with datetime.now()
+        now = now_ist().replace(tzinfo=None)
         change = ((s["price"] - s["close"]) / s["close"] * 100) if s["close"] else 0.0
         return Tick(
             instrument_token=token, mode=mode, tradable=token != VIX_TOKEN, last_price=s["price"],
@@ -508,10 +511,16 @@ class DemoMarket:
         times = self._bar_times(interval, start, end)
         if not times:
             return []
-        key = (token, interval, times[0], times[-1], int(time.time() // 30))
+        slot = int(time.time() // 30)
+        key = (token, interval, times[0], times[-1], slot)
         cached = self._history_cache.get(key)
         if cached is not None:
             return cached
+        if slot != self._history_slot:
+            # an entry is only ever read within its own 30 s slot: drop the previous
+            # slots' candles (they held hundreds of MB once scans and boards ran)
+            self._history_cache.clear()
+            self._history_slot = slot
         is_deriv = token in self.derivatives
         under_token = self.derivatives[token].underlying if is_deriv else token
         u = self.underlyings[under_token]

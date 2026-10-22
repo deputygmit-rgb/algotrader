@@ -66,6 +66,7 @@ HISTORICAL_TTL_S = 30.0
 DAILY_HISTORY_TTL_S = 900.0       # daily candles: every viewer's scan shares one fetch per 15 min
 INSTRUMENTS_TTL_S = 6 * 3600.0
 CACHE_MAX_ENTRIES = 4000
+CACHE_SWEEP_S = 60.0
 MAX_INSTRUMENTS_PER_QUOTE = 500   # Kite's own /quote cap
 MAX_TOKENS_PER_VIEWER = 1000
 MAX_TOKENS_TOTAL = 3000           # Kite's per-connection subscription cap
@@ -123,6 +124,7 @@ class SharedMarketHub:
         self._historical_limiter = _limiter(settings.rate_limit_historical)
         self._default_limiter = _limiter(settings.rate_limit_default)
         self._cache: dict[tuple, tuple[float, Any]] = {}
+        self._swept_at = 0.0
         self._inflight: dict[tuple, asyncio.Future] = {}
         # live feed
         self._upstream: Any = None
@@ -203,7 +205,10 @@ class SharedMarketHub:
 
     def _store(self, key: tuple, ttl: float, value: Any) -> None:
         now = time.monotonic()
-        if len(self._cache) >= CACHE_MAX_ENTRIES:
+        # expired entries are never served: sweep them regularly, not only when the
+        # cache is full (4000 entries of candles is far more memory than this server has)
+        if len(self._cache) >= CACHE_MAX_ENTRIES or now - self._swept_at > CACHE_SWEEP_S:
+            self._swept_at = now
             for k in [k for k, (exp, _) in self._cache.items() if exp <= now]:
                 del self._cache[k]
             while len(self._cache) >= CACHE_MAX_ENTRIES:

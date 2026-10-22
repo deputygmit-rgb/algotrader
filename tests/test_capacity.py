@@ -141,7 +141,9 @@ def test_demo_sessions_share_one_flow(tmp_path, monkeypatch):
             assert a._fno_universe and a._fno_universe is service_module._DEMO_FLOW_SOURCE._fno_universe
             assert a.get_fno_flow_history(60) == b.get_fno_flow_history(60)
             assert not glob.glob(os.path.join(webapp.BASE_DIR, "data", "fno_baseline_DEMO-P-CAPA0001_*"))
-            service_module._DEMO_FLOW_SOURCE._fno_baseline_task.cancel()
+            task = service_module._DEMO_FLOW_SOURCE._fno_baseline_task
+            if task is not None:                       # none when today's baselines file existed
+                task.cancel()
         asyncio.run(go())
     finally:
         for svc in (a, b, service_module._DEMO_FLOW_SOURCE):
@@ -174,3 +176,47 @@ def test_idle_viewer_services_are_retired_but_not_open_tabs(monkeypatch):
     assert removed == ["VIEW-A"] and set(services) == {"VIEW-B", "VIEW-C"}
     assert closed == []                                    # the shared market store stays open
     assert "VIEW-A" not in webapp._viewer_seen
+
+
+# --- memory: caches keep only what can still be served ------------------------------
+
+def test_demo_history_cache_keeps_only_the_current_slot(monkeypatch):
+    from datetime import datetime, timedelta
+
+    from src.demo import market as market_module
+    from src.demo.market import IST, DemoMarket
+
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(market_module.time, "time", lambda: clock[0])
+    m = DemoMarket()
+    token = m.lookup("NSE:INFY")
+    end = datetime.now(IST)
+    first = m.history(token, "day", end - timedelta(days=60), end, False)
+    assert m.history(token, "day", end - timedelta(days=60), end, False) is first    # same slot: cached
+    clock[0] += 31                                                                     # next 30 s slot
+    m.history(token, "5minute", end - timedelta(days=5), end, False)
+    assert len(m._history_cache) == 1                  # the previous slot's candles are gone
+
+
+def test_demo_ticks_use_naive_local_time_like_the_real_ticker():
+    from datetime import datetime
+
+    from src.demo.market import get_demo_market
+
+    m = get_demo_market()
+    tick = m.tick(m.lookup("NSE:INFY"), "quote")
+    assert tick.exchange_timestamp.tzinfo is None
+    assert abs((datetime.now() - tick.exchange_timestamp).total_seconds()) < 60    # what preflight computes
+
+
+def test_shared_market_cache_sweeps_expired_entries(monkeypatch):
+    from src.api import shared_market as sm
+
+    clock = [1000.0]
+    monkeypatch.setattr(sm.time, "monotonic", lambda: clock[0])
+    hub = sm.SharedMarketHub(account_id="", source_factory=lambda a: None)
+    for i in range(50):
+        hub._store(("historical", i), 30.0, ["candles"])
+    clock[0] += sm.CACHE_SWEEP_S + 1
+    hub._store(("historical", "new"), 30.0, ["candles"])
+    assert list(hub._cache) == [("historical", "new")]
