@@ -754,6 +754,19 @@ async def demo_start(request: Request) -> Any:
     return response
 
 
+@app.get("/auth/csrf")
+async def csrf_token(request: Request) -> Any:
+    """The CSRF token for the session this browser has now. A page loaded before
+    a new sign-in (another tab, an expired session) refreshes its stale token
+    here; ``zerodha_id`` lets it notice the session belongs to another account.
+    Same-origin only: no CORS headers, so other sites cannot read it."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+    response = JSONResponse({"csrf_token": otp_auth.get_csrf_token(token),
+                             "zerodha_id": otp_auth.get_session_user(token) or ""})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.post("/auth/logout")
 async def logout(request: Request) -> Any:
     token = request.cookies.get(SESSION_COOKIE, "")
@@ -893,6 +906,7 @@ async def stock_detail_page(request: Request, symbol: str) -> HTMLResponse:
         "terminal_css_version": _static_version("css/terminal.css"),
         "collapsible_js_version": _static_version("js/collapsible.js"),
         "js_version": _static_version("js/stock_detail.js"),
+        "zerodha_id": get_session_zerodha_id(request),
         "metrics_js_version": _static_version("js/metrics.js"),
     })
 

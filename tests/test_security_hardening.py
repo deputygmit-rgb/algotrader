@@ -246,3 +246,12 @@ def test_backtest_runner_does_not_write_live_state(monkeypatch, tmp_path):
     runner = runner_module.CallCreditSpreadRunnerStrategy({"disable_persistence": True})
     runner._persist_state()
     assert os.listdir(tmp_path) == []
+
+
+def test_csrf_endpoint_returns_the_current_sessions_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(otp_module, "SESSION_FILE", str(tmp_path / "sessions.json"))
+    token = webapp.otp_auth._create_session("ABC123")
+    r = _call("GET", "/auth/csrf", cookies={"kta_session": token})
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert r.json() == {"csrf_token": webapp.otp_auth.get_csrf_token(token), "zerodha_id": "ABC123"}
+    assert "csrf_token" not in _call("GET", "/auth/csrf").text   # signed out: no token handed out

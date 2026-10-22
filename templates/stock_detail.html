@@ -10,10 +10,11 @@
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
     <link rel="stylesheet" href="/static/css/stock_detail.css?v={{ css_version }}">
     <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
+    <script src="/static/js/secure_fetch.js?v={{ static_version('js/secure_fetch.js') }}" defer></script>
     <script src="/static/js/stock_detail.js?v={{ js_version }}" defer></script>
     <script src="/static/js/metrics.js?v={{ metrics_js_version }}" defer></script>
 </head>
-<body class="stock-detail-page" data-symbol="{{ symbol }}" data-csrf="{{ csrf_token }}">
+<body class="stock-detail-page" data-symbol="{{ symbol }}" data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}">
     <header class="header">
         <div class="header-left">
             <a class="logo" href="/app">VerquoAI™</a>

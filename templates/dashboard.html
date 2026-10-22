@@ -10,7 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
     <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
 </head>
-<body>
+<body data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}">
     <header class="header">
         <div class="header-left">
             <a class="logo" href="/app" aria-label="VerquoAI workspace">VerquoAI™</a>
@@ -2807,57 +2807,7 @@
         </div>
     </div>
 
-    <script>
-        window.__CSRF_TOKEN__ = "{{ csrf_token }}";
-        (function () {
-            const originalFetch = window.fetch;
-            let pendingStepUp = null;  // one confirmation prompt at a time
-
-            function jsonPost(url, body) {
-                return originalFetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.__CSRF_TOKEN__ },
-                    body: JSON.stringify(body || {}),
-                }).then(r => r.json()).catch(() => ({}));
-            }
-
-            // Risky actions (real orders, live trading, auto-trade, kill switch off)
-            // answer 403 step_up_required until a fresh emailed code is confirmed.
-            async function confirmWithEmailCode() {
-                const sent = await jsonPost('/auth/step-up/send');
-                if (!sent.success) {
-                    alert(sent.message || 'Could not send a confirmation code.');
-                    return false;
-                }
-                const code = window.prompt('This action can trade real money. Enter the confirmation code sent to your email:');
-                if (!code) return false;
-                const verified = await jsonPost('/auth/step-up/verify', { otp: code.trim() });
-                if (!verified.success) {
-                    alert(verified.message || 'Invalid or expired code.');
-                    return false;
-                }
-                return true;
-            }
-
-            window.fetch = async function (input, init) {
-                init = init || {};
-                const method = (init.method || 'GET').toUpperCase();
-                if (method !== 'GET' && method !== 'HEAD') {
-                    init.headers = Object.assign({}, init.headers, { 'X-CSRF-Token': window.__CSRF_TOKEN__ });
-                }
-                const res = await originalFetch(input, init);
-                if (res.status !== 403 || method === 'GET' || method === 'HEAD') return res;
-                const body = await res.clone().json().catch(() => null);
-                if (!body || body.detail !== 'step_up_required') return res;
-                pendingStepUp = pendingStepUp || confirmWithEmailCode().finally(() => { pendingStepUp = null; });
-                if (await pendingStepUp) return originalFetch(input, init);
-                const message = 'Cancelled: this action needs the confirmation code from your email.';
-                return new Response(JSON.stringify({ detail: message, error: message }), {
-                    status: 403, headers: { 'Content-Type': 'application/json' },
-                });
-            };
-        })();
-    </script>
+    <script src="/static/js/secure_fetch.js?v={{ static_version('js/secure_fetch.js') }}"></script>
     <script src="/static/js/dashboard.js?v={{ js_version }}"></script>
     <script src="/static/js/market_flow.js?v={{ flow_js_version }}"></script>
     <script src="/static/js/day_trade.js?v={{ day_trade_js_version }}"></script>
