@@ -61,6 +61,16 @@ class BaseAgent:
         logger.info(f"{self.NAME}_agent_started", zerodha_id=self.zerodha_id)
         self.activity.record("info", f"{self.NAME.title()} agent started")
 
+    def restart(self) -> bool:
+        """Start a crashed agent again (the supervisor's remedy). False if it was not crashed."""
+        if self._state != "crashed" or (self._task is not None and not self._task.done()):
+            return False
+        self._task = None
+        self._state = "idle"
+        self.start()
+        self.activity.record("action", "Restarted after a crash", "warning")
+        return True
+
     def stop(self) -> None:
         self._alive = False
         self._set_state("stopped")

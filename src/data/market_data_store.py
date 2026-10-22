@@ -1301,6 +1301,25 @@ class MarketDataStore:
         conn.execute("DELETE FROM engine_state WHERE account = ? AND kind = ? AND order_id = ?", (account, kind, order_id))
         conn.commit()
 
+    def apply_engine_state(self, account: str, saves: list[tuple[str, str, dict[str, Any]]],
+                           deletes: list[tuple[str, str]]) -> None:
+        """Several saves and deletes in one transaction: a crash keeps all of them or none
+        (a fill turning a pending entry into a position is never half-written)."""
+        conn = self._get_conn()
+        now = datetime.now().isoformat(timespec="seconds")
+        with conn:
+            for kind, order_id, data in saves:
+                conn.execute("INSERT OR REPLACE INTO engine_state (account, kind, order_id, data, updated_at) "
+                             "VALUES (?, ?, ?, ?, ?)", (account, kind, order_id, json.dumps(data, default=str), now))
+            for kind, order_id in deletes:
+                conn.execute("DELETE FROM engine_state WHERE account = ? AND kind = ? AND order_id = ?",
+                             (account, kind, order_id))
+
+    def engine_accounts(self) -> list[str]:
+        """Accounts with saved engine state (orders in flight, open positions, live sessions)."""
+        conn = self._get_conn()
+        return [r[0] for r in conn.execute("SELECT DISTINCT account FROM engine_state WHERE account != ''")]
+
     def load_engine_state(self, account: str) -> dict[str, dict[str, dict[str, Any]]]:
         conn = self._get_conn()
         out: dict[str, dict[str, dict[str, Any]]] = {"pending": {}, "position": {}}

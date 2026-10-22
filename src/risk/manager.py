@@ -35,6 +35,37 @@ class RiskManager:
         self._trade_count: int = 0
         self._session_start: datetime = datetime.now()
         self._position_validator: Optional[PositionValidator] = None
+        self._state_store: Any = None
+        self._account = ""
+
+    # ── kept across restarts: a kill switch someone turned on stays on ──
+    def attach_state_store(self, store: Any, account: str) -> None:
+        """Load the saved kill switch (``engine_state`` kind "risk") and save every change."""
+        self._state_store, self._account = store, account
+        try:
+            saved = store.load_engine_state(account).get("risk", {}).get("kill_switch")
+        except Exception as e:
+            logger.error("risk_state_load_failed", error=str(e))
+            return
+        if not saved:
+            return
+        loss_date = saved.get("loss_date")
+        self._kill_switch_loss_date = date.fromisoformat(loss_date) if loss_date else None
+        self._kill_switch_active = bool(saved.get("active")) and (
+            not saved.get("loss_only") or self.is_kill_switch_locked)    # a loss-limit trip ends with its day
+        if self._kill_switch_active:
+            logger.warning("kill_switch_restored", reason=saved.get("reason", ""))
+
+    def _save_state(self, reason: str = "", loss_only: bool = False) -> None:
+        store = self.__dict__.get("_state_store")
+        if store is None:
+            return
+        try:
+            store.save_engine_state(self._account, "risk", "kill_switch", {
+                "active": self._kill_switch_active, "reason": reason, "loss_only": loss_only,
+                "loss_date": self._kill_switch_loss_date.isoformat() if self._kill_switch_loss_date else None})
+        except Exception as e:
+            logger.error("risk_state_save_failed", error=str(e))
 
     @property
     def is_kill_switch_active(self) -> bool:
@@ -45,9 +76,11 @@ class RiskManager:
         return self._kill_switch_loss_date == datetime.now().date()
 
     def activate_kill_switch(self, reason: str = "", loss_limit: bool = False) -> None:
+        was_manual = self._kill_switch_active and not self.is_kill_switch_locked
         self._kill_switch_active = True
         if loss_limit:
             self._kill_switch_loss_date = datetime.now().date()
+        self._save_state(reason, loss_only=loss_limit and not was_manual)
         logger.critical("kill_switch_activated", reason=reason, daily_pnl=self._daily_pnl, loss_limit=loss_limit)
 
     def deactivate_kill_switch(self) -> None:
@@ -56,6 +89,7 @@ class RiskManager:
                 "The kill switch tripped on the daily loss limit and stays on until the next trading day"
             )
         self._kill_switch_active = False
+        self._save_state()
         logger.info("kill_switch_deactivated")
 
     def update_daily_pnl(self, pnl: float) -> None:
@@ -255,6 +289,7 @@ class RiskManager:
         self._session_start = datetime.now()
         if not self.is_kill_switch_locked:
             self._kill_switch_active = False
+            self._save_state()
         logger.info("risk_manager_daily_reset")
     def start_position_monitoring(self, check_interval: int = 30) -> None:
         """Start continuous position validation monitoring (Fix #3)."""

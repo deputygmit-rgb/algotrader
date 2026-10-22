@@ -12,6 +12,7 @@ described by the user-facing "scan -> verify -> execute -> track" workflow.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -29,8 +30,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 HEARTBEAT_INTERVAL_SECONDS = 60
-
-
+MAX_RESTARTS_PER_HOUR = 5        # a crashed agent is restarted with a doubling pause, at most this often
 
 # light mode (demo / view-only sessions): cycle seconds and journal sizes
 LIGHT_VERIFIER_S, LIGHT_EXECUTOR_S, LIGHT_TRACKER_S = 180, 60, 60
@@ -49,6 +49,7 @@ class TradingServiceAgent:
         self.zerodha_id = zerodha_id
         self.service = service
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._restarts: dict[str, list[float]] = {}     # agent -> restart times (monotonic)
         self._alive = True
         self.created_at = datetime.now().isoformat(timespec="seconds")
         self.last_heartbeat_at: Optional[str] = None
@@ -91,10 +92,30 @@ class TradingServiceAgent:
         self.executor.start()
         self.tracker.start()
 
+    def _restart_crashed(self) -> None:
+        """A crashed agent is started again, with a growing pause (at most
+        ``MAX_RESTARTS_PER_HOUR`` an hour, so a fault that crashes it at once does not spin)."""
+        now = time.monotonic()
+        for name, agent in self.agents.items():
+            if agent.status().get("state") != "crashed":
+                continue
+            history = [t for t in self._restarts.get(name, []) if now - t < 3600]
+            if len(history) >= MAX_RESTARTS_PER_HOUR:
+                continue
+            if history and now - history[-1] < 30 * (2 ** (len(history) - 1)):
+                continue
+            if agent.restart():
+                self._restarts[name] = history + [now]
+                logger.warning("agent_restarted", zerodha_id=self.zerodha_id, agent=name, restarts_this_hour=len(history) + 1)
+
     async def _heartbeat(self) -> None:
         while self._alive:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
             self.last_heartbeat_at = datetime.now().isoformat(timespec="seconds")
+            try:
+                self._restart_crashed()
+            except Exception as e:
+                logger.error("agent_restart_failed", zerodha_id=self.zerodha_id, error=str(e))
             record = getattr(self.service, "ensure_session_recording", None)
             if record is not None:
                 try:

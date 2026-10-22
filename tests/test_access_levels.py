@@ -48,7 +48,7 @@ def _client(level):
     client._order_limiter = None
     sent = []
 
-    async def request(method, path, limiter=None, data=None):
+    async def request(method, path, limiter=None, data=None, **kwargs):
         sent.append(path)
         return {"order_id": "OID"}
 

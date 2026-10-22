@@ -39,6 +39,7 @@ from src.utils.exceptions import (
     DataError,
     KiteError,
     NetworkError,
+    OrderUncertainError,
     OrderError,
     RateLimitError,
 )
@@ -106,7 +107,14 @@ class KiteClient:
         params: Any = None,
         data: Optional[dict[str, Any]] = None,
         parse_json: bool = True,
+        idempotent: bool = True,
     ) -> Any:
+        """One broker API call, retried on network errors and 429s.
+
+        ``idempotent=False`` (placing an order): a request that may have reached
+        the broker is never sent again - a lost reply raises ``OrderUncertainError``
+        and the caller finds the order by its tag, so a timeout cannot place it twice.
+        Only a connection that never opened (nothing was sent) is retried."""
         rate_limiter = limiter or self._default_limiter
         settings = self._settings
 
@@ -158,6 +166,10 @@ class KiteClient:
                                 raise AuthenticationError(error_msg, response.status)
                             elif 400 <= response.status < 500:
                                 raise OrderError(error_msg, response.status)
+                            elif not idempotent:
+                                # a gateway / server error after the request went out: placed or not is unknown
+                                raise OrderUncertainError(f"{error_msg} (broker HTTP {response.status})",
+                                                          response.status)
                             else:
                                 raise NetworkError(error_msg, response.status)
 
@@ -165,6 +177,10 @@ class KiteClient:
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e
+                if not idempotent and not isinstance(e, aiohttp.ClientConnectorError):
+                    logger.error("order_request_reply_lost", endpoint=endpoint, error=str(e) or type(e).__name__)
+                    raise OrderUncertainError(f"No reply from the broker ({e or type(e).__name__}): "
+                                              f"the order may have been placed") from e
                 wait_time = settings.retry_delay * (2 ** attempt)
                 logger.warning(
                     "request_retry",
@@ -246,7 +262,7 @@ class KiteClient:
 
         variety = order.variety.value
         data = await self._request(
-            "POST", f"/orders/{variety}", limiter=self._order_limiter, data=payload
+            "POST", f"/orders/{variety}", limiter=self._order_limiter, data=payload, idempotent=False
         )
         order_id = data.get("order_id", "")
         logger.info(

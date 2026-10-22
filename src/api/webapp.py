@@ -85,9 +85,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     flusher = asyncio.create_task(metrics.run_flusher())
     hygiene = asyncio.create_task(run_hygiene())        # gc + return freed memory to the OS
     efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
+    resume = asyncio.create_task(_resume_accounts())    # trading picks up again after a restart
     try:
         yield
     finally:
+        resume.cancel()
         reaper.cancel()
         viewer_reaper.cancel()
         hygiene.cancel()
@@ -95,6 +97,34 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         flusher.cancel()
         await asyncio.to_thread(metrics.flush)
         await mcp_driver.shutdown()
+
+
+async def _resume_accounts() -> None:
+    """After the process restarts (crash, out-of-memory kill, deploy), accounts that were
+    trading - or have orders / positions in flight - are picked up again at once, instead
+    of waiting for someone to press Start Live (see ``TradingService.resume_after_restart``).
+    One without a broker session resumes when it next logs in."""
+    await asyncio.sleep(2)
+    try:
+        from src.data.market_data_store import get_market_data_store
+
+        accounts = await asyncio.to_thread(get_market_data_store().engine_accounts)
+    except Exception as e:
+        logger.error("resume_accounts_failed", error=str(e))
+        return
+    for zid in accounts:
+        if zid.startswith(("DEMO-", "VIEW-")):
+            continue
+        user_cfg = UserConfigService.get_instance().get_user(zid)
+        if not user_cfg:
+            continue
+        try:
+            svc = TradingServiceManager.get_instance().get_service(zid, api_key=user_cfg.api_key,
+                                                                   api_secret=user_cfg.api_secret)
+            result = await svc.resume_after_restart()
+            logger.warning("account_resume_after_restart", zerodha_id=zid, **result)
+        except Exception as e:
+            logger.error("account_resume_failed", zerodha_id=zid, error=str(e))
 
 
 # No /docs, /redoc or /openapi.json: they would publish the whole API (and its
