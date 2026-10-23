@@ -89,10 +89,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
     resume = asyncio.create_task(_resume_accounts())    # trading picks up again after a restart
     recorder = asyncio.create_task(run_market_recorder())   # OI + flow history all session, visitor or not
+    # scripts minified before the first visitor asks (in a thread: the loop keeps serving)
+    warm_scripts = asyncio.create_task(asyncio.to_thread(_static_files.warm))
     try:
         yield
     finally:
         recorder.cancel()
+        warm_scripts.cancel()
         resume.cancel()
         reaper.cancel()
         viewer_reaper.cancel()
@@ -146,7 +149,8 @@ app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # scripts are served minified (src/api/static_files.py); nginx sends /static/js/ here for that
-app.mount("/static", MinifiedStaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+_static_files = MinifiedStaticFiles(directory=os.path.join(BASE_DIR, "static"))
+app.mount("/static", _static_files, name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 SESSION_COOKIE = "kta_session"

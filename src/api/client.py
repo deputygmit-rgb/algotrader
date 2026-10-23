@@ -348,6 +348,18 @@ class KiteClient:
     async def get_instruments(self, exchange: Optional[str] = None) -> list[Instrument]:
         endpoint = f"/instruments/{exchange}" if exchange else "/instruments"
         csv_text = await self._request("GET", endpoint, parse_json=False)
+        # NFO alone is ~100k rows (every option contract): seconds of CPU on a small
+        # server, so it is parsed off the event loop
+        instruments = await asyncio.to_thread(self._parse_instruments, csv_text)
+        if exchange in ("NSE", "NFO"):
+            # the backup feed keeps these instrument numbers, so stored bars still match
+            from src.api.backup_feed import remember_tokens
+
+            await asyncio.to_thread(remember_tokens, exchange, instruments)
+        return instruments
+
+    @staticmethod
+    def _parse_instruments(csv_text: str) -> list[Instrument]:
         instruments: list[Instrument] = []
         reader = csv.DictReader(io.StringIO(csv_text))
         for row in reader:
@@ -367,11 +379,6 @@ class KiteClient:
                     exchange=row.get("exchange", ""),
                 )
             )
-        if exchange in ("NSE", "NFO"):
-            # the backup feed keeps these instrument numbers, so stored bars still match
-            from src.api.backup_feed import remember_tokens
-
-            remember_tokens(exchange, instruments)
         return instruments
 
     # Which source served the last quote call: "primary" or "backup" (src/api/backup_quotes.py).

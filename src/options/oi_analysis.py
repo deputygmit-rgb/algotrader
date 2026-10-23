@@ -375,6 +375,9 @@ class FuturesOIAnalyzer:
 
         result: list[dict[str, Any]] = []
         for inst in all_nfo:
+            if hasattr(inst, "model_dump") and (inst.instrument_type != "FUT"
+                                               or (inst.name or "").upper() not in target_syms):
+                continue                        # most of NFO is options: skip before converting
             inst_dict = inst.model_dump() if hasattr(inst, "model_dump") else inst
             if inst_dict.get("instrument_type") != "FUT":
                 continue
@@ -900,7 +903,14 @@ class OptionsOIAnalyzer:
                 return []
 
         result: list[dict[str, Any]] = []
+        want = underlying.upper()
         for inst in all_inst:
+            # ~100k instruments every minute: test the fields first, convert only the matches
+            if hasattr(inst, "model_dump"):
+                if inst.instrument_type not in ("CE", "PE") or (inst.name or "").upper() != want:
+                    continue
+                if expiry_filter and inst.expiry != expiry_filter:
+                    continue
             d = inst.model_dump() if hasattr(inst, "model_dump") else inst
             if d.get("instrument_type") not in ("CE", "PE"):
                 continue

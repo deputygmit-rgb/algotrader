@@ -115,3 +115,25 @@ def test_sign_in_email_is_sent_off_the_event_loop():
 
 def test_stale_grace_is_short_enough_to_stay_live():
     assert published.STALE_GRACE_S <= 10       # a viewer never sees prices more than ~10 s old
+
+
+def test_instrument_lists_are_parsed_off_the_event_loop():
+    from src.api.client import KiteClient
+
+    src = inspect.getsource(KiteClient.get_instruments)
+    assert "asyncio.to_thread(self._parse_instruments" in src
+    parsed = KiteClient._parse_instruments(
+        "instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,"
+        "instrument_type,segment,exchange\n256265,1001,NIFTY26OCT25000CE,NIFTY,0,2026-10-28,25000,0.05,75,CE,NFO-OPT,NFO\n")
+    assert parsed[0].tradingsymbol == "NIFTY26OCT25000CE" and parsed[0].lot_size == 75
+
+
+def test_scripts_are_minified_at_startup(tmp_path):
+    from src.api.static_files import MinifiedStaticFiles
+
+    (tmp_path / "a.js").write_text("// note\nvar a = 1;\n", encoding="utf-8")
+    (tmp_path / "b.css").write_text("a{}", encoding="utf-8")
+    app = MinifiedStaticFiles(directory=str(tmp_path), minify=True)
+    if not app.minify:
+        return
+    assert app.warm() == 1 and len(app._cache) == 1

@@ -8,6 +8,7 @@ serves the files as written (for debugging in a browser); without the
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from typing import Any
@@ -38,10 +39,8 @@ class MinifiedStaticFiles(StaticFiles):
         key = (stat.st_size, int(stat.st_mtime_ns))
         hit = self._cache.get(full)
         if hit is None or hit[0] != key:
-            with open(full, encoding="utf-8") as f:
-                body = rjsmin.jsmin(f.read(), keep_bang_comments=False).encode()
-            hit = (key, body, '"' + hashlib.sha256(body).hexdigest()[:20] + '"')
-            self._cache[full] = hit
+            # off the event loop: after a restart the first page load asks for every script at once
+            hit = await asyncio.to_thread(self._minified, full, key)
         _, body, etag = hit
         # pages link scripts as name.js?v=<mtime>: a versioned URL never changes, so the
         # browser keeps it without asking again (about 20 round trips saved per page load)
@@ -52,3 +51,26 @@ class MinifiedStaticFiles(StaticFiles):
         if request_headers.get(b"if-none-match", b"").decode() == etag:
             return Response(status_code=304, headers=headers)
         return Response(body if scope["method"] == "GET" else b"", media_type="text/javascript", headers=headers)
+
+    def _minified(self, full: str, key: tuple[int, int]) -> tuple[tuple[int, int], bytes, str]:
+        with open(full, encoding="utf-8") as f:
+            body = rjsmin.jsmin(f.read(), keep_bang_comments=False).encode()
+        hit = (key, body, '"' + hashlib.sha256(body).hexdigest()[:20] + '"')
+        self._cache[full] = hit
+        return hit
+
+    def warm(self) -> int:
+        """Minify every script now (call in a thread at startup): the first visitor after a
+        restart then gets them from the cache. Returns how many were minified."""
+        if not self.minify:
+            return 0
+        done = 0
+        for directory in self.all_directories:
+            for root, _dirs, files in os.walk(directory):
+                for name in files:
+                    if name.endswith(".js"):
+                        full = os.path.join(root, name)
+                        st = os.stat(full)
+                        self._minified(full, (st.st_size, int(st.st_mtime_ns)))
+                        done += 1
+        return done
