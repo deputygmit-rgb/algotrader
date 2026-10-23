@@ -10,7 +10,7 @@ const CACHE_VERSION = '__VERSION__';
 const STATIC_CACHE = `vq-static-${CACHE_VERSION}`;
 const OFFLINE_URL = '/offline';
 const PRECACHE = [OFFLINE_URL, '/static/favicon.svg', '/static/img/icon-192.png', '/static/img/icon-512.png',
-    '/static/img/badge-96.png'];
+    '/static/img/badge-96.png', '/static/img/brand/mark.svg', '/static/css/brand.css'];
 const NEVER = [/^\/api\//, /^\/ws\//, /^\/auth\//, /^\/demo\//, /^\/admin/, /^\/metrics\//, /^\/contact/,
     /^\/sw\.js$/, /^\/manifest\.webmanifest$/];
 

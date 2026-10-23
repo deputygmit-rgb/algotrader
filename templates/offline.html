@@ -1,3 +1,4 @@
+{% from "_brand.html" import brand %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -14,17 +15,19 @@
                font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
                padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom)); }
         main { max-width: 420px; text-align: center; }
-        .logo { font: 800 18px/1 ui-monospace, "JetBrains Mono", monospace; letter-spacing: .18em; color: #38d6ff; }
+        .logo { font: 800 18px/1 ui-monospace, "JetBrains Mono", monospace; letter-spacing: .18em; color: #2ec5ff; }
         h1 { font-size: 22px; margin: 28px 0 8px; }
         p { color: #8aa0ad; margin: 0 0 24px; }
         button { font: 700 13px/1 ui-monospace, monospace; letter-spacing: .08em; padding: 14px 22px; min-height: 44px;
-                 border: 0; border-radius: 6px; background: #5be3a0; color: #04110a; cursor: pointer; }
+                 border: 0; border-radius: 6px; background: #19e6a1; color: #04110a; cursor: pointer; }
         small { display: block; margin-top: 18px; color: #5d717d; }
     </style>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/brand.css">
 </head>
 <body>
 <main>
-    <div class="logo">VERQUOAI</div>
+    {{ brand(tag="div", label="VerquoAI", size="20px") }}
     <h1>Can't reach the terminal</h1>
     <p>Your connection or our server is down. Nothing has changed with your orders: stops placed at the broker
         stay live, and the app picks up where it left off as soon as it reconnects.</p>

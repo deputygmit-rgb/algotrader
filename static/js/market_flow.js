@@ -9,8 +9,8 @@
 // futures OI change coloured by build-up type. Dragging the rail replays history.
 const MarketFlow = (() => {
     const COL = {
-        bull: [91, 227, 160], bear: [255, 90, 110], flat: [107, 127, 140],
-        cyan: [56, 214, 255], amber: [255, 209, 102], orange: [255, 159, 67], blue: [80, 150, 255],
+        bull: [25,230,161], bear: [255, 90, 110], flat: [107, 127, 140],
+        cyan: [46,197,255], amber: [255, 209, 102], orange: [255, 159, 67], blue: [80, 150, 255],
     };
     const BUILDUP_COL = {
         'LONG BUILD-UP': COL.bull, 'SHORT COVERING': COL.cyan,
@@ -319,15 +319,15 @@ const MarketFlow = (() => {
 
     function drawRail(g) {
         const { railX, y0, y1 } = g;
-        ctx.strokeStyle = 'rgba(56,214,255,.18)'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(46,197,255,.18)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(railX, y0); ctx.lineTo(railX, y1); ctx.stroke();
         ctx.font = `9px ${FONT}`; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
         for (let m = 10; m < RAIL_MIN; m += 10) {
             const y = y0 + m / RAIL_MIN * (y1 - y0);
-            bracket(railX, y, 6, 'rgba(56,214,255,.35)');
+            bracket(railX, y, 6, 'rgba(46,197,255,.35)');
             ctx.fillStyle = 'rgba(107,127,140,.8)'; ctx.fillText(`-${m}m`, railX - 12, y + 2);
         }
-        bracket(railX, y1, 9, 'rgba(56,214,255,.5)', true);
+        bracket(railX, y1, 9, 'rgba(46,197,255,.5)', true);
         ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(107,127,140,.9)';
         ctx.fillText(`${RAIL_MIN} m`, railX, y1 + 14);
 
@@ -349,16 +349,16 @@ const MarketFlow = (() => {
     function drawGate(g) {
         const { gx, gy } = g;
         const pulse = 1 + 0.15 * Math.sin(performance.now() / 300);
-        ctx.strokeStyle = 'rgba(56,214,255,.25)'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(46,197,255,.25)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(gx, gy, 13 * pulse, 0, Math.PI * 2); ctx.stroke();
-        ctx.strokeStyle = 'rgba(56,214,255,.95)'; ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(46,197,255,.95)'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(gx, gy, 6, 0, Math.PI * 2); ctx.stroke();
-        ctx.fillStyle = 'rgba(56,214,255,.95)';
+        ctx.fillStyle = 'rgba(46,197,255,.95)';
         ctx.beginPath(); ctx.arc(gx, gy, 2, 0, Math.PI * 2); ctx.fill();
         // gate frame
-        bracket(gx, gy - 28, 12, 'rgba(91,227,160,.7)');
+        bracket(gx, gy - 28, 12, 'rgba(25,230,161,.7)');
         bracket(gx, gy + 28, 12, 'rgba(255,90,110,.7)', true);
-        ctx.strokeStyle = 'rgba(56,214,255,.15)';
+        ctx.strokeStyle = 'rgba(46,197,255,.15)';
         ctx.beginPath(); ctx.moveTo(gx - 12, gy - 24); ctx.lineTo(gx - 12, gy + 24); ctx.moveTo(gx + 12, gy - 24); ctx.lineTo(gx + 12, gy + 24); ctx.stroke();
 
         ctx.textBaseline = 'middle'; ctx.textAlign = 'left';

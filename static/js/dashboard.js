@@ -35,7 +35,10 @@ function setAccess(level, label) {
     const badge = document.getElementById('t-access');
     if (badge) {
         badge.hidden = false;
-        badge.textContent = `ACCESS: ${ACCESS.label.toUpperCase()}`;
+        // short: the account's own level (the label starts with it; a demo sandbox adds "· demo: all features")
+        const own = ACCESS.label.split('·')[0].trim();
+        badge.textContent = /^view/i.test(own) ? 'VIEW' : /^agentic/i.test(own) ? 'AGENTIC' : /^trad/i.test(own) ? 'TRADE' : level.toUpperCase();
+        badge.title = `Access: ${ACCESS.label}`;
         badge.className = `t-access t-access-${level}`;
     }
 }
@@ -606,8 +609,8 @@ function updateExecutionPanel(exec) {
     document.getElementById('exec-filled').textContent = exec.filled_orders || 0;
 }
 
-function getInstrumentName(token) {
-    return selectedInstruments.get(token) || token;
+function getInstrumentName(token, symbol) {
+    return selectedInstruments.get(token) || symbol || token;     // the server sends names too
 }
 
 function updateTicksTable(ticks) {
@@ -616,16 +619,24 @@ function updateTicksTable(ticks) {
         el.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);text-align:center">No live data</td></tr>';
         return;
     }
-    el.innerHTML = Object.values(ticks).map(t => `
+    // the instruments picked in Start Live; the option contracts the OI tracker streams
+    // (hundreds) are summed up in one line and live in the OI Tracker tab
+    const isOption = t => /\d(CE|PE)$/.test(t.symbol || '');
+    const all = Object.values(ticks);
+    const options = all.filter(isOption);
+    const rows = all.length > options.length ? all.filter(t => !isOption(t)) : all.slice(0, 50);
+    const more = all.length - rows.length;
+    el.innerHTML = rows.map(t => `
         <tr>
-            <td><span style="font-weight:600;color:#00d4aa">${stockLink(getInstrumentName(t.token))}</span><br><span style="font-size:10px;color:#5c6e7e">${t.token}</span></td>
+            <td><span style="font-weight:600;color:#00d4aa">${stockLink(getInstrumentName(t.token, t.symbol))}</span><br><span style="font-size:10px;color:#5c6e7e">${t.token}</span></td>
             <td style="font-weight:600">${formatNum(t.ltp)}</td>
             <td class="${pnlClass(t.change)}">${formatNum(t.change)}</td>
             <td>${formatNum(t.high)} / ${formatNum(t.low)}</td>
             <td>${(t.volume || 0).toLocaleString()}</td>
             <td>${(t.buy_qty || 0).toLocaleString()} / ${(t.sell_qty || 0).toLocaleString()}</td>
         </tr>
-    `).join('');
+    `).join('') + (more > 0 ? `<tr><td colspan="6" style="color:var(--text-muted)">+ ${more.toLocaleString()} option contracts streaming for the
+        <a href="#" onclick="event.preventDefault();document.querySelector('.tabs .tab[data-tab=&quot;oi-tracker&quot;]')?.click()">OI Tracker</a></td></tr>` : '');
 }
 
 function updateSignalsLog(signal) {
@@ -1012,7 +1023,9 @@ async function startLive() {
     if (!tokens.length) { showToast('Select at least one instrument', 'error'); return; }
     const mode = document.getElementById('live-mode').value;
     try {
-        const res = await API.post('/api/live/start', { tokens, mode });
+        // names too: the table shows them, and the demo market maps them to its own tokens
+        const symbols = Object.fromEntries([...selectedInstruments].map(([t, n]) => [t, String(n || '').split(' (')[0]]));
+        const res = await API.post('/api/live/start', { tokens, mode, symbols });
         if (res.error) { showToast(res.error, 'error'); return; }
         showToast(`Live trading started with ${tokens.length} instruments`, 'success');
         hideModal('modal-start-live');

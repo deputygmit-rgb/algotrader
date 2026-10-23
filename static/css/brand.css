@@ -1,0 +1,17 @@
+/* VerquoAI brand: mark + wordmark (templates/_brand.html), shared by every page.
+   Colours: Terminal Ink #05080C · Deep Navy #0B1422 · Flow Cyan #2EC5FF · Signal Green #19E6A1 ·
+   Mist #8A97A8 · Paper #F4F7FB. Type: Sora SemiBold (wordmark), Sora Regular +14% (tagline). */
+:root {
+    --vq-ink: #05080C; --vq-navy: #0B1422; --vq-cyan: #2EC5FF; --vq-green: #19E6A1;
+    --vq-mist: #8A97A8; --vq-paper: #F4F7FB;
+    --vq-flow: linear-gradient(90deg, #2EC5FF, #19E6A1);
+}
+.vq-brand { display: inline-flex; align-items: center; gap: .42em; text-decoration: none; color: var(--vq-paper);
+            font: 600 18px/1 "Sora", "Inter", system-ui, sans-serif; letter-spacing: .05em; white-space: nowrap; }
+.vq-brand:hover { color: #fff; }
+.vq-brand-mark { width: 1.6em; height: 1.6em; flex: none; display: block; }
+.vq-brand-word b { font-weight: 600; margin-left: .14em; background: var(--vq-flow); -webkit-background-clip: text;
+                   background-clip: text; color: transparent; }
+.vq-brand.on-light { color: var(--vq-ink); }
+.vq-brand-tag { display: block; font: 400 10.5px/1.4 "Sora", "Inter", system-ui, sans-serif; letter-spacing: .14em;
+                color: var(--vq-mist); text-transform: uppercase; }

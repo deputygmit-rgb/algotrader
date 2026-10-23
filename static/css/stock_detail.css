@@ -394,7 +394,7 @@
 
 .stock-timeframe-row > strong {
     min-width: 48px;
-    color: #38d6ff;
+    color: #2ec5ff;
     text-transform: uppercase;
 }
 
@@ -542,9 +542,9 @@
     color: var(--t-txt);
     background-color: var(--t-bg);
     background-image:
-        radial-gradient(ellipse at 50% -10%, rgba(56, 214, 255, .07), transparent 55%),
-        linear-gradient(rgba(56, 214, 255, .022) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(56, 214, 255, .022) 1px, transparent 1px);
+        radial-gradient(ellipse at 50% -10%, rgba(46,197,255, .07), transparent 55%),
+        linear-gradient(rgba(46,197,255, .022) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(46,197,255, .022) 1px, transparent 1px);
     background-size: auto, 32px 32px, 32px 32px;
     background-attachment: fixed;
     font-family: var(--t-font);
@@ -555,7 +555,7 @@
     padding: 8px 20px;
     border-color: var(--t-line);
     background: rgba(5, 8, 12, .92);
-    box-shadow: 0 1px 0 rgba(56, 214, 255, .08), 0 8px 30px rgba(0, 0, 0, .4);
+    box-shadow: 0 1px 0 rgba(46,197,255, .08), 0 8px 30px rgba(0, 0, 0, .4);
 }
 
 .stock-detail-page .header .logo {
@@ -579,7 +579,7 @@
     padding: 18px 20px;
     border-color: var(--t-line);
     border-radius: 4px;
-    background: linear-gradient(90deg, rgba(56, 214, 255, .06), rgba(10, 16, 22, .94) 42%);
+    background: linear-gradient(90deg, rgba(46,197,255, .06), rgba(10, 16, 22, .94) 42%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
 }
 
@@ -630,7 +630,7 @@
     width: 6px;
     height: 6px;
     background: var(--t-g);
-    box-shadow: 0 0 9px rgba(91, 227, 160, .55);
+    box-shadow: 0 0 9px rgba(25,230,161, .55);
 }
 
 .stock-load-status.stock-load-error::before {
@@ -665,7 +665,7 @@
 
 .stock-terminal-head {
     border-color: var(--t-line);
-    background: rgba(56, 214, 255, .025);
+    background: rgba(46,197,255, .025);
 }
 
 .stock-terminal-title {
@@ -691,7 +691,7 @@
 .stock-range-btn:hover,
 .stock-range-btn.active {
     color: var(--t-c);
-    background: rgba(56, 214, 255, .09);
+    background: rgba(46,197,255, .09);
     box-shadow: inset 0 -1px 0 var(--t-c);
 }
 
@@ -706,8 +706,8 @@
 
 .stock-chart-shell {
     background:
-        linear-gradient(rgba(56, 214, 255, .022) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(56, 214, 255, .022) 1px, transparent 1px),
+        linear-gradient(rgba(46,197,255, .022) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(46,197,255, .022) 1px, transparent 1px),
         var(--t-bg);
     background-size: 32px 32px;
 }
@@ -734,7 +734,7 @@
     margin: 2px 0 12px;
     border: 1px solid var(--t-line-2);
     border-left: 2px solid var(--t-c);
-    background: linear-gradient(90deg, rgba(56, 214, 255, .055), rgba(10, 16, 22, .9) 42%);
+    background: linear-gradient(90deg, rgba(46,197,255, .055), rgba(10, 16, 22, .9) 42%);
 }
 
 .stock-verdict-primary {
@@ -761,7 +761,7 @@
     text-shadow: 0 0 16px rgba(255, 209, 102, .18);
 }
 
-.stock-verdict-action.bullish { color: var(--t-g); text-shadow: 0 0 16px rgba(91, 227, 160, .22); }
+.stock-verdict-action.bullish { color: var(--t-g); text-shadow: 0 0 16px rgba(25,230,161, .22); }
 .stock-verdict-action.bearish { color: var(--t-r); text-shadow: 0 0 16px rgba(255, 90, 110, .22); }
 .stock-verdict-action.neutral { color: var(--t-a); }
 
@@ -794,7 +794,7 @@
 }
 
 .stock-context-pill b { color: var(--t-txt); font-weight: 700; }
-.stock-context-pill.bullish { border-color: rgba(91, 227, 160, .35); color: var(--t-g); }
+.stock-context-pill.bullish { border-color: rgba(25,230,161, .35); color: var(--t-g); }
 .stock-context-pill.bullish b { color: var(--t-g); }
 .stock-context-pill.bearish { border-color: rgba(255, 90, 110, .35); color: var(--t-r); }
 .stock-context-pill.bearish b { color: var(--t-r); }
@@ -865,7 +865,7 @@
 .stock-tech-reasons {
     border-left-color: var(--t-c);
     color: var(--t-dim);
-    background: rgba(56, 214, 255, .035);
+    background: rgba(46,197,255, .035);
     font: 9px/1.6 var(--t-font);
 }
 
@@ -943,7 +943,7 @@
     border: 1px solid var(--t-line-2);
     border-radius: 2px;
     color: var(--t-txt);
-    background: rgba(56, 214, 255, .035);
+    background: rgba(46,197,255, .035);
     font: 11px/1.55 var(--t-font);
 }
 
@@ -1066,7 +1066,7 @@
     border: 1px solid var(--t-line-2);
     border-radius: 3px;
     color: var(--t-c);
-    background: rgba(56, 214, 255, .035);
+    background: rgba(46,197,255, .035);
     font: 700 9px/1.4 var(--t-font);
     letter-spacing: .3px;
     text-decoration: none;
@@ -1075,7 +1075,7 @@
 
 .stock-source-link:hover {
     border-color: var(--t-c);
-    background: rgba(56, 214, 255, .09);
+    background: rgba(46,197,255, .09);
 }
 
 .stock-source-link span {
@@ -1177,6 +1177,6 @@
 /* technical-analysis freshness (served from the analysis cache) */
 .stock-freshness { display: inline-block; font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--t-dim, #6b7f8c);
     border: 1px solid var(--t-line-2, #243843); border-radius: 3px; padding: 2px 8px; margin-bottom: 10px; }
-.stock-freshness::before { content: '● '; color: var(--t-g, #5be3a0); }
+.stock-freshness::before { content: '● '; color: var(--t-g, #19e6a1); }
 .stock-freshness.refreshing::before { color: var(--t-a, #ffd166); animation: stock-blink 1s steps(1) infinite; }
 @keyframes stock-blink { 50% { opacity: 0; } }

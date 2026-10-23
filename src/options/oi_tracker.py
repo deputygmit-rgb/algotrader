@@ -122,6 +122,10 @@ class OITracker:
                 if underlying:
                     inst["_underlying"] = underlying
 
+    def symbol_for(self, token: int) -> str:
+        """Tradingsymbol of a registered option ("" when unknown)."""
+        return (self._instrument_map.get(token) or {}).get("tradingsymbol", "")
+
     def get_tracked_tokens(self) -> list[int]:
         return [
             t for t, inst in self._instrument_map.items()

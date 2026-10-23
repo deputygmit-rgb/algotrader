@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VerquoAI">
+  <defs>
+    <linearGradient id="vq-flow" x1="10" y1="52" x2="52" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2EC5FF"/>
+      <stop offset=".55" stop-color="#25D4D4"/>
+      <stop offset="1" stop-color="#19E6A1"/>
+    </linearGradient>
+    <radialGradient id="vq-glow" cx="51" cy="13" r="13" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19E6A1" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#19E6A1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="51" cy="13" r="13" fill="url(#vq-glow)"/>
+  <path d="M8 17 L24 52 L33 34 L38 40 L49 16" fill="none" stroke="url(#vq-flow)" stroke-width="7.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="51" cy="13" r="5.6" fill="#19E6A1" stroke="#05080C" stroke-width="2.6"/>
+</svg>

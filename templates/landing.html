@@ -1,8 +1,11 @@
+{% from "_brand.html" import brand %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <link rel="icon" href="/favicon.ico" sizes="48x48">
+    <link rel="icon" type="image/png" sizes="96x96" href="/static/img/favicon-96.png">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#05080c">
     <link rel="manifest" href="/manifest.webmanifest">
@@ -12,34 +15,35 @@
     <meta name="apple-mobile-web-app-title" content="VerquoAI">
     <meta name="description" content="VerquoAI is market analytics software with a mock trading terminal for Indian markets (NSE, BSE): live market flow, rule-based intraday and swing setups, options OI, backtests and paper trading. Not a broker and not investment advice. Practise on a simulated market.">
     <script type="application/ld+json">{{ site_json_ld | safe }}</script>
-    <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
+    <title>VerquoAI™ — Mock trading terminal and market analytics for Indian markets</title>
     {% if open_login %}<meta name="robots" content="noindex, follow">{% else %}<meta name="robots" content="index, follow, max-image-preview:large">{% endif %}
     <link rel="canonical" href="{{ site_url }}/">
     <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="VerquoAI">
     <meta property="og:url" content="{{ site_url }}/">
-    <meta property="og:title" content="VerquoAI — Trading terminal for Indian markets">
+    <meta property="og:title" content="VerquoAI — Mock trading terminal for Indian markets">
     <meta property="og:description" content="Live market flow, 5-minute intraday setups, options OI, AI agents, backtests and risk controls in one terminal. Try it on a simulated market.">
     <meta property="og:image" content="{{ site_url }}/static/img/og-card.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="The VerquoAI terminal: market flow and intraday setups">
+    <meta property="og:image:alt" content="The VerquoAI mock trading terminal: market flow and intraday setups">
     <meta property="og:locale" content="en_IN">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="VerquoAI — Trading terminal for Indian markets">
+    <meta name="twitter:title" content="VerquoAI — Mock trading terminal for Indian markets">
     <meta name="twitter:description" content="Market flow, intraday setups, options OI, AI agents and backtests in one terminal.">
     <meta name="twitter:image" content="{{ site_url }}/static/img/og-card.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/landing.css?v={{ static_version('css/landing.css') }}">
     <script>document.documentElement.classList.add('js');</script>
+    <link rel="stylesheet" href="/static/css/brand.css?v={{ static_version('css/brand.css') }}">
 </head>
 <body data-login-on-load="{{ 'true' if open_login else 'false' }}">
     <header class="top">
         <div class="shell top-row">
-            <a class="logo" href="/" aria-label="VerquoAI home">VERQUOAI<sup>™</sup></a>
+            {{ brand("/") }}
             <nav class="top-nav" aria-label="Main navigation">
                 <a href="#terminal">Terminal</a>
                 <a href="#features">Features</a>
@@ -57,22 +61,53 @@
     </header>
 
     <main>
-        <section class="shell hero">
-            <p class="eyebrow"><span class="dot"></span> Trading terminal · Indian markets</p>
+        <section class="shell hero hero-split">
+          <div class="hero-text">
+            <p class="eyebrow"><span class="dot"></span> Mock trading terminal · Indian markets</p>
             <h1>See the market.<br><span>Understand the flow.</span></h1>
-            <p class="hero-copy">Market Flow, intraday setups, options OI, AI agents, backtests and risk controls — one terminal, built for how you actually trade.</p>
+            <p class="hero-copy">Market Flow, intraday setups, options OI, AI agents, backtests and risk controls — one mock trading terminal to practise how you trade.</p>
+            <ul class="hero-points">
+                <li><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>Practise on a simulated market</li>
+                <li><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>Rule-based setups, shown with their outcomes</li>
+                <li><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>Options OI for NIFTY and SENSEX</li>
+                <li><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>Works on any phone or computer</li>
+            </ul>
             <div class="hero-actions">
                 <button class="btn btn-primary btn-lg" type="button" data-start-demo>Open the live demo →</button>
                 <a class="btn btn-ghost btn-lg" href="#contact">Request access</a>
             </div>
             <p class="hero-note">The demo runs backtests, strategies, paper trading, OI tools and agents on a simulated market. No account, nothing real at stake.</p>
             <div class="demo-error" data-demo-error role="alert"></div>
+          </div>
+          <div class="phone-stage" data-phone-slides role="region" aria-roledescription="carousel" aria-label="Screens from the demo">
+            <div class="phone">
+                <span class="phone-island" aria-hidden="true"></span>
+                <div class="phone-screen">
+                    <figure class="phone-slide is-active" aria-roledescription="slide" aria-label="1 of 3"><img src="/static/img/slides/oi-tracker.jpg" alt="OI Tracker in the demo: NIFTY spot, put-call ratio, max pain and OI bias" width="390" height="844" fetchpriority="high"></figure>
+                    <figure class="phone-slide" aria-roledescription="slide" aria-label="2 of 3"><img src="/static/img/slides/backtest.jpg" alt="A backtest in the demo: equity curve and drawdown" width="390" height="844" loading="lazy"></figure>
+                    <figure class="phone-slide" aria-roledescription="slide" aria-label="3 of 3"><img src="/static/img/slides/agents.jpg" alt="AI agents in the demo: agents online, workload and health" width="390" height="844" loading="lazy"></figure>
+                </div>
+            </div>
+            <p class="phone-caption" aria-live="polite"><b>OI Tracker</b> · options chain, PCR, max pain</p>
+            <div class="phone-dots" role="group" aria-label="Choose a screen">
+                <button type="button" aria-label="OI Tracker" aria-current="true" data-caption="&lt;b&gt;OI Tracker&lt;/b&gt; · options chain, PCR, max pain"></button>
+                <button type="button" aria-label="Backtest" data-caption="&lt;b&gt;Backtest&lt;/b&gt; · equity curve, drawdown, Monte Carlo"></button>
+                <button type="button" aria-label="AI agents" data-caption="&lt;b&gt;AI agents&lt;/b&gt; · scan, verify, execute, track"></button>
+            </div>
+          </div>
+        </section>
+
+        <section class="shell stats reveal" aria-label="VerquoAI in numbers">
+            <div class="stat"><b data-count="500" data-suffix="+">500+</b><span>NSE stocks in the money-flow universe</span></div>
+            <div class="stat"><b data-count="8">8</b><span>rule-based setups, each followed to its outcome</span></div>
+            <div class="stat"><b data-count="19">19</b><span>tools in one terminal</span></div>
+            <div class="stat"><b data-count="10" data-prefix="₹" data-suffix=" lakh">₹10 lakh</b><span>of simulated cash in the demo</span></div>
         </section>
 
         <section class="shell" id="terminal" aria-label="Interactive preview of the VerquoAI terminal">
             <div class="term spot" id="term">
                 <div class="term-hud">
-                    <span class="term-logo">VERQUOAI™</span>
+                    {{ brand(tag="span", label="VerquoAI", cls="term-logo", size="12px") }}
                     <span class="pill pill-amber">SIMULATED</span>
                     <span class="hud-session"><i class="hud-dot" id="hud-dot"></i><span id="hud-market">MARKET</span> <b id="hud-clock">--:--:--</b> IST</span>
                     <span class="pill hud-agents" title="Agent health">AGENTS <i class="ag ok"></i><i class="ag ok"></i><i class="ag ok"></i><i class="ag wait" id="hud-agent4"></i></span>
@@ -194,23 +229,55 @@
 
         <section class="shell section reveal" id="features">
             <h2 class="section-title">One terminal. Every step of the trade.</h2>
-            <div class="features">
-                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">Open in demo →</span></a>
+            <div class="slider" data-slider data-autoplay="6000">
+            <div class="features slider-track" tabindex="0" aria-label="Features (scroll sideways)">
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">In your workspace →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">In your workspace →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="oi-tracker"><span class="f-tag">03 · OPTIONS</span><h3>OI Tracker</h3><p>Call and put walls, PCR, max pain and the market's options bias, minute by minute.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">In your workspace →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="backtest"><span class="f-tag">05 · STRATEGY</span><h3>Backtest &amp; paper trade</h3><p>Test a strategy on history, replay sessions bar by bar, then paper trade it before going live.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="agents"><span class="f-tag">06 · AGENTS</span><h3>AI agents &amp; risk</h3><p>Agents scan, verify, execute and track — inside your limits, with a kill switch that stays on after a loss trip.</p><span class="f-go">Open in demo →</span></a>
+            </div>
+            <div class="slider-nav">
+                <button type="button" class="slider-btn" data-prev aria-label="Previous">&#8592;</button>
+                <div class="slider-dots" data-dots></div>
+                <button type="button" class="slider-btn" data-next aria-label="Next">&#8594;</button>
+            </div>
             </div>
         </section>
 
         <section class="shell section reveal" id="steps">
-            <h2 class="section-title">From preview to your own terminal</h2>
+            <h2 class="section-title">From preview to your own workspace</h2>
             <ol class="steps">
                 <li><b>1 · Try the demo</b><span>Backtests, strategies, paper trading and agents on a simulated market.</span></li>
                 <li><b>2 · Request access</b><span>Choose view-only, trading or agentic access. We reply by email.</span></li>
                 <li><b>3 · Use your workspace</b><span>Sign in with your Trading ID: market flow, setup boards, OI tools, backtests and mock trading.</span></li>
             </ol>
+        </section>
+
+        <section class="shell section reveal" id="compare" aria-labelledby="compare-title">
+            <h2 class="section-title" id="compare-title">Practise before it costs you</h2>
+            <div class="compare">
+                <div class="cmp cmp-without">
+                    <h3>Without VerquoAI</h3>
+                    <ul>
+                        <li>Learning with real money</li>
+                        <li>Tips and noise you cannot check</li>
+                        <li>No record of which setups actually work</li>
+                        <li>Charts, OI and notes spread across apps</li>
+                    </ul>
+                </div>
+                <span class="cmp-vs" aria-hidden="true">vs</span>
+                <div class="cmp cmp-with">
+                    <h3>With VerquoAI</h3>
+                    <ul>
+                        <li>A simulated market with &#8377;10 lakh of demo cash</li>
+                        <li>Rule-based signals you can read, with their outcomes</li>
+                        <li>Every setup's record, net of costs &mdash; losers included</li>
+                        <li>Flow, setups, OI, backtests and paper trades in one place</li>
+                    </ul>
+                </div>
+            </div>
         </section>
 
         <section class="shell section reveal" id="about" aria-labelledby="about-title">
@@ -282,9 +349,45 @@
         </section>
     </main>
 
+    <section class="shell cta-band reveal" aria-label="Get started">
+        <div>
+            <h2>See the market before you risk it.</h2>
+            <p>Open the demo on a simulated market &mdash; no account needed.</p>
+        </div>
+        <div class="cta-actions">
+            <button class="btn btn-primary btn-lg" type="button" data-start-demo>Open the demo &#8594;</button>
+            <a class="btn btn-ghost btn-lg" href="#contact">Request access</a>
+        </div>
+    </section>
+
     <footer class="shell foot">
-        <span>© <span id="year"></span> VerquoAI™ · <a href="/about">About</a> · <a href="/disclaimer">Disclaimer</a> · <a href="/disclosures">Disclosures</a> · <a href="/privacy">Privacy</a></span>
-        <span><b>Risk disclosure.</b> {{ risk_line }} <a href="/disclaimer">Read the disclaimer</a>. We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</span>
+        <div class="foot-grid">
+            <div class="foot-brand">
+                {{ brand("/") }}
+                <p class="vq-brand-tag">See the market. Understand the flow.</p>
+            </div>
+            <nav class="foot-col" aria-label="Product">
+                <b>Product</b>
+                <a href="/app" data-start-demo>Demo</a>
+                <a href="#features">Features</a>
+                <a href="#terminal">Live preview</a>
+                <a href="#faq">FAQ</a>
+            </nav>
+            <nav class="foot-col" aria-label="Company">
+                <b>Company</b>
+                <a href="/about">About</a>
+                <a href="#contact">Request access</a>
+                <a href="/login" data-open-login>Sign in</a>
+            </nav>
+            <nav class="foot-col" aria-label="Legal">
+                <b>Legal</b>
+                <a href="/disclaimer">Disclaimer</a>
+                <a href="/disclosures">Disclosures</a>
+                <a href="/privacy">Privacy</a>
+            </nav>
+        </div>
+        <p class="foot-risk"><b>Risk disclosure.</b> {{ risk_line }} <a href="/disclaimer">Read the disclaimer</a>.</p>
+        <p class="foot-small">© <span id="year"></span> VerquoAI™ · We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</p>
     </footer>
 
     <div class="mobile-cta" id="mobile-cta">
@@ -295,7 +398,7 @@
     <div class="login-backdrop" data-close-login></div>
     <aside class="login-panel" id="login-panel" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-hidden="true" inert>
         <div class="login-head">
-            <span class="logo">VERQUOAI<sup>™</sup></span>
+            {{ brand(tag="span", label="VerquoAI") }}
             <button class="login-close" type="button" data-close-login aria-label="Close sign-in">×</button>
         </div>
         <p class="eyebrow"><span class="dot"></span> Secure sign-in</p>
@@ -325,6 +428,7 @@
     </aside>
 
     <script src="/static/js/landing.js?v={{ static_version('js/landing.js') }}" defer></script>
+    <script src="/static/js/landing_ui.js?v={{ static_version('js/landing_ui.js') }}" defer></script>
     <script src="/static/js/contact.js?v={{ static_version('js/contact.js') }}" defer></script>
     <script src="/static/js/metrics.js?v={{ static_version('js/metrics.js') }}" defer></script>
     <script src="/static/js/pwa.js?v={{ static_version('js/pwa.js') }}" defer></script>

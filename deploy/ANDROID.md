@@ -55,7 +55,7 @@ Pick one.
 
 **A. PWABuilder (nothing to install).** Go to <https://www.pwabuilder.com>, enter
 `https://verquoai.com/app`, *Package for stores* → *Android* → *Google Play*:
-package ID `com.verquoai.app`, app name `VerquoAI Trading Terminal`, launcher name
+package ID `com.verquoai.app`, app name `VerquoAI Mock Trading Terminal`, launcher name
 `VerquoAI`, notification delegation on. Download the zip: it holds the `.aab` to upload,
 the **signing key** (keep it and its passwords safe - every update must be signed with it),
 and an `assetlinks.json` (not needed: the server publishes its own, step 4).

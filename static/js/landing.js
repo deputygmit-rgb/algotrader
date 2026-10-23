@@ -429,7 +429,7 @@
         } else if (sig.box) {
             const bx = x(sig.box.from) - slot / 2, bw = x(sig.box.to) - x(sig.box.from) + slot;
             const top = Math.min(y(sig.box.a), y(sig.box.b)), h = Math.abs(y(sig.box.a) - y(sig.box.b));
-            ctx.fillStyle = 'rgba(56,214,255,.10)'; ctx.fillRect(bx, top, bw, h);
+            ctx.fillStyle = 'rgba(46,197,255,.10)'; ctx.fillRect(bx, top, bw, h);
             ctx.strokeStyle = CY; ctx.setLineDash([3, 2]); ctx.strokeRect(bx, top, bw, h); ctx.setLineDash([]);
             ctx.fillStyle = CY; ctx.font = mono(9); ctx.textAlign = 'left';
             ctx.fillText('6-BAR BOX', bx, clamp(top + h + 11, 9, priceH));
@@ -438,7 +438,7 @@
         const end = sig.exitAt !== null ? sig.exitAt : bars.length - 1;
         const from = x(si + 1) - slot / 2, to = x(Math.max(end, si + 4)) + slot / 2;
         ctx.fillStyle = 'rgba(255,90,110,.10)'; ctx.fillRect(from, Math.min(y(sig.entry), y(sig.sl)), to - from, Math.abs(y(sig.sl) - y(sig.entry)));
-        ctx.fillStyle = 'rgba(91,227,160,.08)'; ctx.fillRect(from, Math.min(y(sig.entry), y(sig.t2)), to - from, Math.abs(y(sig.t2) - y(sig.entry)));
+        ctx.fillStyle = 'rgba(25,230,161,.08)'; ctx.fillRect(from, Math.min(y(sig.entry), y(sig.t2)), to - from, Math.abs(y(sig.t2) - y(sig.entry)));
 
         // candles + VWAP
         const cw = Math.max(1.5, slot * 0.6);

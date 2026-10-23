@@ -355,9 +355,9 @@ const DayTrade = (() => {
         hline(t.prev_high, 'rgba(160,180,195,.45)', [1, 3], 'PDH');
         hline(t.prev_low, 'rgba(160,180,195,.45)', [1, 3], 'PDL');
         if (a) {
-            hline(a.entry, 'rgba(56,214,255,.8)', [], 'IN');
+            hline(a.entry, 'rgba(46,197,255,.8)', [], 'IN');
             hline(a.stop, 'rgba(255,90,110,.8)', [4, 3], 'SL');
-            hline(a.target1, 'rgba(91,227,160,.8)', [4, 3], 'T1');
+            hline(a.target1, 'rgba(25,230,161,.8)', [4, 3], 'T1');
         }
 
         const cw = Math.max(1, slot * 0.6);
@@ -373,7 +373,7 @@ const DayTrade = (() => {
             vals.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
             ctx.stroke();
         };
-        line(ind.vwap, '#38d6ff');
+        line(ind.vwap, '#2ec5ff');
         line(ind.ema9, '#ffad60');
         line(ind.ema20, '#ef7697');
 
@@ -384,7 +384,7 @@ const DayTrade = (() => {
             if (i === undefined) continue;
             const long = s.side === 'LONG';
             const px = x(i), py = long ? y(bars[i].l) + 7 : y(bars[i].h) - 7;
-            ctx.fillStyle = long ? '#5be3a0' : '#ff5a6e';
+            ctx.fillStyle = long ? '#19e6a1' : '#ff5a6e';
             ctx.beginPath();
             ctx.moveTo(px, long ? py - 5 : py + 5); ctx.lineTo(px - 4, long ? py + 2 : py - 2); ctx.lineTo(px + 4, long ? py + 2 : py - 2);
             ctx.fill();
@@ -563,14 +563,14 @@ const DayTrade = (() => {
             }
             if (g.box) {
                 const bx = x(g.box.from) - slot / 2, bw = x(g.box.to) - x(g.box.from) + slot;
-                ctx.fillStyle = 'rgba(56,214,255,.08)'; ctx.fillRect(bx, y(g.box.top), bw, y(g.box.bottom) - y(g.box.top));
-                ctx.strokeStyle = 'rgba(56,214,255,.75)'; ctx.setLineDash([3, 2]); ctx.strokeRect(bx, y(g.box.top), bw, y(g.box.bottom) - y(g.box.top)); ctx.setLineDash([]);
-                ctx.fillStyle = 'rgba(56,214,255,.95)'; ctx.font = mono(9); ctx.textAlign = 'left';
+                ctx.fillStyle = 'rgba(46,197,255,.08)'; ctx.fillRect(bx, y(g.box.top), bw, y(g.box.bottom) - y(g.box.top));
+                ctx.strokeStyle = 'rgba(46,197,255,.75)'; ctx.setLineDash([3, 2]); ctx.strokeRect(bx, y(g.box.top), bw, y(g.box.bottom) - y(g.box.top)); ctx.setLineDash([]);
+                ctx.fillStyle = 'rgba(46,197,255,.95)'; ctx.font = mono(9); ctx.textAlign = 'left';
                 ctx.fillText(`${SQUEEZE_BARS}-BAR BOX`, bx, Math.min(priceH - 4, y(g.box.bottom) + 11));
             }
             if (s.setup === 'VWAP_RECLAIM' && g.i >= 2) {
                 for (const k of [g.i - 2, g.i - 1]) {      // the two closes on the other side of VWAP
-                    ctx.fillStyle = 'rgba(56,214,255,.9)';
+                    ctx.fillStyle = 'rgba(46,197,255,.9)';
                     ctx.beginPath(); ctx.arc(x(k), y(bars[k].c), 2.6, 0, Math.PI * 2); ctx.fill();
                 }
             }
@@ -580,7 +580,7 @@ const DayTrade = (() => {
                 : s.status === 'PENDING' ? x(g.i) + slot * 6.5 : x(bars.length - 1) + slot / 2;
             if (s.entry != null) {
                 ctx.fillStyle = 'rgba(255,90,110,.10)'; ctx.fillRect(from, Math.min(y(s.entry), y(s.stop)), to - from, Math.abs(y(s.stop) - y(s.entry)));
-                ctx.fillStyle = 'rgba(91,227,160,.08)'; ctx.fillRect(from, Math.min(y(s.entry), y(s.target2)), to - from, Math.abs(y(s.target2) - y(s.entry)));
+                ctx.fillStyle = 'rgba(25,230,161,.08)'; ctx.fillRect(from, Math.min(y(s.entry), y(s.target2)), to - from, Math.abs(y(s.target2) - y(s.entry)));
             }
         }
 
@@ -600,7 +600,7 @@ const DayTrade = (() => {
             ctx.stroke();
         };
         const emph = s && (s.setup === 'VWAP_RECLAIM' || s.setup === 'PULLBACK');
-        line(ind.vwap, '#38d6ff', emph ? 2 : 1.1);
+        line(ind.vwap, '#2ec5ff', emph ? 2 : 1.1);
         line(ind.ema9, '#ffad60', 1.1);
         line(ind.ema20, '#ef7697', s?.setup === 'PULLBACK' ? 2 : 1.1);
 
@@ -610,31 +610,31 @@ const DayTrade = (() => {
             const to = g.exitI >= 0 ? x(g.exitI) + slot / 2
                 : s.status === 'PENDING' ? x(g.i) + slot * 6.5 : x(bars.length - 1) + slot / 2;
             const pendingDash = s.status === 'PENDING' ? [5, 3] : [];
-            hseg(s.entry, from, to, 'rgba(56,214,255,.95)', pendingDash, 1.3);
+            hseg(s.entry, from, to, 'rgba(46,197,255,.95)', pendingDash, 1.3);
             const beAt = g.t1I >= 0 ? x(g.t1I) + slot / 2 : to;
             hseg(s.stop, from, beAt, 'rgba(255,90,110,.95)', [4, 3], 1.3);
             if (g.t1I >= 0) hseg(s.entry, beAt, to, 'rgba(255,90,110,.75)', [2, 3], 1.3);   // stop moved to breakeven after T1
-            hseg(s.target1, from, to, 'rgba(91,227,160,.9)', [4, 3], 1.1);
-            hseg(s.target2, from, to, 'rgba(91,227,160,.9)', [4, 3], 1.1);
-            tag(s.entry, '#38d6ff', s.status === 'PENDING' ? 'EST' : 'IN');
-            tag(s.stop, '#ff5a6e', 'SL'); tag(s.target1, '#5be3a0', 'T1'); tag(s.target2, '#5be3a0', 'T2');
+            hseg(s.target1, from, to, 'rgba(25,230,161,.9)', [4, 3], 1.1);
+            hseg(s.target2, from, to, 'rgba(25,230,161,.9)', [4, 3], 1.1);
+            tag(s.entry, '#2ec5ff', s.status === 'PENDING' ? 'EST' : 'IN');
+            tag(s.stop, '#ff5a6e', 'SL'); tag(s.target1, '#19e6a1', 'T1'); tag(s.target2, '#19e6a1', 'T2');
             // signal marker
             const long = g.side > 0;
             const px = x(g.i), py = long ? y(bars[g.i].l) + 9 : y(bars[g.i].h) - 9;
-            ctx.fillStyle = long ? '#5be3a0' : '#ff5a6e';
+            ctx.fillStyle = long ? '#19e6a1' : '#ff5a6e';
             ctx.beginPath(); ctx.moveTo(px, long ? py - 6 : py + 6); ctx.lineTo(px - 5, long ? py + 3 : py - 3); ctx.lineTo(px + 5, long ? py + 3 : py - 3); ctx.fill();
             ctx.fillStyle = '#ffd166'; ctx.font = mono(9); ctx.textAlign = 'center';
             ctx.fillText(`SIGNAL ${s.time}`, Math.min(right - 30, Math.max(34, px)), long ? Math.min(priceH - 2, py + 14) : Math.max(9, py - 9));
             // T1 and exit markers
             if (g.t1I >= 0) {
-                ctx.fillStyle = '#5be3a0'; ctx.beginPath(); ctx.arc(x(g.t1I), y(s.target1), 3.2, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#19e6a1'; ctx.beginPath(); ctx.arc(x(g.t1I), y(s.target1), 3.2, 0, Math.PI * 2); ctx.fill();
             }
             const xp = exitPrice(s, t, g);
             if (g.exitI >= 0 && xp != null) {
                 const win = (s.result_r ?? 0) >= 0;
-                ctx.strokeStyle = win ? '#5be3a0' : '#ff5a6e'; ctx.lineWidth = 2;
+                ctx.strokeStyle = win ? '#19e6a1' : '#ff5a6e'; ctx.lineWidth = 2;
                 ctx.beginPath(); ctx.arc(x(g.exitI), y(xp), 4.5, 0, Math.PI * 2); ctx.stroke();
-                ctx.fillStyle = win ? '#5be3a0' : '#ff5a6e'; ctx.font = mono(9); ctx.textAlign = 'center';
+                ctx.fillStyle = win ? '#19e6a1' : '#ff5a6e'; ctx.font = mono(9); ctx.textAlign = 'center';
                 ctx.fillText(`${s.status}${s.result_r != null ? ` ${sgn(s.result_r)}R` : ''}`, Math.min(right - 40, Math.max(40, x(g.exitI))), Math.max(9, y(xp) - 8));
             }
             // other signals on this stock today

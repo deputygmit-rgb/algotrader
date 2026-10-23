@@ -6,9 +6,9 @@
 //                                      live stage events arrive on /ws/live ({type: 'lifecycle'})
 const AgentsView = (() => {
     const AGENTS = {
-        scanner: { name: 'SCANNER', icon: '⌖', color: '#38d6ff', role: 'Market scanner · NIFTY 500 technical analysis' },
+        scanner: { name: 'SCANNER', icon: '⌖', color: '#2ec5ff', role: 'Market scanner · NIFTY 500 technical analysis' },
         verifier: { name: 'VERIFIER', icon: '⛨', color: '#b18cff', role: 'Risk auditor · live preflight checklist (advisory)' },
-        executor: { name: 'EXECUTOR', icon: '⚡', color: '#5be3a0', role: 'Execution supervisor · feed, strategies, signals, orders' },
+        executor: { name: 'EXECUTOR', icon: '⚡', color: '#19e6a1', role: 'Execution supervisor · feed, strategies, signals, orders' },
         tracker: { name: 'TRACKER', icon: '◎', color: '#ff9f43', role: 'Portfolio tracker · broker positions and orders' },
     };
     const ORDER = ['scanner', 'verifier', 'executor', 'tracker'];

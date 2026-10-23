@@ -1,7 +1,7 @@
 {
   "packageId": "com.verquoai.app",
   "host": "verquoai.com",
-  "name": "VerquoAI Trading Terminal",
+  "name": "VerquoAI Mock Trading Terminal",
   "launcherName": "VerquoAI",
   "display": "standalone",
   "orientation": "default",
@@ -25,16 +25,38 @@
   "appVersionName": "1.0.0",
   "appVersionCode": 1,
   "shortcuts": [
-    {"name": "Market Flow", "shortName": "Flow", "url": "/app#tab=market-flow", "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"},
-    {"name": "Day Trade board", "shortName": "Day Trade", "url": "/app#tab=day-trade", "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"},
-    {"name": "Positions", "shortName": "Positions", "url": "/app#tab=positions", "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"},
-    {"name": "Orders", "shortName": "Orders", "url": "/app#tab=orders", "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"}
+    {
+      "name": "Market Flow",
+      "shortName": "Flow",
+      "url": "/app#tab=market-flow",
+      "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"
+    },
+    {
+      "name": "Day Trade board",
+      "shortName": "Day Trade",
+      "url": "/app#tab=day-trade",
+      "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"
+    },
+    {
+      "name": "Positions",
+      "shortName": "Positions",
+      "url": "/app#tab=positions",
+      "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"
+    },
+    {
+      "name": "Orders",
+      "shortName": "Orders",
+      "url": "/app#tab=orders",
+      "chosenIconUrl": "https://verquoai.com/static/img/icon-192.png"
+    }
   ],
   "generatorApp": "bubblewrap-cli",
   "webManifestUrl": "https://verquoai.com/manifest.webmanifest",
   "fallbackType": "customtabs",
   "features": {},
-  "alphaDependencies": {"enabled": false},
+  "alphaDependencies": {
+    "enabled": false
+  },
   "enableSiteSettingsShortcut": true,
   "isChromeOSOnly": false,
   "isMetaQuest": false,
@@ -46,5 +68,7 @@
   "protocolHandlers": [],
   "fileHandlers": [],
   "launchHandlerClientMode": "navigate-existing",
-  "displayOverride": ["standalone"]
+  "displayOverride": [
+    "standalone"
+  ]
 }

@@ -1,9 +1,11 @@
 // Terminal layout for every screen size.
 //
-// * Below 1280 px the header keeps its essentials (status, Start / Stop Live,
-//   Agents) and a Menu button; every other header control moves into the Menu
-//   sheet (and back when the window grows). On a wide screen the header is unchanged.
-// * Below 768 px a bottom navigation bar gives four main tabs and "More" (every
+// * Tablets and wider: every header control stays on screen (they are the risk
+//   and account controls); when they do not fit beside the logo they wrap onto a
+//   second header row.
+// * Phones (below 768 px): the header keeps Start / Stop Live, the Kill Switch and
+//   Agents, and a Menu button holds the other controls (they move back when the
+//   window grows). A bottom navigation bar gives four main tabs and "More" (every
 //   tab, in a sheet), like a native app; the top tab bar is hidden.
 // * Sheets are .modal-overlay pop-ups, so the Back button closes them (pwa.js).
 // Each control is the original element, moved: its handlers and state stay as they were.
@@ -14,8 +16,7 @@
     const tabs = document.querySelector('.tabs');
     if (!header || !right || !tabs) return;
 
-    const KEEP = new Set(['btn-start', 'btn-stop', 't-agents-pill', 't-menu-btn']);
-    const compact = window.matchMedia('(max-width: 1279.98px)');
+    const KEEP = new Set(['btn-start', 'btn-stop', 't-kill-btn', 't-agents-pill', 't-menu-btn']);
     const phone = window.matchMedia('(max-width: 767.98px)');
     const haptic = () => { try { if (document.documentElement.classList.contains('is-app')) navigator.vibrate?.(6); } catch (e) { /* none */ } };
 
@@ -40,14 +41,15 @@
     menuBtn.type = 'button';
     menuBtn.className = 'btn btn-outline btn-sm vq-menu-btn';
     menuBtn.setAttribute('aria-haspopup', 'dialog');
-    menuBtn.innerHTML = '<span aria-hidden="true">☰</span> Menu';
+    menuBtn.setAttribute('aria-label', 'Menu');
+    menuBtn.innerHTML = '<span aria-hidden="true">☰</span><span class="vq-menu-label">Menu</span>';
     right.appendChild(menuBtn);
     const menu = sheet('vq-menu', 'Menu');
     const menuBody = menu.querySelector('.vq-sheet-body');
     const moved = [];          // [element, placeholder]
 
     function layoutHeader() {
-        if (compact.matches && !moved.length) {
+        if (phone.matches && !moved.length) {
             [...right.children].forEach(el => {
                 if (KEEP.has(el.id) || el.classList.contains('t-head-meta')) return;
                 const mark = document.createComment('vq-menu');
@@ -55,11 +57,11 @@
                 menuBody.appendChild(el);
                 moved.push([el, mark]);
             });
-        } else if (!compact.matches && moved.length) {
+        } else if (!phone.matches && moved.length) {
             moved.splice(0).forEach(([el, mark]) => mark.replaceWith(el));
             if (menu.classList.contains('show')) window.hideModal('vq-menu');
         }
-        menuBtn.hidden = !compact.matches;
+        menuBtn.hidden = !phone.matches;
     }
     menuBtn.addEventListener('click', () => { haptic(); window.showModal('vq-menu'); });
     // a control used from the menu closes it (a pop-up it opens appears on its own)
@@ -68,7 +70,7 @@
             setTimeout(() => { if (menu.classList.contains('show')) window.hideModal('vq-menu'); }, 0);
         }
     });
-    compact.addEventListener('change', layoutHeader);
+    phone.addEventListener('change', layoutHeader);
     layoutHeader();
 
     // ── bottom navigation (phones) ─────────────────────────────────────
@@ -117,14 +119,19 @@
     const more = sheet('vq-more', 'All sections');
     const moreBody = more.querySelector('.vq-sheet-body');
     moreBody.classList.add('vq-more-grid');
+    const item = t => {
+        const name = t.dataset.tab || t.dataset.locked;
+        const locked = !t.dataset.tab;
+        const label = t.textContent.replace(/\W+$/, '').trim();
+        return `<button type="button" class="vq-more-item${t.classList.contains('active') ? ' on' : ''}${locked ? ' locked' : ''}" data-go="${name}">
+            ${svg(name)}<span>${label}</span>${locked ? '<i aria-label="locked">🔒</i>' : ''}</button>`;
+    };
+    // the same sections as the tab bar, each under its heading
     function fillMore() {
-        moreBody.innerHTML = [...tabs.querySelectorAll('.tab')].map(t => {
-            const name = t.dataset.tab || t.dataset.locked;
-            const locked = !t.dataset.tab;
-            const label = t.textContent.replace(/\W+$/, '').trim();
-            return `<button type="button" class="vq-more-item${t.classList.contains('active') ? ' on' : ''}${locked ? ' locked' : ''}" data-go="${name}">
-                ${svg(name)}<span>${label}</span>${locked ? '<i aria-label="locked">🔒</i>' : ''}</button>`;
-        }).join('');
+        const groups = [...tabs.querySelectorAll('.tab-group')];
+        moreBody.innerHTML = groups.length
+            ? groups.map(g => `<h3 class="vq-more-head">${g.getAttribute('aria-label')}</h3>${[...g.querySelectorAll('.tab')].map(item).join('')}`).join('')
+            : [...tabs.querySelectorAll('.tab')].map(item).join('');
     }
     function go(name) {
         const btn = realTab(name) || tabs.querySelector(`.tab[data-locked="${CSS.escape(name)}"]`);

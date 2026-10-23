@@ -165,7 +165,7 @@ PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-ot
                 "/robots.txt", "/sitemap.xml",
                 # installable app: manifest, service worker, offline screen, Android app link
                 "/manifest.webmanifest", "/sw.js", "/offline", "/.well-known/assetlinks.json", "/privacy",
-                "/about", "/disclaimer", "/disclosures"}
+                "/about", "/disclaimer", "/disclosures", "/favicon.ico"}
 # the only pages search engines may index; everything else is sent with noindex
 INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml", "/privacy", "/about", "/disclaimer", "/disclosures"}
 
@@ -1125,7 +1125,7 @@ async def web_manifest() -> Response:
                  for name, short, tab in (("Market Flow", "Flow", "market-flow"), ("Day Trade board", "Day Trade", "day-trade"),
                                           ("Positions", "Positions", "positions"), ("Orders", "Orders", "orders"))]
     manifest = {
-        "id": "/app", "name": "VerquoAI Trading Terminal", "short_name": "VerquoAI",
+        "id": "/app", "name": "VerquoAI Mock Trading Terminal", "short_name": "VerquoAI",
         "description": "Market flow, intraday setups, options OI, AI agents, backtests and risk controls for Indian markets.",
         "start_url": "/app?source=app", "scope": "/", "display": "standalone",
         "display_override": ["window-controls-overlay", "standalone"],
@@ -1336,9 +1336,16 @@ async def robots_txt() -> str:
     site = _public_url()
     blocked = "".join(f"User-agent: {bot}\n" for bot in AI_TRAINING_CRAWLERS)
     return (f"{blocked}Disallow: /\n\n"
-            "User-agent: *\nAllow: /$\nAllow: /privacy$\nAllow: /about$\nAllow: /disclaimer$\nAllow: /disclosures$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
+            "User-agent: *\nAllow: /$\nAllow: /favicon.ico$\nAllow: /privacy$\nAllow: /about$\nAllow: /disclaimer$\nAllow: /disclosures$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
             "Allow: /static/js/landing.js\nDisallow: /\n\n"
             f"Sitemap: {site}/sitemap.xml\n")
+
+
+@app.get("/favicon.ico")
+async def favicon_ico() -> Response:
+    """The site icon at the address search engines and browsers ask for first (48x48)."""
+    with open(os.path.join(BASE_DIR, "static", "favicon.ico"), "rb") as f:
+        return Response(f.read(), media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/sitemap.xml")
@@ -1717,7 +1724,26 @@ async def start_live(request: Request) -> dict[str, Any]:
         raise HTTPException(400, "tokens list is required")
     svc = get_user_service(request)
     _require_step_up(request, svc)
-    return await svc.start_live(tokens, mode)
+    symbols = body.get("symbols") if isinstance(body.get("symbols"), dict) else {}
+    names: dict[int, str] = {}
+    resolved: list[int] = []
+    for raw in tokens[:200]:
+        try:
+            token = int(raw)
+        except (TypeError, ValueError):
+            continue
+        sym = str(symbols.get(str(raw)) or symbols.get(raw) or "").strip()[:40]
+        if sym and demo_kind(svc):
+            # the preset list carries exchange tokens; the simulated market numbers its stocks itself
+            token = await svc.resolve_instrument_token(sym) or token
+        if sym:
+            names[token] = sym
+        resolved.append(token)
+    if not resolved:
+        raise HTTPException(400, "tokens list is required")
+    if names:
+        svc.remember_token_names(names)
+    return await svc.start_live(resolved, mode)
 
 
 @app.post("/api/live/stop")

@@ -1,0 +1,5 @@
+{# VerquoAI logo: the mark (a V whose right arm is a breakout line ending in a signal node) + the wordmark.
+   static/css/brand.css styles it; size follows font-size. #}
+{% macro brand(href="/", label="VerquoAI home", tag="a", cls="", size="") -%}
+<{{ tag }} class="vq-brand {{ cls }}"{% if tag == "a" %} href="{{ href }}"{% endif %} aria-label="{{ label }}"{% if size %} style="font-size:{{ size }}"{% endif %}><img class="vq-brand-mark" src="/static/img/brand/mark.svg" alt="" width="28" height="28"><span class="vq-brand-word" aria-hidden="true">VERQUO<b>AI</b></span></{{ tag }}>
+{%- endmacro %}

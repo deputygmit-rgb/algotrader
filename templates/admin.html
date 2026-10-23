@@ -1,3 +1,4 @@
+{% from "_brand.html" import brand %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -8,12 +9,13 @@
     <title>VerquoAI | Admin</title>
     <link rel="stylesheet" href="/static/css/dashboard.css?v={{ css_version }}">
     <link rel="stylesheet" href="/static/css/terminal.css?v={{ terminal_css_version }}">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/brand.css?v={{ static_version('css/brand.css') }}">
 </head>
 <body class="t-admin" data-csrf="{{ csrf_token }}" data-admin="{{ admin_id }}" data-user="{{ admin_id }}">
     <header class="header">
         <div class="header-left">
-            <a class="logo" href="/app">VerquoAI™</a>
+            {{ brand("/app", "VerquoAI workspace") }}
             <span class="status-badge status-demo">ADMIN</span>
             <span class="status-badge" style="color:var(--t-a)">{{ admin_id }}</span>
         </div>

@@ -246,6 +246,7 @@ class TradingService:
         self._running = False
         self._subscribed_tokens: list[int] = []
         self._live_ticks: dict[int, dict[str, Any]] = {}
+        self._token_names: dict[int, str] = {}       # token -> tradingsymbol, for the live data table
         self._last_tick_at: Optional[float] = None   # wall-clock time of the last tick batch (feed health)
         self._tick_count = 0
         self._signal_log: list[dict[str, Any]] = []
@@ -864,6 +865,8 @@ class TradingService:
             # ticker isn't connected yet (e.g. live trading not started).
             await self._ticker.subscribe(tokens, TickMode.FULL)
             self._ensure_market_stream()
+            names = asyncio.create_task(self._learn_token_names(list(getattr(self._ticker, "_subscribed_tokens", {}) or tokens)), name="token_names")
+            names.add_done_callback(self._task_exception_handler)
 
         if not self._oi_streaming:
             self._oi_streaming = True
@@ -1452,6 +1455,8 @@ class TradingService:
 
         await self._seed_bar_data(tokens)
         await self._ticker.subscribe(tokens, TickMode(mode))
+        names = asyncio.create_task(self._learn_token_names(tokens), name="token_names")
+        names.add_done_callback(self._task_exception_handler)
 
         if self._board.settings.get("enabled"):
             self._ensure_day_trade_loop()   # board auto-trade runs alongside live trading
@@ -2088,6 +2093,7 @@ class TradingService:
         """Live price cache, index spots and the OI tracker for one tick."""
         self._live_ticks[tick.instrument_token] = {
             "token": tick.instrument_token,
+            "symbol": self._tick_name(tick.instrument_token),
             "ltp": tick.last_price,
             "volume": tick.volume_traded,
             "high": tick.ohlc.high,
@@ -2260,9 +2266,48 @@ class TradingService:
             sig["done"] = sig["stage"] in TERMINAL
         return sorted(by_id.values(), key=lambda x: x["updated_at"], reverse=True)[:limit]
 
+    def _tick_name(self, token: int) -> str:
+        """Name shown for a live tick: learned names, the OI tracker's options, the
+        strategies' symbol maps; "" until known (the table then shows the token)."""
+        names = self.__dict__.setdefault("_token_names", {})
+        name = names.get(token)
+        if name is None:
+            lookup = getattr(self._oi_tracker, "symbol_for", None)
+            name = lookup(token) if lookup else ""
+            if not name:
+                found = self._symbol_for(token)
+                name = "" if found == str(token) else found
+            if name:
+                names[token] = name
+        return name or ""
+
+    def remember_token_names(self, names: dict[int, str]) -> None:
+        """Names the user picked the instruments by (Start Live)."""
+        self.__dict__.setdefault("_token_names", {}).update({int(t): n for t, n in names.items() if n})
+
+    async def _learn_token_names(self, tokens: list[int]) -> None:
+        """Names for subscribed equities and indices, from the shared NSE / BSE
+        instrument lists (cached for every caller); options come from the OI tracker."""
+        missing = {t for t in tokens if not self._tick_name(t)}
+        for exchange in ("NSE", "BSE"):
+            if not missing:
+                break
+            try:
+                instruments = await self._client.get_instruments(exchange)
+            except Exception as e:
+                logger.warning("token_names_failed", exchange=exchange, error=str(e))
+                continue
+            for inst in instruments:
+                if inst.instrument_token in missing:
+                    self.__dict__.setdefault("_token_names", {})[inst.instrument_token] = inst.tradingsymbol
+                    missing.discard(inst.instrument_token)
+        for token, row in self._live_ticks.items():      # rows already shown get their names
+            if not row.get("symbol"):
+                row["symbol"] = self._tick_name(token)
+
     def _symbol_for(self, token: int, strategy: Any = None) -> str:
         """Tradingsymbol for a token, from the strategies' symbol maps (for logs)."""
-        for s in ([strategy] if strategy is not None else []) + list(self._strategies):
+        for s in ([strategy] if strategy is not None else []) + list(getattr(self, "_strategies", ())):
             tmap = (getattr(s, "params", None) or {}).get("tradingsymbol_map") or {}
             name = tmap.get(token) or tmap.get(str(token))
             if name:

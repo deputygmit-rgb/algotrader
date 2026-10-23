@@ -318,9 +318,9 @@ const Swing = (() => {
             }
             if (g.box && g.box[0] >= 0) {
                 const bx = x(g.box[0]) - slot / 2, bw = x(g.box[1]) - x(g.box[0]) + slot;
-                ctx.fillStyle = 'rgba(56,214,255,.08)'; ctx.fillRect(bx, y(g.box[3]), bw, y(g.box[2]) - y(g.box[3]));
-                ctx.strokeStyle = 'rgba(56,214,255,.8)'; ctx.setLineDash([3, 2]); ctx.strokeRect(bx, y(g.box[3]), bw, y(g.box[2]) - y(g.box[3])); ctx.setLineDash([]);
-                if (!mini) { ctx.fillStyle = '#38d6ff'; ctx.font = mono(9); ctx.textAlign = 'left'; ctx.fillText('FLAG', bx, Math.min(priceH - 4, y(g.box[2]) + 11)); }
+                ctx.fillStyle = 'rgba(46,197,255,.08)'; ctx.fillRect(bx, y(g.box[3]), bw, y(g.box[2]) - y(g.box[3]));
+                ctx.strokeStyle = 'rgba(46,197,255,.8)'; ctx.setLineDash([3, 2]); ctx.strokeRect(bx, y(g.box[3]), bw, y(g.box[2]) - y(g.box[3])); ctx.setLineDash([]);
+                if (!mini) { ctx.fillStyle = '#2ec5ff'; ctx.font = mono(9); ctx.textAlign = 'left'; ctx.fillText('FLAG', bx, Math.min(priceH - 4, y(g.box[2]) + 11)); }
             }
             if (g.level != null) {
                 hseg(g.level, padL, x(i) + slot / 2, 'rgba(190,205,215,.85)', [6, 3], 1.3);
@@ -329,7 +329,7 @@ const Swing = (() => {
             const from = entryI >= 0 ? x(entryI) - slot / 2 : x(i) + slot / 2;
             const to = exitI >= 0 ? x(exitI) + slot / 2 : s.status === 'PENDING' ? x(i) + slot * 4 : x(bars.length - 1) + slot / 2;
             ctx.fillStyle = 'rgba(255,90,110,.10)'; ctx.fillRect(from, Math.min(y(s.entry), y(s.stop)), to - from, Math.abs(y(s.stop) - y(s.entry)));
-            ctx.fillStyle = 'rgba(91,227,160,.08)'; ctx.fillRect(from, Math.min(y(s.entry), y(s.target2)), to - from, Math.abs(y(s.target2) - y(s.entry)));
+            ctx.fillStyle = 'rgba(25,230,161,.08)'; ctx.fillRect(from, Math.min(y(s.entry), y(s.target2)), to - from, Math.abs(y(s.target2) - y(s.entry)));
             s._from = from; s._to = to;
         }
 
@@ -341,28 +341,28 @@ const Swing = (() => {
         if (s && i !== undefined) {
             const { _from: from, _to: to } = s;
             const beAt = t1I >= 0 ? x(t1I) + slot / 2 : to;
-            hseg(s.entry, from, to, 'rgba(56,214,255,.95)', s.status === 'PENDING' ? [5, 3] : [], 1.3);
+            hseg(s.entry, from, to, 'rgba(46,197,255,.95)', s.status === 'PENDING' ? [5, 3] : [], 1.3);
             hseg(s.stop, from, beAt, 'rgba(255,90,110,.95)', [4, 3], 1.3);
             if (t1I >= 0) hseg(s.entry, beAt, to, 'rgba(255,90,110,.75)', [2, 3], 1.3);
-            hseg(s.target1, from, to, 'rgba(91,227,160,.9)', [4, 3]);
-            hseg(s.target2, from, to, 'rgba(91,227,160,.9)', [4, 3]);
-            if (!mini) { tag(s.entry, '#38d6ff', s.status === 'PENDING' ? 'EST' : 'IN'); tag(s.stop, '#ff5a6e', 'SL'); tag(s.target1, '#5be3a0', 'T1'); tag(s.target2, '#5be3a0', 'T2'); }
+            hseg(s.target1, from, to, 'rgba(25,230,161,.9)', [4, 3]);
+            hseg(s.target2, from, to, 'rgba(25,230,161,.9)', [4, 3]);
+            if (!mini) { tag(s.entry, '#2ec5ff', s.status === 'PENDING' ? 'EST' : 'IN'); tag(s.stop, '#ff5a6e', 'SL'); tag(s.target1, '#19e6a1', 'T1'); tag(s.target2, '#19e6a1', 'T2'); }
             const long = s.side === 'LONG', py = long ? y(bars[i].l) + 9 : y(bars[i].h) - 9;
-            ctx.fillStyle = long ? '#5be3a0' : '#ff5a6e';
+            ctx.fillStyle = long ? '#19e6a1' : '#ff5a6e';
             ctx.beginPath(); ctx.moveTo(x(i), long ? py - 6 : py + 6); ctx.lineTo(x(i) - 5, long ? py + 3 : py - 3); ctx.lineTo(x(i) + 5, long ? py + 3 : py - 3); ctx.fill();
             if (!mini) { ctx.fillStyle = '#ffd166'; ctx.font = mono(9); ctx.textAlign = 'center'; ctx.fillText(`SIGNAL ${when(s.time)}`, Math.min(right - 50, Math.max(50, x(i))), long ? Math.min(priceH - 2, py + 14) : Math.max(9, py - 9)); }
-            if (t1I >= 0) { ctx.fillStyle = '#5be3a0'; ctx.beginPath(); ctx.arc(x(t1I), y(s.target1), 3.2, 0, Math.PI * 2); ctx.fill(); }
+            if (t1I >= 0) { ctx.fillStyle = '#19e6a1'; ctx.beginPath(); ctx.arc(x(t1I), y(s.target1), 3.2, 0, Math.PI * 2); ctx.fill(); }
             if (exitI >= 0 && s.exit_price != null) {
                 const win = (s.result_r ?? 0) >= 0;
-                ctx.strokeStyle = win ? '#5be3a0' : '#ff5a6e'; ctx.lineWidth = 2;
+                ctx.strokeStyle = win ? '#19e6a1' : '#ff5a6e'; ctx.lineWidth = 2;
                 ctx.beginPath(); ctx.arc(x(exitI), y(s.exit_price), 4.5, 0, Math.PI * 2); ctx.stroke();
-                if (!mini) { ctx.fillStyle = win ? '#5be3a0' : '#ff5a6e'; ctx.font = mono(9); ctx.textAlign = 'center'; ctx.fillText(`${s.status} ${sgn(s.result_r)}R`, Math.min(right - 40, Math.max(40, x(exitI))), Math.max(9, y(s.exit_price) - 8)); }
+                if (!mini) { ctx.fillStyle = win ? '#19e6a1' : '#ff5a6e'; ctx.font = mono(9); ctx.textAlign = 'center'; ctx.fillText(`${s.status} ${sgn(s.result_r)}R`, Math.min(right - 40, Math.max(40, x(exitI))), Math.max(9, y(s.exit_price) - 8)); }
             }
         } else if (mini) {
             for (const o of signals) {
                 const k = idx.get(o.bar_time); if (k === undefined) continue;
                 const l = o.side === 'LONG', oy = l ? y(bars[k].l) + 7 : y(bars[k].h) - 7;
-                ctx.fillStyle = l ? '#5be3a0' : '#ff5a6e';
+                ctx.fillStyle = l ? '#19e6a1' : '#ff5a6e';
                 ctx.beginPath(); ctx.moveTo(x(k), l ? oy - 5 : oy + 5); ctx.lineTo(x(k) - 4, l ? oy + 2 : oy - 2); ctx.lineTo(x(k) + 4, l ? oy + 2 : oy - 2); ctx.fill();
             }
         } else {
@@ -423,11 +423,11 @@ const Swing = (() => {
             const from = x(si >= 0 ? si : bars.length) - slot / 2;
             const exitDay = s.exit_time ? dayIdx(s.exit_time.slice(0, 10)) : -1;
             const to = exitDay >= 0 ? x(exitDay) + slot / 2 : right;
-            hseg(s.entry, from, to, 'rgba(56,214,255,.9)', [], 1.2);
+            hseg(s.entry, from, to, 'rgba(46,197,255,.9)', [], 1.2);
             hseg(s.stop, from, to, 'rgba(255,90,110,.9)', [4, 3], 1.2);
-            hseg(s.target1, from, to, 'rgba(91,227,160,.85)', [4, 3]);
-            hseg(s.target2, from, to, 'rgba(91,227,160,.85)', [4, 3]);
-            tag(s.entry, '#38d6ff', 'IN'); tag(s.stop, '#ff5a6e', 'SL'); tag(s.target2, '#5be3a0', 'T2');
+            hseg(s.target1, from, to, 'rgba(25,230,161,.85)', [4, 3]);
+            hseg(s.target2, from, to, 'rgba(25,230,161,.85)', [4, 3]);
+            tag(s.entry, '#2ec5ff', 'IN'); tag(s.stop, '#ff5a6e', 'SL'); tag(s.target2, '#19e6a1', 'T2');
         }
         if (t.ltp != null) tag(t.ltp, '#d7e3ea', 'LTP');
     }

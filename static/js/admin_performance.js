@@ -141,7 +141,7 @@
         const cell = v => {
             if (v === undefined) return el('td', { class: 'perf-heat empty' }, '');
             const a = Math.min(Math.abs(v) / max, 1) * .55 + .08;
-            const color = v >= 0 ? `rgba(91,227,160,${a})` : `rgba(255,90,110,${a})`;
+            const color = v >= 0 ? `rgba(25,230,161,${a})` : `rgba(255,90,110,${a})`;
             return el('td', { class: 'perf-heat', style: `background:${color}`, title: `${fmt(v)}R` }, fmt(v, 1));
         };
         return el('div', { class: 'adm-table-wrap' }, el('table', { class: 'adm-table perf-heatmap' },
