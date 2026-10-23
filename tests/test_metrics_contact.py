@@ -95,7 +95,12 @@ def test_contact_validation_and_honeypot(store, monkeypatch):
     monkeypatch.setattr(webapp, "send_mail", lambda *a, **k: pytest.fail("must not email"))
     monkeypatch.delenv("ADMIN_EMAIL", raising=False)
     assert _call("POST", "/contact", body={"name": "", "email": "a@b.co", **CHOICES}).status_code == 400
-    base = {"name": "A", "email": "a@b.co"}
+    base = {"name": "A", "email": "a@b.co", "phone": "9876543210"}
+    # email and phone are both required
+    assert _call("POST", "/contact", body={**base, **CHOICES, "email": ""}).status_code == 400
+    for phone in ("", "98765", "call me 9876543210", "1234567890123456"):
+        r = _call("POST", "/contact", body={**base, **CHOICES, "phone": phone})
+        assert r.status_code == 400 and "phone" in r.json()["message"], phone
     assert _call("POST", "/contact", body={**base, **CHOICES, "access_level": ""}).status_code == 400
     assert _call("POST", "/contact", body={**base, **CHOICES, "access_level": "admin"}).status_code == 400
     assert _call("POST", "/contact", body={**base, **CHOICES, "platform": "  "}).status_code == 400
@@ -124,7 +129,7 @@ def test_requester_gets_a_confirmation_of_access_and_platform(store, monkeypatch
     sent = []
     monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setattr(webapp, "send_mail", lambda to, subject, text, reply_to=None: sent.append((to, subject, text, reply_to)) or True)
-    r = _call("POST", "/contact", body={"name": "Ravi", "email": "ravi@example.com", "access_level": "agentic",
+    r = _call("POST", "/contact", body={"name": "Ravi", "email": "ravi@example.com", "phone": "+91 99887 76655", "access_level": "agentic",
                                         "platform": "FreeMoneyBroker visit spam.example", "confirm": "yes"})
     assert "emailed you a copy" in r.json()["message"]
     admin_mail, user_mail = sent
@@ -145,7 +150,7 @@ def test_requester_gets_a_confirmation_of_access_and_platform(store, monkeypatch
 def test_success_message_does_not_claim_a_copy_when_mail_fails(store, monkeypatch):
     monkeypatch.delenv("ADMIN_EMAIL", raising=False)
     monkeypatch.setattr(webapp, "send_mail", lambda *a, **k: False)
-    r = _call("POST", "/contact", body={"name": "A", "email": "a@b.co", **CHOICES})
+    r = _call("POST", "/contact", body={"name": "A", "email": "a@b.co", "phone": "9876543210", **CHOICES})
     assert r.json() == {"success": True, "message": "Thanks! We'll get back to you by email."}
 
 
@@ -172,7 +177,8 @@ def test_follow_up_for_a_supported_broker_gives_setup_steps(store, monkeypatch):
     monkeypatch.setenv("PUBLIC_URL", "https://verquoai.com/")
     monkeypatch.setattr(webapp, "send_mail", lambda to, subject, text, reply_to=None: sent.append(text) or True)
     # a spoofed Host header must not change the links we email
-    _call("POST", "/contact", body={"name": "A", "email": "a@b.co", **CHOICES}, headers={"Host": "evil.example"})
+    _call("POST", "/contact", body={"name": "A", "email": "a@b.co", "phone": "9876543210", **CHOICES},
+          headers={"Host": "evil.example"})
     text = sent[1]
     assert "Redirect URL:  https://verquoai.com/api/auth/callback" in text
     assert "Please do NOT send the API\n     secret by email" in text

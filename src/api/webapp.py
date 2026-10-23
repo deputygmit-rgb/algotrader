@@ -536,6 +536,14 @@ _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
+PHONE_HINT = "Please enter your phone number: 10 to 15 digits, with the country code if outside India."
+
+
+def _valid_phone(phone: str) -> bool:
+    """Required on access requests: digits with optional +, spaces, dashes, dots, brackets; 10-15 digits."""
+    return bool(re.fullmatch(r"\+?[0-9() .\-]{10,20}", phone)) and 10 <= sum(c.isdigit() for c in phone) <= 15
+
+
 def _clean(value: Any, limit: int, multiline: bool = False) -> str:
     text = _CONTROL.sub("", str(value or ""))
     if not multiline:
@@ -708,8 +716,8 @@ async def contact(request: Request) -> Any:
         return JSONResponse({"success": False, "message": "Please tell us your name."}, status_code=400)
     if not _EMAIL.match(email):
         return JSONResponse({"success": False, "message": "Please enter a valid email address."}, status_code=400)
-    if phone and not re.fullmatch(r"[0-9+\-() ]{6,20}", phone):
-        return JSONResponse({"success": False, "message": "Please enter a valid phone number."}, status_code=400)
+    if not _valid_phone(phone):
+        return JSONResponse({"success": False, "message": PHONE_HINT}, status_code=400)
     if trading_id and not re.fullmatch(r"[A-Z0-9]{4,10}", trading_id):
         return JSONResponse({"success": False, "message": "Trading ID should be 4-10 letters or digits."}, status_code=400)
     if access_level not in ACCESS_LEVELS:

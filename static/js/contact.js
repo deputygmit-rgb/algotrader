@@ -14,6 +14,11 @@
             const data = Object.fromEntries(new FormData(form).entries());
             if (!String(data.name || '').trim()) return say('error', 'Please tell us your name.');
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(data.email || '').trim())) return say('error', 'Please enter a valid email address.');
+            const phone = String(data.phone || '').trim();
+            const digits = phone.replace(/\D/g, '').length;
+            if (!/^\+?[0-9() .-]{10,20}$/.test(phone) || digits < 10 || digits > 15) {
+                return say('error', 'Please enter your phone number: 10 to 15 digits, with the country code if outside India.');
+            }
             if (!data.access_level) return say('error', 'Please choose the access you want.');
             if (!String(data.platform || '').trim()) return say('error', 'Please tell us which broker you trade with.');
             if (data.confirm !== 'yes') return say('error', 'Please confirm the access and platform you selected.');
