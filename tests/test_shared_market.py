@@ -23,6 +23,13 @@ SOURCE_ID = "OWNER1"
 SOURCE_TOKEN = "source-access-token-xyz"
 
 
+@pytest.fixture(autouse=True)
+def _no_backup_feed(monkeypatch):
+    """These tests are about the primary source; a backup token saved on the machine
+    running them (admin panel) must not stand in for a logged-out source."""
+    monkeypatch.setattr("src.api.backup_quotes.source_mode", lambda: "kite_only")
+
+
 class SourceClient:
     """The source account's KiteClient: records every call made on it."""
 

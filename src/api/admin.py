@@ -438,7 +438,7 @@ async def admin_test_backup_quotes(request: Request) -> dict[str, Any]:
     try:
         await backup._ensure_master()
         fut = sorted(k for k in backup._fut if k.startswith("RELIANCE") and k.endswith("FUT"))
-        keys = ["NSE:NIFTY 50", "NSE:RELIANCE"] + fut[:1]
+        keys = ["NSE:NIFTY 50", "NSE:RELIANCE"] + [f"NFO:{k}" for k in fut[:1]]   # a future: shows its OI
         queries = [q for q in (backup.query_for(k) for k in keys) if q]
         raw = await backup.fetch_raw(queries)
         quotes = await backup.get_quote(keys)

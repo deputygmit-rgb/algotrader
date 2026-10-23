@@ -52,9 +52,9 @@ INDEX_NAMES = {
     "NSE:NIFTY 50": ("nse_cm", "Nifty 50"),
     "NSE:NIFTY BANK": ("nse_cm", "Nifty Bank"),
     "NSE:NIFTY FIN SERVICE": ("nse_cm", "Nifty Fin Service"),
-    "NSE:NIFTY MID SELECT": ("nse_cm", "Nifty Mid Select"),
+    "NSE:NIFTY MID SELECT": ("nse_cm", "NIFTY MID SELECT"),
     "NSE:NIFTY IT": ("nse_cm", "Nifty IT"),
-    "NSE:INDIA VIX": ("nse_cm", "India VIX"),
+    "NSE:INDIA VIX": ("nse_cm", "INDIA VIX"),
     "BSE:SENSEX": ("bse_cm", "SENSEX"),
     "BSE:BANKEX": ("bse_cm", "BANKEX"),
 }

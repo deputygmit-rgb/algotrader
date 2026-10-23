@@ -3115,6 +3115,14 @@ class TradingService:
             self._fno_baselines = {}
         logger.info("fno_universe_loaded", stocks=len(self._fno_universe), baselines=len(self._fno_baselines))
 
+    def _store_daily(self, c: Any, cash: list[Any], fut: list[Any]) -> None:
+        now = datetime.now()
+        for token, candles in ((c.cash_token, cash), (c.fut_token if c.has_future else None, fut)):
+            if token and candles:
+                self._market_store.store_candles(token, "day", completed_candles([
+                    {"ts": k.timestamp, "open": k.open, "high": k.high, "low": k.low, "close": k.close,
+                     "volume": k.volume, "oi": k.oi} for k in candles], "day", now))
+
     async def _load_fno_baselines(self) -> None:
         """Fetch previous-session cash candles and futures OI for every F&O
         stock (2 historical calls each, throttled by the client limiter)."""
@@ -3138,6 +3146,14 @@ class TradingService:
                 "cash": [[str(k.timestamp)[:10], k.high, k.low, k.close, k.volume] for k in cash],
                 "fut_oi": [[str(k.timestamp)[:10], k.oi or 0] for k in fut],
             }
+            if not self.__dict__.get("is_backup_feed") and not self.__dict__.get("is_shared_market") \
+                    and not self.__dict__.get("is_demo"):
+                # kept, so a day on the backup feed (no candles from it) still has the
+                # previous sessions' levels and futures OI to compare with (src/api/backup_feed.py)
+                try:
+                    await asyncio.to_thread(self._store_daily, c, cash, fut)
+                except Exception as e:
+                    logger.warning("fno_baseline_store_failed", symbol=c.symbol, error=str(e))
 
         for i in range(0, len(pending), 6):
             await asyncio.gather(*(load(c) for c in pending[i:i + 6]))
