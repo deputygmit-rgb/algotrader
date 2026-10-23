@@ -37,6 +37,7 @@ from src.api.shared_market import SharedMarketHub, shared_market_id
 from src.auth.access import AGENTIC, LEVEL_LABELS, VIEW, AccessDenied
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
+from src.api import site_facts
 from src.api.request_limiter import api_limiter
 from src.utils.memory import run_hygiene
 from src.analysis.efficacy import run_rebuilder
@@ -718,7 +719,7 @@ async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True,
-                                                                "form_token": _form_token()})
+                                                                "form_token": _form_token(), **site_facts.context()})
 
 
 @app.post("/auth/send-otp")
@@ -926,7 +927,7 @@ templates.env.globals["static_version"] = _static_version
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
-                                                                "form_token": _form_token()})
+                                                                "form_token": _form_token(), **site_facts.context()})
 
 
 @app.get("/app", response_class=HTMLResponse)

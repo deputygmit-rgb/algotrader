@@ -29,7 +29,7 @@ from datetime import date, timedelta
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from src.analysis.efficacy import PATH, WINDOW_DAYS, save, summarize  # noqa: E402
+from src.analysis.efficacy import PATH, WINDOW_DAYS, oi_bias_record, save, summarize  # noqa: E402
 
 DAY_HISTORY_DAYS = WINDOW_DAYS + 45        # warm-up: the setups need 15 earlier sessions
 SWING_DAILY_DAYS = WINDOW_DAYS + 120       # daily EMA 50 + 20-day levels before the window
@@ -126,6 +126,9 @@ def main() -> None:
         with open(args.out, encoding="utf-8") as f:
             data = json.load(f)
         print(f"as of {data['as_of']}")
+        for u, r in (data.get("oi_bias") or {}).items():
+            print(f"  OI bias {u}: {r.get('status')} - {r.get('n', 0)} directional readings - hit {r.get('hit_rate')} "
+                  f"vs chance {r.get('chance')} - weight x{r.get('factor')}")
         for r in sorted(data["records"].values(), key=lambda r: (r["kind"], r["setup"], r["side"])):
             print(f"  {r['kind']:5} {r['setup']:15} {r['side']:5} n={r['n']:3d} avg {r['avg_r']:+.3f}R "
                   f"shrunk {r['shrunk_r']:+.3f}R win {r['win_rate']:3d}%  adj {r['adj']:+d}  {r['status']}")
@@ -141,15 +144,25 @@ def main() -> None:
         pass
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     trades = day_trades(con, today) + swing_trades(con, today)
+    since = (today - timedelta(days=WINDOW_DAYS)).isoformat()
+    oi_bias = {}
+    for u in ("NIFTY", "SENSEX"):
+        try:
+            rows = con.execute("SELECT ts, bias, spot_price FROM oi_bias_history WHERE underlying=? AND ts >= ? "
+                               "AND ts < ? ORDER BY ts", (u, since, today.isoformat())).fetchall()
+        except sqlite3.Error:
+            rows = []
+        oi_bias[u] = oi_bias_record(rows)
     con.close()
     records = summarize(trades, today, previous)
     note = f"{len(trades)} trades replayed in {time.time() - started:.0f}s"
-    save(records, today, args.out, note=note)
+    save(records, today, args.out, note=note, oi_bias=oi_bias)
     print(f"efficacy: {len(records)} setup records from {len(trades)} trades in {time.time() - started:.0f}s")
     if args.email or args.force_email or args.preview:
         from src.analysis import efficacy_report as report
 
-        subject, text, html = report.build(records, previous, today, report.board_today(args.db, today), note)
+        subject, text, html = report.build(records, previous, today, report.board_today(args.db, today), note,
+                                           oi_bias=oi_bias)
         if args.preview:
             print(f"\nSubject: {subject}\n\n{text}")
         elif report.should_send(previous_as_of, today, args.force_email):

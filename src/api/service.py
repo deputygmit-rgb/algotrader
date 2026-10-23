@@ -137,7 +137,7 @@ class TradingService:
     _instance: Optional[TradingService] = None
 
     def __init__(self, api_key: str = "", api_secret: str = "", zerodha_id: str = "", demo: bool = False,
-                 shared_market: bool = False) -> None:
+                 shared_market: bool = False, backup_feed: bool = False) -> None:
         self._settings = get_settings()
         self._zerodha_id = zerodha_id
         # Demo sessions run this same service against a simulated broker
@@ -147,7 +147,15 @@ class TradingService:
         # data from the shared source account (src/api/shared_market.py): market
         # data only, an empty account of their own, no orders.
         self.is_shared_market = shared_market and not demo
-        if self.is_shared_market:
+        # the backup market-data feed (src/api/backup_feed.py): no broker session, no account
+        self.is_backup_feed = backup_feed and not demo and not shared_market
+        if self.is_backup_feed:
+            from src.api.backup_feed import BackupMarketClient, NullTicker
+
+            self._client = BackupMarketClient()
+            self._auth = self._client._auth
+            self._ticker = NullTicker()
+        elif self.is_shared_market:
             from src.api.shared_market import SharedMarketHub
 
             hub = SharedMarketHub.get_instance()
@@ -685,6 +693,7 @@ class TradingService:
             # subscribe() always records tokens for auto-resubscribe even if the
             # ticker isn't connected yet (e.g. live trading not started).
             await self._ticker.subscribe(tokens, TickMode.FULL)
+            self._ensure_market_stream()
 
         if not self._oi_streaming:
             self._oi_streaming = True
@@ -1271,8 +1280,10 @@ class TradingService:
 
         if self._board.settings.get("enabled"):
             self._ensure_day_trade_loop()   # board auto-trade runs alongside live trading
+        stream = self.__dict__.get("_market_stream_task")
+        already_connected = stream is not None and not stream.done()   # the OI tracker's stream: reuse it
         for coro in [
-            self._ticker.connect(),
+            *([] if already_connected else [self._ticker.connect()]),
             self._bar_flush_loop(),
             self._execution.start_reconciliation_loop(),
             self._position_update_loop(),
@@ -1885,6 +1896,58 @@ class TradingService:
             "signal_bar": str(df["timestamp"].iloc[-1]),
         }
 
+    def _track_tick(self, tick: Tick) -> None:
+        """Live price cache, index spots and the OI tracker for one tick."""
+        self._live_ticks[tick.instrument_token] = {
+            "token": tick.instrument_token,
+            "ltp": tick.last_price,
+            "volume": tick.volume_traded,
+            "high": tick.ohlc.high,
+            "low": tick.ohlc.low,
+            "open": tick.ohlc.open,
+            "close": tick.ohlc.close,
+            "change": tick.change,
+            "buy_qty": tick.total_buy_quantity,
+            "sell_qty": tick.total_sell_quantity,
+        }
+        if tick.instrument_token == NIFTY_TOKEN:
+            self._oi_tracker.set_spot_price("NIFTY", tick.last_price)
+        elif tick.instrument_token == SENSEX_TOKEN:
+            self._oi_tracker.set_spot_price("SENSEX", tick.last_price)
+        if tick.oi is not None or tick.oi_day_high is not None:
+            self._oi_tracker.update_from_tick({
+                "instrument_token": tick.instrument_token,
+                "last_price": tick.last_price,
+                "volume_traded": tick.volume_traded,
+                "change": tick.change,
+                "oi": tick.oi or 0,
+                "oi_day_high": tick.oi_day_high or 0,
+                "oi_day_low": tick.oi_day_low or 0,
+            })
+
+    async def _on_market_ticks(self, ticks: list[Tick]) -> None:
+        """Ticks while live trading is off: prices and the OI tracker only - no bars,
+        strategies or stored snapshots (every viewer would write the same rows)."""
+        self._last_tick_at = time.time()
+        self._tick_count += len(ticks)
+        for tick in ticks:
+            self._track_tick(tick)
+
+    def _ensure_market_stream(self) -> None:
+        """Connect the tick stream for market data alone (the live OI tracker) when live
+        trading is not running. It used to connect only on Start Live, which view-only
+        accounts never have, so their live OI panel stayed empty. Start Live takes this
+        connection over instead of opening a second one."""
+        if self._running or self.__dict__.get("is_backup_feed"):
+            return
+        task = self.__dict__.get("_market_stream_task")
+        if task is not None and not task.done():
+            return
+        self._ticker.on_ticks = self._on_market_ticks
+        self._ticker.on_order_update = None
+        self._market_stream_task = asyncio.create_task(self._ticker.connect(), name="market_stream")
+        self._market_stream_task.add_done_callback(self._task_exception_handler)
+
     async def _on_ticks(self, ticks: list[Tick]) -> None:
         self._last_tick_at = time.time()
         completed_bars: list[tuple[str, int, Any]] = []
@@ -1893,19 +1956,7 @@ class TradingService:
         quote_rows: list[dict[str, Any]] = []
         now_mono = time.monotonic()
         for tick in ticks:
-            tick_data = {
-                "token": tick.instrument_token,
-                "ltp": tick.last_price,
-                "volume": tick.volume_traded,
-                "high": tick.ohlc.high,
-                "low": tick.ohlc.low,
-                "open": tick.ohlc.open,
-                "close": tick.ohlc.close,
-                "change": tick.change,
-                "buy_qty": tick.total_buy_quantity,
-                "sell_qty": tick.total_sell_quantity,
-            }
-            self._live_ticks[tick.instrument_token] = tick_data
+            self._track_tick(tick)
 
             last_persist = self._last_quote_persist.get(tick.instrument_token, 0.0)
             if now_mono - last_persist >= self._quote_persist_interval_s:
@@ -1924,22 +1975,6 @@ class TradingService:
                     "net_change": tick.change,
                 })
                 self._last_quote_persist[tick.instrument_token] = now_mono
-
-            if tick.instrument_token == NIFTY_TOKEN:
-                self._oi_tracker.set_spot_price("NIFTY", tick.last_price)
-            elif tick.instrument_token == SENSEX_TOKEN:
-                self._oi_tracker.set_spot_price("SENSEX", tick.last_price)
-
-            if tick.oi is not None or tick.oi_day_high is not None:
-                self._oi_tracker.update_from_tick({
-                    "instrument_token": tick.instrument_token,
-                    "last_price": tick.last_price,
-                    "volume_traded": tick.volume_traded,
-                    "change": tick.change,
-                    "oi": tick.oi or 0,
-                    "oi_day_high": tick.oi_day_high or 0,
-                    "oi_day_low": tick.oi_day_low or 0,
-                })
 
             ts = (tick.exchange_timestamp or datetime.now()).replace(tzinfo=None)
             for iv, agg in self._bar_aggs.items():
@@ -2979,6 +3014,8 @@ class TradingService:
                 self._fno_universe, quotes, self._fno_baselines, now, self._fno_history.changes_ago(15, now),
             )
             result["baseline_loading"] = bool(self._fno_baseline_task and not self._fno_baseline_task.done())
+            # prices from the backup source while the primary broker's quotes are down (src/api/backup_quotes.py)
+            result["data_source"] = "backup" if getattr(self._client, "last_quote_source", "") == "backup" else "primary"
             self._fno_history.record(result, now)
             self._fno_cache = (time.monotonic(), result)
             self._record_flow_snapshot(result, now)
@@ -2999,8 +3036,8 @@ class TradingService:
     def _record_flow_snapshot(self, flow: dict[str, Any], now: datetime) -> None:
         """Persist the flow once per 5-minute bar close, stamped with that close
         (HH:MM), so back-tests see exactly what the board saw when a bar closed."""
-        if self.__dict__.get("is_shared_market"):
-            return        # the source account stores the snapshot for everyone
+        if self.__dict__.get("is_shared_market") or self.__dict__.get("is_backup_feed"):
+            return        # the source account stores the snapshot (backup prices are not history)
         if not market_open(now) or flow.get("baseline_loading") or not flow.get("rows"):
             return
         stamp = bar_bucket(now).strftime("%Y-%m-%dT%H:%M")    # the bar that just closed ends here

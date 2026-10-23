@@ -43,6 +43,14 @@ RESUME_ABOVE = -0.05
 MAX_BONUS, MAX_PENALTY = 8, 15
 R_TO_POINTS = 40               # +0.2R shrunk expectancy -> +8 points
 RELOAD_EVERY_S = 60.0
+# The index options-OI bias adds up to MARKET_WEIGHT quality points to signals with it
+# (src/analysis/market_regime.py). Its weight follows its own record: how often a
+# directional reading called the index's next OI_HORIZON_MIN minutes, against what
+# chance would have scored in the same market (share of rising / falling stretches).
+OI_HORIZON_MIN = 30
+OI_MIN_READINGS = 300          # directional readings before the bias is trusted or dropped
+OI_FULL_EDGE = 0.05            # hit rate this far above chance earns the full weight
+OI_UNPROVEN_FACTOR = 0.5       # until then: half weight
 
 
 def _key(kind: str, setup: str, side: str) -> str:
@@ -83,11 +91,44 @@ def summarize(trades: list[dict[str, Any]], as_of: date, previous: Optional[dict
     return out
 
 
-def save(records: dict[str, dict[str, Any]], as_of: date, path: str = PATH, note: str = "") -> None:
+def oi_bias_record(rows: list[tuple[str, str, float]], horizon_min: int = OI_HORIZON_MIN) -> dict[str, Any]:
+    """Track record of the per-minute OI bias: ``rows`` are (ts, bias, spot) in time order."""
+    from datetime import datetime as _dt
+
+    from src.analysis.market_regime import BIAS_SCORE
+
+    spot = {str(ts)[:16]: float(sp) for ts, _, sp in rows if sp}
+    moves = []
+    for ts, bias, sp in rows:
+        if not sp:
+            continue
+        later = spot.get((_dt.fromisoformat(str(ts)[:16]) + timedelta(minutes=horizon_min)).isoformat()[:16])
+        if later is not None:
+            moves.append((BIAS_SCORE.get(str(bias or "").upper(), 0.0), later / float(sp) - 1))
+    directional = [(score, mv) for score, mv in moves if score and mv]
+    n = len(directional)
+    if not n:
+        return {"n": 0, "factor": OI_UNPROVEN_FACTOR, "status": "no readings"}
+    moving = [mv for _, mv in moves if mv]
+    up_share = sum(mv > 0 for mv in moving) / len(moving)
+    hits = sum((score > 0) == (mv > 0) for score, mv in directional) / n
+    chance = sum(up_share if score > 0 else 1 - up_share for score, _ in directional) / n
+    edge = hits - chance
+    if n < OI_MIN_READINGS:
+        factor, status = OI_UNPROVEN_FACTOR, "unproven"
+    else:
+        factor = max(0.0, min(1.0, edge / OI_FULL_EDGE))
+        status = "trusted" if factor >= 1 else "dropped" if factor <= 0 else "partial"
+    return {"n": n, "hit_rate": round(hits, 3), "chance": round(chance, 3), "edge": round(edge, 3),
+            "factor": round(factor, 2), "status": status, "horizon_min": horizon_min}
+
+
+def save(records: dict[str, dict[str, Any]], as_of: date, path: str = PATH, note: str = "",
+         oi_bias: Optional[dict[str, Any]] = None) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"as_of": as_of.isoformat(), "note": note, "records": records}, f, indent=1)
+        json.dump({"as_of": as_of.isoformat(), "note": note, "records": records, "oi_bias": oi_bias or {}}, f, indent=1)
     os.replace(tmp, path)
 
 
@@ -98,6 +139,7 @@ class Efficacy:
         self.path = path
         self.as_of: Optional[str] = None
         self.records: dict[str, dict[str, Any]] = {}
+        self.oi_bias: dict[str, Any] = {}
         self._mtime = 0.0
         self._checked = 0.0
 
@@ -116,6 +158,7 @@ class Efficacy:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
             self.records, self.as_of, self._mtime = dict(data.get("records") or {}), data.get("as_of"), mtime
+            self.oi_bias = dict(data.get("oi_bias") or {})
         except (OSError, ValueError):
             pass
 
@@ -138,6 +181,14 @@ class Efficacy:
             skip = f"weak lately: {rec['avg_r']:+.2f}R a trade over its last {rec['n']} takes quality to {quality}"
         return {"n": rec["n"], "avg_r": rec["avg_r"], "shrunk_r": rec["shrunk_r"], "adj": rec["adj"],
                 "status": rec["status"], "quality": quality, "skip": skip, "as_of": self.as_of}
+
+    def oi_weight(self, underlying: str = "NIFTY") -> float:
+        """Quality points a full BULLISH / BEARISH agreement is worth now, by the bias's record."""
+        from src.analysis.market_regime import MARKET_WEIGHT
+
+        self._refresh()
+        rec = self.oi_bias.get(underlying) or {}
+        return round(MARKET_WEIGHT * float(rec.get("factor", OI_UNPROVEN_FACTOR)), 2)
 
     def summary(self, kind: str) -> list[dict[str, Any]]:
         self._refresh()

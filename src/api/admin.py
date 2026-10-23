@@ -233,8 +233,11 @@ async def admin_overview(request: Request) -> dict[str, Any]:
             "account": hub.account_id,
             "available": hub.available,
             "feed_connected": hub.feed_connected,
+            "source": hub.source_kind(),          # "primary", "backup" (no broker login today) or None
             "candidates": [u["zerodha_id"] for u in users if u["has_api_key"]],
         },
+        "backup_quotes": {**_backup().status(), "mode": _source_mode(),
+                          "modes": [{"value": k, "label": v} for k, v in _source_modes().items()]},
         "contacts": metrics.list_contacts(100),
         "contact_statuses": list(CONTACT_STATUSES),
         "audit": metrics.list_audit(100),
@@ -358,6 +361,90 @@ async def admin_set_market_data(request: Request) -> dict[str, Any]:
     await hub.set_account(raw)
     _audit(request, admin, "market_data_account_changed", raw or "(off)", previous=previous or "(off)")
     return {"success": True}
+
+
+# ── backup market data (src/api/backup_quotes.py) ──────────────────────────
+
+def _backup() -> Any:
+    from src.api.backup_quotes import backup_quotes
+
+    return backup_quotes()
+
+
+def _source_mode() -> str:
+    from src.api.backup_quotes import source_mode
+
+    return source_mode()
+
+
+def _source_modes() -> dict[str, str]:
+    from src.api.backup_quotes import SOURCE_MODES
+
+    return SOURCE_MODES
+
+
+@router.post("/api/admin/backup-quotes")
+async def admin_set_backup_quotes(request: Request) -> dict[str, Any]:
+    """Backup quote source: {token?: str, clear_token?: bool, base_url?: str, enabled?: bool}.
+    The token is stored encrypted and never returned."""
+    from src.auth.user_config import encrypt_secret
+
+    admin = _require_write(request)
+    body = await _json(request)
+    changes = []
+    token = str(body.get("token") or "").strip()
+    if token:
+        if len(token) > 200 or any(c.isspace() for c in token):
+            raise HTTPException(400, "That does not look like an API access token.")
+        _save_guard(lambda: set_setting("backup_quotes_token", encrypt_secret(token)))
+        changes.append("token")
+    elif body.get("clear_token"):
+        _save_guard(lambda: set_setting("backup_quotes_token", ""))
+        changes.append("token cleared")
+    if "base_url" in body:
+        url = str(body.get("base_url") or "").strip().rstrip("/")
+        if url and not re.fullmatch(r"https://[a-z0-9.-]+\.kotaksecurities\.com", url):
+            raise HTTPException(400, "Base URL must be an https://….kotaksecurities.com address.")
+        _save_guard(lambda: set_setting("backup_quotes_base_url", url))
+        changes.append("base URL")
+    if "enabled" in body:
+        _save_guard(lambda: set_setting("backup_quotes_enabled", "1" if body.get("enabled") else "0"))
+        changes.append("on" if body.get("enabled") else "off")
+    if "mode" in body:
+        mode = str(body.get("mode") or "")
+        if mode not in _source_modes():
+            raise HTTPException(400, "Unknown source order.")
+        _save_guard(lambda: set_setting("quote_source_mode", mode))
+        changes.append(f"order: {mode}")
+    _audit(request, admin, "backup_quotes_changed", "backup", changes=", ".join(changes) or "nothing")
+    return {"success": True, "status": _backup().status()}
+
+
+@router.post("/api/admin/backup-quotes/test")
+async def admin_test_backup_quotes(request: Request) -> dict[str, Any]:
+    """Fetch a few live quotes through the backup: shows what it returns, field by field."""
+    admin = _require_write(request)
+    backup = _backup()
+    if not backup.token():
+        raise HTTPException(400, "Add the backup API access token first.")
+    try:
+        await backup._ensure_master()
+        fut = sorted(k for k in backup._fut if k.startswith("RELIANCE") and k.endswith("FUT"))
+        keys = ["NSE:NIFTY 50", "NSE:RELIANCE"] + fut[:1]
+        queries = [q for q in (backup.query_for(k) for k in keys) if q]
+        raw = await backup.fetch_raw(queries)
+        quotes = await backup.get_quote(keys)
+    except Exception as e:
+        _audit(request, admin, "backup_quotes_test", "backup", ok=False)
+        return {"success": False, "error": str(e)[:300], "status": backup.status()}
+    _audit(request, admin, "backup_quotes_test", "backup", ok=True)
+    return {
+        "success": True,
+        "fields": sorted({k for d in raw for k in d}),
+        "quotes": {k: {"last_price": q.last_price, "volume": q.volume, "oi": q.oi, "change": q.net_change,
+                       "ohlc": q.ohlc.model_dump(), "depth_levels": len(q.depth.buy)} for k, q in quotes.items()},
+        "status": backup.status(),
+    }
 
 
 # ── access requests ─────────────────────────────────────────────────────────

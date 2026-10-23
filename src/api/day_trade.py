@@ -246,6 +246,8 @@ class DayTradeTracker:
                 prev_close=inputs["prev_close"] if inputs else None,
                 ltp=r.get("ltp"), direction=bias, min_quality=MIN_QUALITY,
                 market_bias=self.market_bias, vol_norm=inputs.get("vol_norm") if inputs else None,
+                # the OI bias counts as much as its own record has earned (src/analysis/efficacy.py)
+                market_weight=get_efficacy().oi_weight("NIFTY"),
             )
             last_bar = bars[-1] if bars else None
             for s in result["signals"]:
@@ -322,6 +324,7 @@ class DayTradeTracker:
             # every signal as if it had been taken - hypothetical, for reviewing a past session
             "replay_stats": _replay_stats(feed),
             "efficacy": get_efficacy().summary("day"),
+            "oi_bias_record": get_efficacy().oi_bias.get("NIFTY"),
             "efficacy_as_of": get_efficacy().as_of,
         }
 

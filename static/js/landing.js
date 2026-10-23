@@ -892,7 +892,7 @@
     const showStep = s => {
         $('step-email').hidden = s !== 'email';
         $('step-otp').hidden = s !== 'otp';
-        (s === 'otp' ? $('otp-input') : $('zerodha-id-input')).focus();
+        (s === 'otp' ? $('otp-input') : $('trading-id-input')).focus();
     };
     const open = () => {
         lastFocus = document.activeElement;
@@ -900,7 +900,7 @@
         document.body.classList.add('login-open');
         panel.setAttribute('aria-hidden', 'false');
         if (location.pathname !== '/login') history.replaceState(null, '', '/login');
-        setTimeout(() => $('zerodha-id-input').focus(), 60);
+        setTimeout(() => $('trading-id-input').focus(), 60);
     };
     const close = () => {
         document.body.classList.remove('login-open');
@@ -933,7 +933,7 @@
         }, 1000);
     };
     async function sendOTP() {
-        const zerodhaId = $('zerodha-id-input').value.trim().toUpperCase();
+        const zerodhaId = $('trading-id-input').value.trim().toUpperCase();
         const email = $('email-input').value.trim();
         if (!zerodhaId) return message('msg-email', 'error', 'Please enter your Trading ID');
         if (!email) return message('msg-email', 'error', 'Please enter your email address');
@@ -989,7 +989,7 @@
     $('btn-verify').addEventListener('click', verifyOTP);
     $('btn-resend').addEventListener('click', () => showStep('email'));
     $('email-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendOTP(); });
-    $('zerodha-id-input').addEventListener('keydown', e => { if (e.key === 'Enter') $('email-input').focus(); });
+    $('trading-id-input').addEventListener('keydown', e => { if (e.key === 'Enter') $('email-input').focus(); });
     $('otp-input').addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTP(); });
     if (document.body.dataset.loginOnLoad === 'true') open();
 })();

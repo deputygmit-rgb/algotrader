@@ -180,7 +180,9 @@ const MarketFlow = (() => {
                 rebuild();
                 renderPanels();
                 setLive(demo ? 'demo' : 'on', demo ? 'DEMO' : 'LIVE');
-                banner(json.baseline_loading
+                banner(json.data_source === 'backup'
+                    ? 'Prices are coming from the backup data source while the primary feed is unavailable — volume, open interest and VWAP-based factors may be missing until it recovers.'
+                    : json.baseline_loading
                     ? `Loading previous-session baselines (ATR, pivots, avg volume, OI) for ${json.total} stocks — money-flow factors, levels and plans fill in as they arrive.`
                     : '');
             } catch (e) {

@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#05080c">
-    <meta name="description" content="VerquoAI is a trading terminal for Indian markets: live market flow, intraday setups, options OI, AI agents, backtests and risk controls in one workspace. Try the full terminal on a simulated market.">
+    <meta name="description" content="VerquoAI is software: a trading terminal for Indian markets (NSE, BSE) with live market flow, rule-based intraday and swing setups, options OI, backtests and AI agents. Not a broker and not investment advice. Try it on a simulated market.">
+    <link rel="canonical" href="https://verquoai.com/">
+    <script type="application/ld+json">{{ site_json_ld | safe }}</script>
     <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,6 +22,8 @@
             <nav class="top-nav" aria-label="Main navigation">
                 <a href="#terminal">Terminal</a>
                 <a href="#features">Features</a>
+                <a href="#about">About</a>
+                <a href="#faq">FAQ</a>
                 <a href="#contact">Contact</a>
             </nav>
             <div class="top-actions">
@@ -187,6 +191,33 @@
             </ol>
         </section>
 
+        <section class="shell section reveal" id="about" aria-labelledby="about-title">
+            <h2 class="section-title" id="about-title">About VerquoAI</h2>
+            <p class="about-lead">{{ site_about }}</p>
+            <div class="about-grid">
+                <div class="about-col is">
+                    <h3>What VerquoAI is</h3>
+                    <ul>{% for item in site_is %}<li>{{ item }}</li>{% endfor %}</ul>
+                </div>
+                <div class="about-col isnt">
+                    <h3>What VerquoAI is not</h3>
+                    <ul>{% for item in site_isnt %}<li>{{ item }}</li>{% endfor %}</ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="shell section reveal" id="faq" aria-labelledby="faq-title">
+            <h2 class="section-title" id="faq-title">Questions</h2>
+            <div class="faq">
+                {% for q, a in site_faq %}
+                <details class="faq-item"{% if loop.first %} open{% endif %}>
+                    <summary>{{ q }}</summary>
+                    <p>{{ a }}</p>
+                </details>
+                {% endfor %}
+            </div>
+        </section>
+
         <section class="shell section reveal" id="contact">
             <div class="contact-card">
                 <div class="contact-intro">
@@ -250,7 +281,7 @@
         <p class="lead">We email a one-time code to the address saved for your Trading ID.</p>
 
         <div class="login-step" id="step-email">
-            <label class="field"><span>Trading ID</span><input type="text" id="zerodha-id-input" placeholder="e.g. AB1234" autocomplete="username" autocapitalize="characters" style="text-transform:uppercase"></label>
+            <label class="field"><span>Trading ID</span><input type="text" id="trading-id-input" placeholder="e.g. AB1234" autocomplete="username" autocapitalize="characters" style="text-transform:uppercase"></label>
             <label class="field"><span>Email address</span><input type="email" id="email-input" placeholder="you@example.com" autocomplete="email"></label>
             <button class="btn btn-primary btn-lg btn-block" type="button" id="btn-send-otp">Send code</button>
             <div class="login-msg" id="msg-email" role="status"></div>

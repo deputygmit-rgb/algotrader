@@ -70,6 +70,24 @@
                     <button class="btn btn-primary" type="submit">Save source</button>
                 </form>
             </section>
+
+            <section class="card adm-card">
+                <div class="adm-head"><h2>Backup market data</h2><span id="adm-backup-state"></span></div>
+                <form id="adm-backup" class="adm-form" autocomplete="off">
+                    <p class="adm-hint">Kotak Neo Trade API. When the primary broker's quotes fail, live prices come from here for a minute at a time. Only the API access token is needed (Neo app → Invest → Trade API → your application) — it reads quotes and cannot log in or trade. Stored encrypted, never shown again.</p>
+                    <label>API access token<input name="token" type="password" maxlength="200" autocomplete="new-password" spellcheck="false" placeholder="leave blank to keep the saved one"></label>
+                    <label>Base URL <em>(from the login response; default https://cis.kotaksecurities.com)</em><input name="base_url" maxlength="120" spellcheck="false"></label>
+                    <label class="adm-check"><input type="checkbox" name="enabled"> Use as backup</label>
+                    <label>Source order<select name="mode" id="adm-backup-mode"></select></label>
+                    <p class="adm-hint">With "Kite first", view-only users keep live prices from the backup on days nobody links the market-data account (no live tick stream then; pages refresh by polling, history comes from the bars stored on this server).</p>
+                    <div class="adm-row">
+                        <button class="btn btn-primary" type="submit">Save</button>
+                        <button class="btn btn-outline" type="button" id="adm-backup-test">Test with live quotes</button>
+                        <button class="btn btn-outline" type="button" id="adm-backup-clear">Remove token</button>
+                    </div>
+                    <pre class="adm-pre" id="adm-backup-result" hidden></pre>
+                </form>
+            </section>
         </div>
 
         <section class="card adm-card">

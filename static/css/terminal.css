@@ -595,6 +595,10 @@ body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-
 .adm-form { display: grid; gap: 10px; }
 .adm-form label { display: grid; gap: 5px; color: var(--t-dim); font-size: 11px; }
 .adm-form em { color: var(--t-mute); font-style: normal; }
+.adm-form label.adm-check { display: flex; align-items: center; gap: 8px; }
+.adm-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.adm-pre { margin: 0; padding: 8px 10px; border: 1px solid var(--t-line-2); background: var(--t-bg); color: var(--t-txt);
+    font: 11px/1.5 var(--t-font); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .adm-form input, .adm-form select { padding: 8px 10px; border: 1px solid var(--t-line-2); background: var(--t-bg); color: var(--t-txt); font-family: var(--t-font); font-size: 12px; }
 .adm-form input:focus, .adm-form select:focus { outline: none; border-color: var(--t-c); }
 .adm-hint { margin: 0; color: var(--t-mute); font-size: 11px; }

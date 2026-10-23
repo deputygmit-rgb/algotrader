@@ -106,8 +106,26 @@
         select.replaceChildren(el('option', { value: '' }, 'Off (view-only users see the demo market)'),
             ...m.candidates.map(id => el('option', { value: id, selected: id === m.account }, id)));
         $('adm-feed-state').textContent = !m.account ? 'off'
+            : m.source === 'backup' ? 'live from the BACKUP source (account not linked today) · no tick stream'
             : m.available ? (m.feed_connected ? 'live · feed connected' : 'live · feed idle') : 'waiting for the account to link today';
         $('adm-feed-state').className = m.available ? 'positive' : 'adm-muted';
+    }
+
+    function renderBackup() {
+        const b = data.backup_quotes || {};
+        const f = $('adm-backup');
+        if (!f.contains(document.activeElement)) {
+            f.base_url.value = b.base_url || '';
+            f.enabled.checked = !!b.enabled;
+            $('adm-backup-mode').replaceChildren(...(b.modes || []).map(m => el('option', { value: m.value, selected: m.value === b.mode }, m.label)));
+        }
+        const state = !b.has_token ? 'no token' : !b.enabled ? 'off'
+            : b.active ? `IN USE until ${(b.active_until || '').slice(11, 19)}` : 'ready (standby)';
+        const extra = [b.failovers ? `${b.failovers} failover${b.failovers === 1 ? '' : 's'}` : '',
+            b.last_ok ? `last served ${b.last_ok.slice(11, 19)}` : '',
+            b.last_error ? `last error: ${b.last_error.error}` : ''].filter(Boolean).join(' · ');
+        $('adm-backup-state').textContent = state + (extra ? ` · ${extra}` : '');
+        $('adm-backup-state').className = b.active ? 'negative' : b.configured ? 'positive' : 'adm-muted';
     }
 
     function renderContacts() {
@@ -149,6 +167,7 @@
         }
         renderUsers();
         renderMarket();
+        renderBackup();
         renderContacts();
         renderAudit();
     }
@@ -179,6 +198,37 @@
         e.preventDefault();
         const id = e.target.account_id.value;
         act('POST', '/api/admin/market-data', { account_id: id }, id ? `Shared market data now comes from ${id}.` : 'Shared market data turned off.');
+    });
+
+    $('adm-backup').addEventListener('submit', async e => {
+        e.preventDefault();
+        const f = e.target;
+        const body = { base_url: f.base_url.value.trim(), enabled: f.enabled.checked, mode: f.mode.value };
+        if (f.token.value.trim()) body.token = f.token.value.trim();
+        f.token.value = '';  // never keep a secret in the page longer than needed
+        await act('POST', '/api/admin/backup-quotes', body, 'Backup market data saved.');
+    });
+
+    $('adm-backup-clear').addEventListener('click', () => {
+        if (confirm('Remove the backup API token? The backup stops until a new one is saved.')) {
+            act('POST', '/api/admin/backup-quotes', { clear_token: true }, 'Backup token removed.');
+        }
+    });
+
+    $('adm-backup-test').addEventListener('click', async () => {
+        const out = $('adm-backup-result');
+        out.hidden = false;
+        out.textContent = 'Fetching live quotes through the backup…';
+        try {
+            const r = await call('POST', '/api/admin/backup-quotes/test');
+            out.textContent = r.success
+                ? `OK. Fields returned: ${r.fields.join(', ')}\n\n` + Object.entries(r.quotes).map(([k, q]) =>
+                    `${k}: last ${q.last_price} · change ${q.change} · volume ${q.volume} · OI ${q.oi} · OHLC ${q.ohlc.open}/${q.ohlc.high}/${q.ohlc.low}/${q.ohlc.close} · depth ${q.depth_levels}`).join('\n')
+                : `Failed: ${r.error}`;
+            await load();
+        } catch (e) {
+            out.textContent = `Failed: ${e.message}`;
+        }
     });
 
     $('adm-refresh').addEventListener('click', load);

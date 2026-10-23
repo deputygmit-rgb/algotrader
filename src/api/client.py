@@ -351,28 +351,77 @@ class KiteClient:
                     exchange=row.get("exchange", ""),
                 )
             )
+        if exchange in ("NSE", "NFO"):
+            # the backup feed keeps these instrument numbers, so stored bars still match
+            from src.api.backup_feed import remember_tokens
+
+            remember_tokens(exchange, instruments)
         return instruments
 
+    # Which source served the last quote call: "primary" or "backup" (src/api/backup_quotes.py).
+    last_quote_source = "primary"
+
+    async def _with_backup(self, kind: str, instruments: list[str], primary: Any) -> Any:
+        """Quotes from this broker, or from the backup source during an outage
+        (network, timeout, server error, rate limit, expired session). After a
+        failure the backup serves for a minute before this broker is retried."""
+        from src.api.backup_quotes import backup_quotes, is_outage, source_mode
+
+        backup = backup_quotes()
+        mode = source_mode()
+        if mode == "kite_only" or not backup.configured:
+            out = await primary()
+            self.last_quote_source = "primary"
+            return out
+        if mode == "kotak_first" or backup.prefer_backup():
+            try:
+                out = await getattr(backup, kind)(instruments)
+                self.last_quote_source = "backup"
+                return out
+            except Exception as e:
+                logger.warning("backup_quotes_failed", error=str(e)[:200])
+        try:
+            out = await primary()
+            self.last_quote_source = "primary"
+            return out
+        except Exception as e:
+            if not (backup.configured and is_outage(e)):
+                raise
+            backup.primary_failed(e)
+            try:
+                out = await getattr(backup, kind)(instruments)
+            except Exception as backup_error:
+                logger.warning("backup_quotes_failed", error=str(backup_error)[:200])
+                raise e from None
+            self.last_quote_source = "backup"
+            return out
+
     async def get_quote(self, instruments: list[str]) -> dict[str, Quote]:
-        params = [("i", inst) for inst in instruments]
-        data = await self._request(
-            "GET", "/quote", limiter=self._quote_limiter, params=params
-        )
-        return {key: Quote(**val) for key, val in data.items()}
+        async def primary() -> dict[str, Quote]:
+            params = [("i", inst) for inst in instruments]
+            data = await self._request(
+                "GET", "/quote", limiter=self._quote_limiter, params=params
+            )
+            return {key: Quote(**val) for key, val in data.items()}
+        return await self._with_backup("get_quote", instruments, primary)
 
     async def get_ohlc(self, instruments: list[str]) -> dict[str, OHLCQuote]:
-        params = [("i", inst) for inst in instruments]
-        data = await self._request(
-            "GET", "/quote/ohlc", limiter=self._quote_limiter, params=params
-        )
-        return {key: OHLCQuote(**val) for key, val in data.items()}
+        async def primary() -> dict[str, OHLCQuote]:
+            params = [("i", inst) for inst in instruments]
+            data = await self._request(
+                "GET", "/quote/ohlc", limiter=self._quote_limiter, params=params
+            )
+            return {key: OHLCQuote(**val) for key, val in data.items()}
+        return await self._with_backup("get_ohlc", instruments, primary)
 
     async def get_ltp(self, instruments: list[str]) -> dict[str, LTPQuote]:
-        params = [("i", inst) for inst in instruments]
-        data = await self._request(
-            "GET", "/quote/ltp", limiter=self._quote_limiter, params=params
-        )
-        return {key: LTPQuote(**val) for key, val in data.items()}
+        async def primary() -> dict[str, LTPQuote]:
+            params = [("i", inst) for inst in instruments]
+            data = await self._request(
+                "GET", "/quote/ltp", limiter=self._quote_limiter, params=params
+            )
+            return {key: LTPQuote(**val) for key, val in data.items()}
+        return await self._with_backup("get_ltp", instruments, primary)
 
     # Longest range Kite serves in one historical request, per interval (days).
     # A longer request fails with "interval exceeds max limit".

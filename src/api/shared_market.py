@@ -144,7 +144,8 @@ class SharedMarketHub:
         return cls._instance
 
     # ── source session ────────────────────────────────────────────
-    def _source(self) -> Any:
+    def _primary(self) -> Any:
+        """The source account's service while it is linked to its broker today."""
         if not self.account_id:
             return None
         try:
@@ -155,6 +156,28 @@ class SharedMarketHub:
         if svc is None or getattr(svc, "is_demo", False) or not svc.is_authenticated:
             return None
         return svc
+
+    def _source(self) -> Any:
+        """The source account when it is linked; otherwise the backup feed
+        (src/api/backup_feed.py) unless the admin chose "Kite only"."""
+        if not self.account_id:
+            return None                    # shared market data switched off
+        svc = self._primary()
+        if svc is not None:
+            return svc
+        from src.api.backup_quotes import source_mode
+
+        if source_mode() == "kite_only":
+            return None
+        from src.api.backup_feed import backup_feed_service
+
+        return backup_feed_service()
+
+    def source_kind(self) -> Optional[str]:
+        svc = self._source()
+        if svc is None:
+            return None
+        return "backup" if getattr(svc, "is_backup_feed", False) else "primary"
 
     def available_for(self, viewer_id: str) -> bool:
         """True when the source session is live and the viewer is someone else."""
@@ -175,6 +198,8 @@ class SharedMarketHub:
     # ── cached, rate-capped market calls ──────────────────────────
     async def fetch(self, key: tuple, ttl: float, limiter: AsyncLimiter,
                     call: Callable[[Any], Awaitable[Any]]) -> Any:
+        # one source's data is never served as the other's after a switch (e.g. instrument numbers)
+        key = (self.source_kind(),) + tuple(key)
         now = time.monotonic()
         hit = self._cache.get(key)
         if hit and hit[0] > now:
@@ -235,8 +260,8 @@ class SharedMarketHub:
         if self._upstream_task is not None and not self._upstream_task.done():
             return
         svc = self._source()
-        if svc is None:
-            return
+        if svc is None or getattr(svc, "is_backup_feed", False):
+            return                         # the backup has no live stream: pages poll quotes
         upstream = self._ticker_factory(svc._auth)
         upstream.on_ticks = self._on_upstream_ticks
         upstream.on_order_update = None            # the source account's orders: never forwarded

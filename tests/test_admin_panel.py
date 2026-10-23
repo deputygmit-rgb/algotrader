@@ -212,3 +212,24 @@ def test_access_request_status(env):
 def test_admin_js_never_builds_html_from_data():
     src = open(os.path.join(os.path.dirname(__file__), "..", "static", "js", "admin.js"), encoding="utf-8").read()
     assert "innerHTML" not in src and "insertAdjacentHTML" not in src and "outerHTML" not in src
+
+
+# --- backup market data ---------------------------------------------------------------
+
+def test_backup_quote_token_is_stored_encrypted_and_never_returned(env):
+    from src.api.backup_quotes import BackupQuotes
+
+    admin = session("AD1234", step_up=True)
+    r = call("POST", "/api/admin/backup-quotes", admin, {"token": "55222dba-secret-token", "enabled": True})
+    assert r.status_code == 200 and "55222dba" not in r.text
+    stored = json.load(open(app_settings.SETTINGS_FILE))["backup_quotes_token"]
+    assert stored and "55222dba" not in stored                          # encrypted at rest
+    assert BackupQuotes.token() == "55222dba-secret-token"
+    over = call("GET", "/api/admin/overview", admin)
+    assert over.json()["backup_quotes"]["has_token"] is True and "55222dba" not in over.text
+    bad = call("POST", "/api/admin/backup-quotes", admin, {"base_url": "https://attacker.example"})
+    assert bad.status_code == 400
+    user = session("US5678", step_up=True)
+    assert call("POST", "/api/admin/backup-quotes", user, {"token": "x"}).status_code == 404
+    no_code = session("AD1234")
+    assert call("POST", "/api/admin/backup-quotes", no_code, {"token": "x"}).status_code == 403

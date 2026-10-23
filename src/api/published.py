@@ -57,7 +57,7 @@ SCAN_STOCK_KEYS = {
     "trend_score", "stage", "stage_name", "super_performance", "accumulation", "al", "pocket_pivot",
     "vcp_detected", "vcp_pivot", "vcp_tightness", "triggers",
 }
-FLOW_KEYS = {"as_of", "total", "quoted", "oi_count", "bull", "bear", "flat", "nifty", "rows", "picks",
+FLOW_KEYS = {"as_of", "total", "quoted", "oi_count", "bull", "bear", "flat", "nifty", "rows", "picks", "data_source",
              "sectors", "breadth", "baseline_loading"}
 FLOW_ROW_KEYS = {
     "symbol", "sector", "universes", "side", "ltp", "prev_close", "change_pct", "open", "day_high", "day_low",
