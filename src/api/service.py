@@ -358,15 +358,32 @@ class TradingService:
     def get_login_url(self) -> str:
         return self._auth.get_login_url()
 
+    LOGIN_REPEAT_S = 600.0
+
     async def authenticate(self, request_token: str) -> dict[str, Any]:
-        session = await self._auth.generate_session(request_token)
+        """Exchange the broker's single-use login token for a session. The same token
+        arriving again (a browser that loads the callback page twice, a double click)
+        gets the first exchange's answer instead of the broker's "token expired"."""
+        import hashlib
+
+        digest = hashlib.sha256(request_token.encode("utf-8")).hexdigest()
+        lock = self.__dict__.setdefault("_login_lock", asyncio.Lock())
+        async with lock:                      # a simultaneous duplicate waits for the first
+            done = self.__dict__.get("_last_login")
+            if done and done[0] == digest and time.monotonic() - done[1] < self.LOGIN_REPEAT_S \
+                    and self.is_authenticated:
+                logger.info("login_callback_repeated", zerodha_id=self.__dict__.get("_zerodha_id"))
+                return done[2]
+            session = await self._auth.generate_session(request_token)
+            result = {"user_id": session.user_id, "user_name": session.user_name}
+            self._last_login = (digest, time.monotonic(), result)
         # a session that was trading, or has orders / positions in flight, picks up again
         try:
             task = asyncio.get_running_loop().create_task(self.resume_after_restart(), name="resume_after_login")
             task.add_done_callback(self._task_exception_handler)
         except RuntimeError:
             pass
-        return {"user_id": session.user_id, "user_name": session.user_name}
+        return result
 
     # ── Recovery after a restart (crash, out-of-memory kill, deploy) or a new login ──
     def _live_flag(self) -> Optional[dict[str, Any]]:

@@ -399,29 +399,37 @@ async def admin_set_backup_quotes(request: Request) -> dict[str, Any]:
 
     admin = _require_write(request)
     body = await _json(request)
-    changes = []
+
+    def reject(reason: str) -> None:
+        # uvicorn logs only the status; keep the reason (never the token) for the server log
+        logger.warning("admin_backup_quotes_rejected", admin=admin, reason=reason)
+        raise HTTPException(400, reason)
+
+    # every field is checked before anything is written: a bad value saves nothing
     token = str(body.get("token") or "").strip()
+    if token and (len(token) > 4096 or any(c.isspace() for c in token)):
+        reject("That does not look like an API access token (copy it again as one line, without spaces).")
+    url = str(body.get("base_url") or "").strip().rstrip("/") if "base_url" in body else None
+    if url and not re.fullmatch(r"https://[a-z0-9.-]+\.kotaksecurities\.com", url):
+        reject("Base URL must be an https://….kotaksecurities.com address.")
+    mode = str(body.get("mode") or "").strip()          # empty: keep the current order
+    if mode and mode not in _source_modes():
+        reject("Unknown source order.")
+
+    changes = []
     if token:
-        if len(token) > 200 or any(c.isspace() for c in token):
-            raise HTTPException(400, "That does not look like an API access token.")
         _save_guard(lambda: set_setting("backup_quotes_token", encrypt_secret(token)))
         changes.append("token")
     elif body.get("clear_token"):
         _save_guard(lambda: set_setting("backup_quotes_token", ""))
         changes.append("token cleared")
-    if "base_url" in body:
-        url = str(body.get("base_url") or "").strip().rstrip("/")
-        if url and not re.fullmatch(r"https://[a-z0-9.-]+\.kotaksecurities\.com", url):
-            raise HTTPException(400, "Base URL must be an https://….kotaksecurities.com address.")
+    if url is not None:
         _save_guard(lambda: set_setting("backup_quotes_base_url", url))
         changes.append("base URL")
     if "enabled" in body:
         _save_guard(lambda: set_setting("backup_quotes_enabled", "1" if body.get("enabled") else "0"))
         changes.append("on" if body.get("enabled") else "off")
-    if "mode" in body:
-        mode = str(body.get("mode") or "")
-        if mode not in _source_modes():
-            raise HTTPException(400, "Unknown source order.")
+    if mode:
         _save_guard(lambda: set_setting("quote_source_mode", mode))
         changes.append(f"order: {mode}")
     _audit(request, admin, "backup_quotes_changed", "backup", changes=", ".join(changes) or "nothing")

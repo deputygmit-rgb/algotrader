@@ -34,11 +34,14 @@ self.addEventListener('fetch', event => {
     // other sites (Google Fonts): left to the browser and its own cache - the worker is bound by
     // the site's security policy (connections to this site only), so it must not fetch them itself
     if (url.origin !== self.location.origin) return;
-    if (NEVER.some(rx => rx.test(url.pathname))) return;
+    // every page load is answered here, from the network (never cached): with navigation
+    // preload on, a page left to the browser is requested twice - the preload and the
+    // normal fetch - and a broker login callback (single-use token) then fails the second time
     if (req.mode === 'navigate') {
         event.respondWith(page(event));
         return;
     }
+    if (NEVER.some(rx => rx.test(url.pathname))) return;
     if (url.pathname.startsWith('/static/')) event.respondWith(staleWhileRevalidate(req));
 });
 

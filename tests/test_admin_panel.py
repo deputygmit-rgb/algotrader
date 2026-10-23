@@ -229,6 +229,11 @@ def test_backup_quote_token_is_stored_encrypted_and_never_returned(env):
     assert over.json()["backup_quotes"]["has_token"] is True and "55222dba" not in over.text
     bad = call("POST", "/api/admin/backup-quotes", admin, {"base_url": "https://attacker.example"})
     assert bad.status_code == 400
+    # a bad field saves nothing (not even the valid token sent with it); an empty order keeps the current one
+    half = call("POST", "/api/admin/backup-quotes", admin, {"token": "new-token-2", "mode": "nonsense"})
+    assert half.status_code == 400 and BackupQuotes.token() == "55222dba-secret-token"
+    empty = call("POST", "/api/admin/backup-quotes", admin, {"token": "new-token-2", "mode": "", "enabled": True})
+    assert empty.status_code == 200 and BackupQuotes.token() == "new-token-2"
     user = session("US5678", step_up=True)
     assert call("POST", "/api/admin/backup-quotes", user, {"token": "x"}).status_code == 404
     no_code = session("AD1234")

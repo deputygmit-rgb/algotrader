@@ -139,9 +139,23 @@ async function manualAuthenticate() {
 
 (function checkAuthResult() {
     const params = new URLSearchParams(window.location.search);
+    // the broker login opens in its own tab and returns there: tell the tab that started it
+    // (it refreshes its status), then close this one if the browser allows it
+    let channel = null;
+    try { channel = new BroadcastChannel('vq-broker-link'); } catch (e) { /* older browsers: no cross-tab note */ }
     if (params.get('auth') === 'success') {
         window.history.replaceState({}, '', '/');
-        setTimeout(() => showToast('Trading account linked successfully!', 'success'), 500);
+        if (channel) channel.postMessage('linked');
+        setTimeout(() => showToast('Trading account linked successfully! You can close this tab.', 'success'), 500);
+        setTimeout(() => { try { window.close(); } catch (e) { /* not opened by a script: stays open */ } }, 1500);
+    } else if (channel) {
+        channel.onmessage = ev => {
+            if (ev.data !== 'linked') return;
+            const box = document.getElementById('login-url-display');
+            if (box) box.style.display = 'none';
+            showToast('Trading account linked successfully!', 'success');
+            if (typeof loadStatus === 'function') loadStatus();
+        };
     }
     const authError = params.get('auth_error');
     if (authError) {

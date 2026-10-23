@@ -75,7 +75,7 @@
                 <div class="adm-head"><h2>Backup market data</h2><span id="adm-backup-state"></span></div>
                 <form id="adm-backup" class="adm-form" autocomplete="off">
                     <p class="adm-hint">Kotak Neo Trade API. When the primary broker's quotes fail, live prices come from here for a minute at a time. Only the API access token is needed (Neo app → Invest → Trade API → your application) — it reads quotes and cannot log in or trade. Stored encrypted, never shown again.</p>
-                    <label>API access token<input name="token" type="password" maxlength="200" autocomplete="new-password" spellcheck="false" placeholder="leave blank to keep the saved one"></label>
+                    <label>API access token<input name="token" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="leave blank to keep the saved one"></label>
                     <label>Base URL <em>(from the login response; default https://cis.kotaksecurities.com)</em><input name="base_url" maxlength="120" spellcheck="false"></label>
                     <label class="adm-check"><input type="checkbox" name="enabled"> Use as backup</label>
                     <label>Source order<select name="mode" id="adm-backup-mode"></select></label>
