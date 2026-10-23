@@ -26,6 +26,7 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 RECORD_FROM = time(9, 14)        # a minute early, so the 09:15 reading is not missed
+WARM_FROM = time(8, 55)          # the backup's instrument list (~15 s to load) is ready before the open
 RECORD_UNTIL = time(15, 31)
 CHECK_S = 60.0
 
@@ -83,9 +84,27 @@ def check(now: datetime, account: Optional[str] = None,
     return result
 
 
+async def warm_backup(now: datetime) -> bool:
+    """Load the backup source's instrument list once a weekday before the open, so the
+    first viewer on a backup day does not wait for the download. True when it loaded."""
+    if now.weekday() >= 5 or not (WARM_FROM <= now.time() <= RECORD_UNTIL):
+        return False
+    from src.api.backup_quotes import backup_quotes
+
+    backup = backup_quotes()
+    if not backup.configured or backup._master_day == now.date().isoformat():
+        return False
+    await backup._ensure_master()
+    return True
+
+
 async def run_market_recorder() -> None:
     await asyncio.sleep(5)
     while True:
+        try:
+            await warm_backup(datetime.now())
+        except Exception as e:
+            logger.warning("backup_warm_failed", error=str(e))
         try:
             check(datetime.now())
         except Exception as e:      # never let the scheduler die

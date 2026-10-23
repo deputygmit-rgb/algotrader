@@ -43,7 +43,11 @@ class MinifiedStaticFiles(StaticFiles):
             hit = (key, body, '"' + hashlib.sha256(body).hexdigest()[:20] + '"')
             self._cache[full] = hit
         _, body, etag = hit
-        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        # pages link scripts as name.js?v=<mtime>: a versioned URL never changes, so the
+        # browser keeps it without asking again (about 20 round trips saved per page load)
+        versioned = b"v=" in (scope.get("query_string") or b"")
+        headers = {"ETag": etag,
+                   "Cache-Control": "public, max-age=31536000, immutable" if versioned else "no-cache"}
         request_headers = dict(scope.get("headers") or [])
         if request_headers.get(b"if-none-match", b"").decode() == etag:
             return Response(status_code=304, headers=headers)

@@ -23,11 +23,13 @@ splits results by it.
 from __future__ import annotations
 
 import bisect
+import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
 MARKET_WEIGHT = 15                    # quality points for a full BULLISH / BEARISH agreement
 MAX_AGE_MIN = 10                      # a reading older than this does not describe the bar
+REFRESH_S = 20.0                      # today's stored history is re-read at most this often
 BIAS_SCORE = {"BULLISH": 1.0, "MILDLY BULLISH": 0.5, "NEUTRAL": 0.0, "MILDLY BEARISH": -0.5, "BEARISH": -1.0}
 
 BiasAt = Callable[[str], Optional[str]]   # "YYYY-MM-DDTHH:MM" (bar close) -> bias label or None
@@ -64,11 +66,16 @@ class MarketBiasHistory:
         self._underlying = underlying
         self._max_age = timedelta(minutes=max_age_min)
         self._days: dict[str, tuple[list[str], list[str]]] = {}   # date -> (sorted ts, bias)
+        self._read_at: dict[str, float] = {}                         # date -> when it was last read
 
     def _day(self, day: str, refresh: bool) -> tuple[list[str], list[str]]:
-        if refresh or day not in self._days:
+        # today's history gains one row a minute: re-read it at most every REFRESH_S
+        # (the board asks for every signal of every tracked stock on each refresh)
+        stale = refresh and time.monotonic() - self._read_at.get(day, 0.0) >= REFRESH_S
+        if stale or day not in self._days:
             rows = self._store.get_oi_bias(self._underlying, f"{day}T00:00", f"{day}T23:59:59")
             self._days[day] = ([str(r["ts"])[:16] for r in rows], [str(r.get("bias") or "") for r in rows])
+            self._read_at[day] = time.monotonic()
         return self._days[day]
 
     def at(self, when: str) -> Optional[str]:

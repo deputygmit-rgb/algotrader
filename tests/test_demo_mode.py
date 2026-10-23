@@ -17,6 +17,8 @@ from src.demo.sessions import demo_sessions
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(otp_module, "SESSION_FILE", str(tmp_path / "sessions.json"))
+    # every test starts demos from 127.0.0.1: one test's starts must not use up the next one's allowance
+    monkeypatch.setattr(webapp.otp_auth, "_ip_attempts", {})
     started = []
 
     class _FakeManager:

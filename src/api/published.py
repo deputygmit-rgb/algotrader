@@ -38,6 +38,7 @@ logger = get_logger(__name__)
 
 UNAVAILABLE = "Live market data is not available right now."
 FLOW_TTL_S = 2.0
+STALE_GRACE_S = 8.0          # past its TTL a product is still served (once) while it is rebuilt
 BOARD_TTL_S = 5.0
 SCAN_REFRESH_AFTER_S = 600.0     # a viewer asking for a scan older than this starts a fresh one
 
@@ -212,6 +213,7 @@ class Publisher:
     def __init__(self, source: Any) -> None:
         self._source = source            # () -> source TradingService or None
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._building: dict[tuple[str, int], asyncio.Future] = {}
         self._scan_requested: dict[str, float] = {}
 
     def _svc(self) -> Any:
@@ -229,18 +231,56 @@ class Publisher:
         self._cache[key] = (time.monotonic(), value)
         return value
 
-    async def flow(self) -> dict[str, Any]:
-        hit = self._cached("flow", FLOW_TTL_S)
+    async def _once(self, key: str, ttl: float, build: Any) -> Any:
+        """The cached product, or one rebuild shared by every request that arrives
+        meanwhile. Without it, all viewers polling when the cache expired rebuilt
+        (and serialised) the product at the same moment - a stampede that held the
+        single worker for seconds. Errors are returned, not cached."""
+        hit = self._cached(key, ttl)
         if hit is not None:
             return hit
-        svc = self._svc()
-        if svc is None:
-            return {"error": UNAVAILABLE}
+        loop = asyncio.get_running_loop()
+        flight = (key, id(loop))
+        pending = self._building.get(flight)
+        last = self._cache.get(key)
+        if last is not None and time.monotonic() - last[0] < ttl + STALE_GRACE_S:
+            # a little past its refresh: answer at once with it while one rebuild runs in the
+            # background (otherwise every poll waits the source's quote round trip, ~1 s)
+            if pending is None:
+                future = self._building[flight] = loop.create_future()   # registered before the task runs
+                task = loop.create_task(self._build(key, flight, future, build))
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            return last[1]
+        if pending is not None:
+            return await asyncio.shield(pending)
+        future = self._building[flight] = loop.create_future()
+        return await self._build(key, flight, future, build)
+
+    async def _build(self, key: str, flight: tuple[str, int], future: asyncio.Future, build: Any) -> Any:
         try:
-            return self._put("flow", sanitize_flow(await svc.get_fno_flow(max_age_s=FLOW_TTL_S)))
-        except Exception as e:
-            logger.warning("published_flow_failed", error=str(e))
-            return {"error": UNAVAILABLE}
+            value = await build()
+            if not (isinstance(value, dict) and value.get("error")):
+                self._put(key, value)
+            future.set_result(value)
+            return value
+        except BaseException as e:
+            future.set_exception(e)
+            future.exception()           # retrieved: no "never retrieved" warning when nobody waited
+            raise
+        finally:
+            self._building.pop(flight, None)
+
+    async def flow(self) -> dict[str, Any]:
+        async def build() -> dict[str, Any]:
+            svc = self._svc()
+            if svc is None:
+                return {"error": UNAVAILABLE}
+            try:
+                return sanitize_flow(await svc.get_fno_flow(max_age_s=FLOW_TTL_S))
+            except Exception as e:
+                logger.warning("published_flow_failed", error=str(e))
+                return {"error": UNAVAILABLE}
+        return await self._once("flow", FLOW_TTL_S, build)
 
     def flow_history(self, minutes: int) -> list[dict[str, Any]]:
         svc = self._svc()
@@ -252,40 +292,40 @@ class Publisher:
                 for p in svc.get_fno_flow_history(minutes)]
 
     async def day_trade(self) -> dict[str, Any]:
-        hit = self._cached("board", BOARD_TTL_S)
-        if hit is not None:
-            return hit
-        svc = self._svc()
-        if svc is None:
-            return {"error": UNAVAILABLE}
-        try:
-            svc._ensure_day_trade_loop()      # keeps the source's board current while viewers watch
-            flow = await svc.get_fno_flow(max_age_s=5.0)
-            if flow.get("error"):
+        async def build() -> dict[str, Any]:
+            svc = self._svc()
+            if svc is None:
                 return {"error": UNAVAILABLE}
-            flow = svc._with_market_oi(flow)
-            now = datetime.now()
-            svc._day_trade.update_selection(flow, now)
-            return self._put("board", sanitize_board(svc._day_trade.snapshot(flow, now)))
-        except Exception as e:
-            logger.warning("published_board_failed", error=str(e))
-            return {"error": UNAVAILABLE}
+            try:
+                svc._ensure_day_trade_loop()      # keeps the source's board current while viewers watch
+                flow = await svc.get_fno_flow(max_age_s=5.0)
+                if flow.get("error"):
+                    return {"error": UNAVAILABLE}
+                flow = svc._with_market_oi(flow)
+                now = datetime.now()
+                svc._day_trade.update_selection(flow, now)
+                # pandas + setup replay for every tracked stock: off the event loop
+                snap = await asyncio.to_thread(svc._day_trade.snapshot, flow, now)
+                return sanitize_board(snap)
+            except Exception as e:
+                logger.warning("published_board_failed", error=str(e))
+                return {"error": UNAVAILABLE}
+        return await self._once("board", BOARD_TTL_S, build)
 
     async def swing(self) -> dict[str, Any]:
-        hit = self._cached("swing", SWING_TTL_S)
-        if hit is not None:
-            return hit
-        svc = self._svc()
-        if svc is None:
-            return {"error": UNAVAILABLE}
-        try:
-            snap = await svc.get_swing()
-            if snap.get("error"):
+        async def build() -> dict[str, Any]:
+            svc = self._svc()
+            if svc is None:
                 return {"error": UNAVAILABLE}
-            return self._put("swing", sanitize_swing(snap))
-        except Exception as e:
-            logger.warning("published_swing_failed", error=str(e))
-            return {"error": UNAVAILABLE}
+            try:
+                snap = await svc.get_swing()
+                if snap.get("error"):
+                    return {"error": UNAVAILABLE}
+                return sanitize_swing(snap)
+            except Exception as e:
+                logger.warning("published_swing_failed", error=str(e))
+                return {"error": UNAVAILABLE}
+        return await self._once("swing", SWING_TTL_S, build)
 
     def scan(self, universe: str) -> dict[str, Any]:
         svc = self._svc()

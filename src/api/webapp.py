@@ -814,7 +814,9 @@ async def send_otp(request: Request) -> dict[str, Any]:
     except Exception as e:
         return {"success": False, "message": _public_error(e)}
     
-    if not otp_auth.send_otp_email(otp, user.email, zerodha_id):
+    # SMTP (connect, TLS, login, send) takes seconds: off the event loop, so one sign-in
+    # does not stall every other request on the single worker
+    if not await asyncio.to_thread(otp_auth.send_otp_email, otp, user.email, zerodha_id):
         if _dev_otp_fallback_enabled(request):
             logger.warning("otp_email_failed_dev_fallback_enabled", zerodha_id=zerodha_id)
             return {
@@ -1003,7 +1005,7 @@ async def step_up_send(request: Request) -> dict[str, Any]:
         otp = otp_auth.generate_otp(zerodha_id, purpose=STEP_UP_PURPOSE)
     except Exception as e:
         return {"success": False, "message": _public_error(e)}
-    if not otp_auth.send_otp_email(otp, user.email, zerodha_id):
+    if not await asyncio.to_thread(otp_auth.send_otp_email, otp, user.email, zerodha_id):
         otp_auth.discard_pending_otp(zerodha_id, purpose=STEP_UP_PURPOSE)
         return {"success": False, "message": "Unable to deliver OTP. Check email configuration and try again."}
     return {"success": True, "message": "Confirmation code sent to your registered email"}
