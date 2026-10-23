@@ -375,8 +375,8 @@ class FuturesOIAnalyzer:
 
         result: list[dict[str, Any]] = []
         for inst in all_nfo:
-            if hasattr(inst, "model_dump") and (inst.instrument_type != "FUT"
-                                               or (inst.name or "").upper() not in target_syms):
+            kind = getattr(inst, "instrument_type", None)
+            if kind is not None and (kind != "FUT" or (getattr(inst, "name", "") or "").upper() not in target_syms):
                 continue                        # most of NFO is options: skip before converting
             inst_dict = inst.model_dump() if hasattr(inst, "model_dump") else inst
             if inst_dict.get("instrument_type") != "FUT":
@@ -641,7 +641,7 @@ class OptionsOIAnalyzer:
     """
 
     def __init__(self) -> None:
-        self._instrument_cache: dict[str, tuple[str, list[Any]]] = {}   # exchange -> (day, instruments)
+        self._instrument_cache: dict[str, tuple[str, list[Any]]] = {}   # "NFO:NIFTY" -> (day, its options)
         self._pcr_history: dict[str, list[dict[str, Any]]] = {"NIFTY": [], "SENSEX": []}
         self._straddle_history: dict[str, list[dict[str, Any]]] = {"NIFTY": [], "SENSEX": []}
         self._last_reports: dict[str, OptionsOIReport] = {}
@@ -887,41 +887,41 @@ class OptionsOIAnalyzer:
     async def _load_option_instruments(
         self, client: Any, underlying: str, expiry_filter: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Fetch NFO instruments and filter options for the given underlying."""
+        """The underlying's option contracts (all expiries), filtered to ``expiry_filter``.
+
+        Only those few thousand contracts are kept for the day - not the whole NFO
+        list (~100k instruments, ~140 MB as objects), which every analyser used to
+        hold a copy of."""
         exchange = "BFO" if underlying == "SENSEX" else "NFO"
+        want = underlying.upper()
         today = datetime.now().strftime("%Y-%m-%d")
-        cached = self._instrument_cache.get(exchange)
+        cached = self._instrument_cache.get(f"{exchange}:{want}")
         if cached and cached[0] == today:
-            all_inst = cached[1]
+            options = cached[1]
         else:
             try:
-                # the instrument dump is several MB; fetch it once per day per exchange
                 all_inst = await client.get_instruments(exchange)
-                self._instrument_cache[exchange] = (today, all_inst)
             except Exception as e:
                 logger.error("options_oi_instruments_error", error=str(e))
                 return []
-
-        result: list[dict[str, Any]] = []
-        want = underlying.upper()
-        for inst in all_inst:
-            # ~100k instruments every minute: test the fields first, convert only the matches
-            if hasattr(inst, "model_dump"):
-                if inst.instrument_type not in ("CE", "PE") or (inst.name or "").upper() != want:
+            options = []
+            for inst in all_inst:
+                # test the fields first, convert only the matches
+                kind = getattr(inst, "instrument_type", None)
+                if kind is not None and (kind not in ("CE", "PE")
+                                         or (getattr(inst, "name", "") or "").upper() != want):
                     continue
-                if expiry_filter and inst.expiry != expiry_filter:
+                d = inst.model_dump() if hasattr(inst, "model_dump") else inst
+                # exact match: a substring test would also take FINNIFTY / MIDCPNIFTY /
+                # NIFTYNXT50 options for NIFTY (FINNIFTY strikes overlap NIFTY's ATM range)
+                if d.get("instrument_type") not in ("CE", "PE") or d.get("name", "").upper() != want:
                     continue
-            d = inst.model_dump() if hasattr(inst, "model_dump") else inst
-            if d.get("instrument_type") not in ("CE", "PE"):
-                continue
-            # exact match: a substring test would also take FINNIFTY / MIDCPNIFTY /
-            # NIFTYNXT50 options for NIFTY (FINNIFTY strikes overlap NIFTY's ATM range)
-            if d.get("name", "").upper() != underlying.upper():
-                continue
-            if expiry_filter and d.get("expiry") != expiry_filter:
-                continue
-            result.append(d)
-        return result
+                options.append(d)
+            del all_inst
+            self._instrument_cache[f"{exchange}:{want}"] = (today, options)
+        if not expiry_filter:
+            return list(options)
+        return [d for d in options if d.get("expiry") == expiry_filter]
 
     async def _get_spot_price(self, client: Any, underlying: str) -> float:
         """Fetch spot price for an index."""

@@ -4,6 +4,8 @@ import asyncio
 import csv
 import io
 import ssl
+import time
+from datetime import date
 from typing import Callable, Any, Optional
 
 import aiohttp
@@ -47,6 +49,23 @@ from src.auth.access import current_origin
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# Instrument lists are the same for every account: one parsed copy per exchange, kept a
+# few minutes (startup asks for each several times) and then let go - consumers keep
+# only the small subsets they need (futures, one index's options, the F&O universe).
+INSTRUMENTS_KEEP_S = 600.0
+_INSTRUMENTS: dict[str, tuple[float, list[Instrument], Any]] = {}
+_INSTRUMENT_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def release_instruments(older_than_s: float = INSTRUMENTS_KEEP_S) -> int:
+    """Drop instrument lists nobody asked for recently (the memory tidy-up calls this)."""
+    now = time.monotonic()
+    stale = [k for k, v in _INSTRUMENTS.items() if now - v[0] >= older_than_s]
+    for k in stale:
+        _INSTRUMENTS.pop(k, None)
+    return len(stale)
 
 
 class KiteClient:
@@ -346,17 +365,33 @@ class KiteClient:
         return True
 
     async def get_instruments(self, exchange: Optional[str] = None) -> list[Instrument]:
-        endpoint = f"/instruments/{exchange}" if exchange else "/instruments"
-        csv_text = await self._request("GET", endpoint, parse_json=False)
-        # NFO alone is ~100k rows (every option contract): seconds of CPU on a small
-        # server, so it is parsed off the event loop
-        instruments = await asyncio.to_thread(self._parse_instruments, csv_text)
-        if exchange in ("NSE", "NFO"):
-            # the backup feed keeps these instrument numbers, so stored bars still match
-            from src.api.backup_feed import remember_tokens
+        """The exchange's instrument list. One parsed copy per exchange is shared by every
+        caller for ``INSTRUMENTS_KEEP_S``: NFO alone is ~100k instruments, ~140 MB as
+        objects, and at startup Market Flow, futures OI, the option analysers and the
+        scanner each asked for it - every call a fresh download and a fresh copy.
+        Concurrent callers wait for the one download instead of starting their own."""
+        key = exchange or "*"
+        now = time.monotonic()
+        hit = _INSTRUMENTS.get(key)
+        if hit and now - hit[0] < INSTRUMENTS_KEEP_S and hit[2] == date.today():
+            return hit[1]
+        lock = _INSTRUMENT_LOCKS.setdefault((key, id(asyncio.get_running_loop())), asyncio.Lock())
+        async with lock:
+            hit = _INSTRUMENTS.get(key)
+            if hit and time.monotonic() - hit[0] < INSTRUMENTS_KEEP_S and hit[2] == date.today():
+                return hit[1]
+            endpoint = f"/instruments/{exchange}" if exchange else "/instruments"
+            csv_text = await self._request("GET", endpoint, parse_json=False)
+            # seconds of CPU on a small server: parsed off the event loop
+            instruments = await asyncio.to_thread(self._parse_instruments, csv_text)
+            del csv_text
+            if exchange in ("NSE", "NFO"):
+                # the backup feed keeps these instrument numbers, so stored bars still match
+                from src.api.backup_feed import remember_tokens
 
-            await asyncio.to_thread(remember_tokens, exchange, instruments)
-        return instruments
+                await asyncio.to_thread(remember_tokens, exchange, instruments)
+            _INSTRUMENTS[key] = (time.monotonic(), instruments, date.today())
+            return instruments
 
     @staticmethod
     def _parse_instruments(csv_text: str) -> list[Instrument]:

@@ -50,6 +50,12 @@ def rss_mb() -> Optional[float]:
 
 def tidy() -> dict[str, Optional[float]]:
     before = rss_mb()
+    try:   # instrument lists (~140 MB for NFO) nobody asked for in the last minutes
+        from src.api.client import release_instruments
+
+        release_instruments()
+    except Exception:
+        pass
     collected = gc.collect()
     trimmed = _trim()
     after = rss_mb()

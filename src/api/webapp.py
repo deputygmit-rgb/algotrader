@@ -41,6 +41,7 @@ from src.api.request_limiter import api_limiter
 from src.utils.memory import run_hygiene
 from src.analysis.efficacy import run_rebuilder
 from src.api.market_recorder import run_market_recorder
+from src.utils.watchdog import run_watchdog, time_request
 from src.api.response_cache import shared_json
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth, rate_limit_subject
@@ -89,12 +90,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
     resume = asyncio.create_task(_resume_accounts())    # trading picks up again after a restart
     recorder = asyncio.create_task(run_market_recorder())   # OI + flow history all session, visitor or not
+    watchdog = asyncio.create_task(run_watchdog())   # logs event-loop stalls (with stack), slow requests, health
     # scripts minified before the first visitor asks (in a thread: the loop keeps serving)
     warm_scripts = asyncio.create_task(asyncio.to_thread(_static_files.warm))
     try:
         yield
     finally:
         recorder.cancel()
+        watchdog.cancel()
         warm_scripts.cancel()
         resume.cancel()
         reaper.cancel()
@@ -519,6 +522,10 @@ async def metrics_middleware(request: Request, call_next):
         response.set_cookie(VISITOR_COOKIE, visitor, max_age=365 * 86400, httponly=True, samesite="lax",
                             secure=_is_secure_request(request), path="/")
     return response
+
+
+# outermost (registered last): times the whole request, every other middleware included
+app.middleware("http")(time_request)
 
 
 @app.post("/metrics/events")

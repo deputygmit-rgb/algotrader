@@ -175,3 +175,83 @@ def test_view_only_sessions_start_no_agents_and_write_no_activity_files():
     assert agent.view_only and agent._heartbeat_task is None
     assert all(a._task is None and not a._alive for a in agent.agents.values())
     assert all(getattr(a.activity, "_log_dir", None) in (None, "") for a in agent.agents.values())
+
+
+def test_the_watchdog_names_the_code_that_stalls_the_loop(monkeypatch):
+    from src.utils import watchdog
+
+    seen = []
+    monkeypatch.setattr(watchdog.logger, "warning", lambda event, **kw: seen.append((event, kw)))
+
+    def block_the_loop():
+        time.sleep(1.5)                       # a blocking call on the event loop
+
+    async def go():
+        task = asyncio.create_task(watchdog.run_watchdog())
+        await asyncio.sleep(0.5)
+        block_the_loop()
+        await asyncio.sleep(0.3)
+        task.cancel()
+    asyncio.run(go())
+    stalls = [kw for ev, kw in seen if ev == "event_loop_stalled"]
+    assert stalls and stalls[0]["seconds"] >= 1.0
+    assert any("block_the_loop" in line for line in stalls[0]["stack"])
+
+
+def test_slow_requests_are_logged(monkeypatch):
+    from src.utils import watchdog
+
+    seen = []
+    monkeypatch.setattr(watchdog.logger, "warning", lambda event, **kw: seen.append((event, kw)))
+    monkeypatch.setattr(watchdog, "SLOW_REQUEST_S", 0.05)
+
+    async def slow(_request):
+        await asyncio.sleep(0.1)
+        return SimpleNamespace(status_code=200)
+
+    req = SimpleNamespace(url=SimpleNamespace(path="/api/market/fno-flow"), method="GET")
+    asyncio.run(watchdog.time_request(req, slow))
+    assert seen and seen[0][0] == "slow_request" and seen[0][1]["path"] == "/api/market/fno-flow"
+
+
+def test_one_instrument_list_is_shared_by_every_caller(monkeypatch):
+    from src.api import client as client_mod
+    from src.api.client import KiteClient
+
+    downloads = []
+
+    async def request(self, method, endpoint, **kw):
+        downloads.append(endpoint)
+        await asyncio.sleep(0.05)
+        return ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,"
+                "instrument_type,segment,exchange\n1,1,INFY26OCTFUT,INFY,0,2026-10-28,0,0.05,400,FUT,NFO-FUT,NFO\n")
+    monkeypatch.setattr(KiteClient, "_request", request)
+    monkeypatch.setattr(client_mod, "_INSTRUMENTS", {})
+    monkeypatch.setattr("src.api.backup_feed.remember_tokens", lambda exchange, instruments: None)
+    a, b = KiteClient.__new__(KiteClient), KiteClient.__new__(KiteClient)
+
+    async def go():
+        return await asyncio.gather(a.get_instruments("NFO"), b.get_instruments("NFO"), a.get_instruments("NFO"))
+    lists = asyncio.run(go())
+    assert downloads == ["/instruments/NFO"] and lists[0] is lists[1] is lists[2]
+    assert client_mod.release_instruments(older_than_s=0) == 1 and client_mod._INSTRUMENTS == {}
+
+
+def test_the_option_analyser_keeps_only_its_underlyings_contracts():
+    from src.data.models import Instrument
+    from src.options.oi_analysis import OptionsOIAnalyzer
+
+    mk = lambda sym, name, kind, exp: Instrument(instrument_token=1, exchange_token=1, tradingsymbol=sym, name=name,
+                                                 last_price=0, expiry=exp, strike=25000, tick_size=0.05, lot_size=75,
+                                                 instrument_type=kind, segment="NFO-OPT", exchange="NFO")
+    everything = [mk("NIFTY1", "NIFTY", "CE", "2026-10-28"), mk("NIFTY2", "NIFTY", "PE", "2026-11-04"),
+                  mk("FIN1", "FINNIFTY", "CE", "2026-10-28"), mk("INFYF", "INFY", "FUT", "2026-10-28")] * 1000
+
+    async def get_instruments(exchange):
+        return everything
+    an = OptionsOIAnalyzer()
+    client = SimpleNamespace(get_instruments=get_instruments)
+    first = asyncio.run(an._load_option_instruments(client, "NIFTY", "2026-10-28"))
+    assert {d["tradingsymbol"] for d in first} == {"NIFTY1"}
+    day, kept = an._instrument_cache["NFO:NIFTY"]
+    assert len(kept) == 2000 and all(d["name"] == "NIFTY" for d in kept)      # not the 4000-row list
