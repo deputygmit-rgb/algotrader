@@ -16,7 +16,9 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def send_mail(to: str, subject: str, text: str, reply_to: Optional[str] = None, html: Optional[str] = None) -> bool:
+def send_mail(to: str, subject: str, text: str, reply_to: Optional[str] = None, html: Optional[str] = None,
+              attachments: Optional[list[tuple[str, str, str]]] = None) -> bool:
+    """``attachments``: (filename, text content, MIME subtype under text/, e.g. "markdown")."""
     sender = os.environ.get("SMTP_EMAIL", "")
     password = os.environ.get("SMTP_PASSWORD", "")
     if not (sender and password and to):
@@ -31,6 +33,8 @@ def send_mail(to: str, subject: str, text: str, reply_to: Optional[str] = None, 
     msg.set_content(text)
     if html:
         msg.add_alternative(html, subtype="html")     # plain text stays the fallback
+    for filename, content, subtype in attachments or []:
+        msg.add_attachment(content, subtype=subtype, filename=filename)
     try:
         with smtplib.SMTP(os.environ.get("SMTP_HOST", "smtp.gmail.com"), int(os.environ.get("SMTP_PORT", "587")),
                           timeout=10) as server:

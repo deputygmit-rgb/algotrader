@@ -2583,6 +2583,31 @@ class TradingService:
         except Exception as e:      # a checklist that cannot run must not wave the order through
             return f"preflight could not run: {e}"
 
+    def _ledger_swing(self, snap: dict[str, Any]) -> None:
+        """Swing board signals in the signals ledger (source "swing"), written when a signal
+        first appears and whenever its status changes - the live half of the performance report."""
+        seen = self.__dict__.setdefault("_swing_ledger_seen", {})
+        stamp = datetime.now().isoformat(timespec="seconds")
+        for sig in snap.get("feed") or []:
+            if seen.get(sig["id"]) == sig.get("status"):
+                continue
+            row = {
+                "source": "swing", "account": self._zerodha_id or "", "strategy": "swing_setups",
+                "symbol": sig.get("symbol"), "timeframe": "60minute",
+                "session": str(sig.get("bar_time") or "")[:10], "bar_time": str(sig.get("bar_time") or "")[:16],
+                "signal_time": str(sig.get("time") or "")[11:16], "side": sig.get("side"), "setup": sig.get("setup"),
+                **{k: sig.get(k) for k in ("quality", "entry", "stop", "target1", "target2", "risk_pct", "status",
+                                            "entry_time", "exit_time", "bars_held", "mfe_r", "mae_r", "gross_r",
+                                            "cost_r", "result_r", "backfilled", "flow_bias")},
+                "skipped": sig.get("skipped") or "",
+            }
+            try:
+                self._market_store.upsert_signal(f"swing|{self._zerodha_id or ''}|{sig['id']}", row, stamp)
+                seen[sig["id"]] = sig.get("status")
+            except Exception as e:      # the ledger must never break the board
+                logger.warning("swing_ledger_failed", signal_id=sig.get("id"), error=str(e))
+                return
+
     def _ledger_live_signal(self, signal: Signal, timeframe: str, outcome: dict[str, Any]) -> None:
         """Record a live strategy signal and what became of it in the signals ledger."""
         try:
@@ -3523,6 +3548,7 @@ class TradingService:
             self._swing_task = asyncio.create_task(self._swing.refresh(now), name="swing_bars")
             self._swing_task.add_done_callback(self._task_exception_handler)
         snap = await asyncio.to_thread(self._swing.snapshot, flow, now)
+        self._ledger_swing(snap)
         if self.is_demo:
             snap["demo"] = True
         self._swing_cache = (time.monotonic(), snap)

@@ -14,7 +14,10 @@ process (it reads a lot of history); run it by hand any time:
     python scripts/rebuild_efficacy.py --preview       # print the review instead of sending it
 
 The review goes to REPORT_EMAILS (comma-separated) or else ADMIN_EMAIL, with
-the same SMTP_* settings as the sign-in email.
+the same SMTP_* settings as the sign-in email. It carries the full strategy
+performance report as a Markdown attachment (``src/analysis/performance_report.py``,
+also saved to ``data/reports/performance-<date>.md``); the replayed trades are
+kept in ``data/reports/setup_trades.json`` for the admin panel's performance view.
 """
 from __future__ import annotations
 
@@ -32,10 +35,28 @@ sys.path.insert(0, ROOT)
 from src.analysis.efficacy import PATH, WINDOW_DAYS, save, summarize  # noqa: E402
 
 DAY_HISTORY_DAYS = WINDOW_DAYS + 45        # warm-up: the setups need 15 earlier sessions
+TRADE_FIELDS = ("quality", "status", "gross_r", "cost_r", "result_r", "mfe_r", "mae_r", "bars_held", "time", "exit_time")
+REPORTS_KEPT = 60
+
+
+def _trade(kind: str, symbol: str, s: dict, when: str) -> dict:
+    """One closed trade with what the performance report needs (rounded, compact)."""
+    t = {"kind": kind, "symbol": symbol, "setup": s["setup"], "side": s["side"], "date": when}
+    for k in TRADE_FIELDS:
+        v = s.get(k)
+        t[k] = round(v, 3) if isinstance(v, float) else v
+    return t
+
+
+def symbols(con: sqlite3.Connection) -> dict[int, str]:
+    try:
+        return {r[0]: r[1] for r in con.execute("SELECT instrument_token, tradingsymbol FROM instruments")}
+    except sqlite3.Error:
+        return {}
 SWING_DAILY_DAYS = WINDOW_DAYS + 120       # daily EMA 50 + 20-day levels before the window
 
 
-def day_trades(con: sqlite3.Connection, today: date) -> list[dict]:
+def day_trades(con: sqlite3.Connection, today: date, names: dict[int, str] | None = None) -> list[dict]:
     import pandas as pd
 
     from src.strategy.day_trade_setups import MIN_HISTORY_SESSIONS, replay_sessions
@@ -52,12 +73,11 @@ def day_trades(con: sqlite3.Connection, today: date) -> list[dict]:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         for s in replay_sessions(df)["signals"]:
             if s.get("result_r") is not None and s["date"] < today.isoformat():
-                out.append({"kind": "day", "setup": s["setup"], "side": s["side"], "date": s["date"],
-                            "result_r": s["result_r"]})
+                out.append(_trade("day", (names or {}).get(token, str(token)), s, s["date"]))
     return out
 
 
-def swing_trades(con: sqlite3.Connection, today: date) -> list[dict]:
+def swing_trades(con: sqlite3.Connection, today: date, names: dict[int, str] | None = None) -> list[dict]:
     from src.analysis.swing_setups import analyze_swing
 
     since_daily = (today - timedelta(days=SWING_DAILY_DAYS)).isoformat()
@@ -81,8 +101,7 @@ def swing_trades(con: sqlite3.Connection, today: date) -> list[dict]:
         for s in analyze_swing(rows["60minute"], d, start_index=start)["signals"]:
             # dated by the exit: a trade counts once its outcome is known, before today
             if s.get("result_r") is not None and s.get("exit_time") and s["exit_time"][:10] < today.isoformat():
-                out.append({"kind": "swing", "setup": s["setup"], "side": s["side"], "date": s["exit_time"][:10],
-                            "result_r": s["result_r"]})
+                out.append(_trade("swing", (names or {}).get(token, str(token)), s, s["exit_time"][:10]))
     return out
 
 
@@ -117,23 +136,43 @@ def main() -> None:
     except (OSError, ValueError):
         pass
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
-    trades = day_trades(con, today) + swing_trades(con, today)
+    names = symbols(con)
+    trades = day_trades(con, today, names) + swing_trades(con, today, names)
     con.close()
     records = summarize(trades, today, previous)
     note = f"{len(trades)} trades replayed in {time.time() - started:.0f}s"
     save(records, today, args.out, note=note)
     print(f"efficacy: {len(records)} setup records from {len(trades)} trades in {time.time() - started:.0f}s")
+
+    # the full performance report: trades kept for the admin panel, Markdown kept and mailed
+    from src.analysis import performance_report as perf
+
+    perf.save_trades(trades, today)
+    full = perf.build(trades, today, days=WINDOW_DAYS,
+                      ledger=perf.live_ledger(args.db, (today - timedelta(days=WINDOW_DAYS)).isoformat()),
+                      efficacy=records, as_of=today.isoformat())
+    md = perf.markdown(full)
+    md_path = os.path.join(perf.REPORT_DIR, f"performance-{today.isoformat()}.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(md)
+    old_reports = sorted(n for n in os.listdir(perf.REPORT_DIR) if n.startswith("performance-") and n.endswith(".md"))
+    for name in old_reports[:-REPORTS_KEPT]:
+        os.remove(os.path.join(perf.REPORT_DIR, name))
+    print(f"performance report: {md_path}")
+
     if args.email or args.force_email or args.preview:
         from src.analysis import efficacy_report as report
 
         subject, text, html = report.build(records, previous, today, report.board_today(args.db, today), note)
+        text += "\n\nThe full strategy performance report (per setup, per day, parameters) is attached as Markdown.\n"
         if args.preview:
-            print(f"\nSubject: {subject}\n\n{text}")
+            print(f"\nSubject: {subject}\n\n{text}\n\n{md}")
         elif report.should_send(previous_as_of, today, args.force_email):
             from src.utils.mailer import send_mail
 
             to = report.recipients(dict(os.environ))
-            sent = [addr for addr in to if send_mail(addr, subject, text, html=html)]
+            attachment = [(f"verquoai-performance-{today.isoformat()}.md", md, "markdown")]
+            sent = [addr for addr in to if send_mail(addr, subject, text, html=html, attachments=attachment)]
             print(f"review emailed to {len(sent)} of {len(to)} recipient(s)" if to else "review not emailed: set ADMIN_EMAIL or REPORT_EMAILS")
 
 

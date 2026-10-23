@@ -72,6 +72,22 @@
             </section>
         </div>
 
+        <section class="card adm-card adm-perf" id="adm-perf">
+            <div class="adm-head"><h2>Strategy performance</h2><span id="perf-asof" class="adm-muted"></span></div>
+            <div class="perf-bar">
+                <div class="perf-tabs" role="tablist" aria-label="Board">
+                    <button type="button" role="tab" data-board="day" aria-selected="true">Day Trade</button>
+                    <button type="button" role="tab" data-board="swing" aria-selected="false">Swing</button>
+                </div>
+                <label class="perf-field">Window<select id="perf-days"></select></label>
+                <span class="perf-spacer"></span>
+                <a class="btn btn-outline btn-sm" id="perf-md" href="#" download>Download .md</a>
+                <button class="btn btn-outline btn-sm" type="button" id="perf-email">Email to me</button>
+                <label class="perf-field">Nightly<select id="perf-archive"><option value="">saved reports…</option></select></label>
+            </div>
+            <div id="perf-body"><p class="adm-muted">Loading…</p></div>
+        </section>
+
         <section class="card adm-card">
             <div class="adm-head"><h2>Access requests</h2><span id="adm-contact-count"></span></div>
             <div class="adm-table-wrap">
@@ -95,5 +111,6 @@
 
     <script src="/static/js/secure_fetch.js?v={{ secure_fetch_js_version }}"></script>
     <script src="/static/js/admin.js?v={{ admin_js_version }}"></script>
+    <script src="/static/js/admin_performance.js?v={{ admin_perf_js_version }}"></script>
 </body>
 </html>

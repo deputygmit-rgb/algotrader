@@ -821,3 +821,45 @@ body.has-bnav .pwa-offline { bottom: calc(60px + env(safe-area-inset-bottom)); }
 
 /* iPhone notch / status bar: the terminal header clears it in Safari and in the installed app alike */
 .header { padding-top: max(8px, env(safe-area-inset-top)); padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+
+/* ── admin: strategy performance (static/js/admin_performance.js) ── */
+.perf-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 4px 0 14px; }
+.perf-spacer { flex: 1 1 auto; }
+.perf-tabs { display: inline-flex; border: 1px solid var(--t-line); border-radius: 6px; overflow: hidden; }
+.perf-tabs button { background: none; border: 0; color: var(--t-dim); padding: 8px 14px; min-height: 36px; cursor: pointer;
+    font: 700 11px/1 inherit; letter-spacing: 1.2px; text-transform: uppercase; }
+.perf-tabs button[aria-selected="true"] { background: rgba(56,214,255,.1); color: var(--t-c); }
+.perf-field { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--t-dim); letter-spacing: 1px; text-transform: uppercase; }
+.perf-field select { min-height: 34px; }
+.perf-findings { margin: 0 0 14px; padding: 10px 14px 10px 28px; border: 1px solid var(--t-line); border-left: 3px solid var(--t-a);
+    border-radius: 4px; background: rgba(255,209,102,.04); font-size: 12.5px; line-height: 1.6; color: var(--t-txt); }
+.perf-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.perf-kpi { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--t-line); border-radius: 4px; background: var(--t-panel); }
+.perf-kpi span { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--t-dim); }
+.perf-kpi b { font-size: 17px; color: var(--t-txt); }
+.perf-up { color: var(--t-g) !important; }
+.perf-down { color: var(--t-r) !important; }
+.perf-curve-wrap { margin: 4px 0 6px; }
+.perf-curve { width: 100%; height: 160px; display: block; background: var(--t-panel); border: 1px solid var(--t-line); border-radius: 4px; }
+.perf-curve .perf-zero { stroke: var(--t-line-2); stroke-dasharray: 3 4; }
+.perf-curve .perf-line { fill: none; stroke: var(--t-c); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.perf-curve .perf-bar-up { fill: rgba(91,227,160,.45); }
+.perf-curve .perf-bar-down { fill: rgba(255,90,110,.45); }
+.perf-legend { font-size: 11px; color: var(--t-mute, #5d717d); margin-top: 4px; }
+.perf-h { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--t-c); margin: 18px 0 8px; }
+.perf-table td, .perf-table th { white-space: nowrap; }
+.perf-table td:not(:first-child), .perf-heatmap td { text-align: right; font-variant-numeric: tabular-nums; }
+.perf-sort { cursor: pointer; user-select: none; }
+.perf-sort.asc::after { content: ' ▲'; } .perf-sort.desc::after { content: ' ▼'; }
+.perf-name small { color: var(--t-dim); margin-left: 4px; }
+.perf-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10.5px; border: 1px solid currentColor; white-space: nowrap; }
+.perf-pill.good { color: var(--t-g); } .perf-pill.ok { color: var(--t-c); } .perf-pill.warn { color: var(--t-a); }
+.perf-pill.bad { color: var(--t-r); } .perf-pill.muted { color: var(--t-dim); }
+.perf-heat { font-size: 11px; color: #e8f1f5; min-width: 44px; }
+.perf-heat.empty { background: transparent; }
+.perf-scroll { max-height: 360px; overflow-y: auto; }
+.perf-params { margin-top: 16px; font-size: 12px; }
+.perf-params summary { cursor: pointer; color: var(--t-c); letter-spacing: 1px; padding: 6px 0; }
+.perf-params ul { margin: 8px 0 12px; padding-left: 18px; line-height: 1.7; color: var(--t-txt); }
+.perf-params td { white-space: normal; min-width: 160px; }
+@media (max-width: 640px) { .perf-spacer { display: none; } .perf-kpi b { font-size: 15px; } }
