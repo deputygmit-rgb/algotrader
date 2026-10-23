@@ -217,7 +217,7 @@ const DayTrade = (() => {
 
     // why the feed is empty, in words (it used to just say "no signals match")
     function emptyFeedReason() {
-        const demoNote = data.demo ? ' (DEMO data: link your trading account for the live board.)' : '';
+        const demoNote = data.demo ? ' (DEMO data: simulated market.)' : '';
         if (data.feed.length) return 'No signals match this filter — choose ALL to see every signal.';
         if (!data.tracked.length) {
             return (data.market_open

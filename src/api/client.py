@@ -428,18 +428,26 @@ class KiteClient:
         backup = backup_quotes()
         mode = source_mode()
         if mode == "kite_only" or not backup.configured:
-            out = await primary()
+            out = await primary(instruments)
             self.last_quote_source = "primary"
             return out
         if mode == "kotak_first" or backup.prefer_backup():
             try:
                 out = await getattr(backup, kind)(instruments)
+                missing = [i for i in instruments if i not in out]
+                if missing and mode == "kotak_first" and not backup.prefer_backup():
+                    # the backup maps NSE cash, futures and the main indices only: options,
+                    # BSE stocks and the rest still come from this broker
+                    try:
+                        out.update(await primary(missing))
+                    except Exception as e:
+                        logger.warning("primary_quotes_for_unmapped_failed", missing=len(missing), error=str(e)[:200])
                 self.last_quote_source = "backup"
                 return out
             except Exception as e:
                 logger.warning("backup_quotes_failed", error=str(e)[:200])
         try:
-            out = await primary()
+            out = await primary(instruments)
             self.last_quote_source = "primary"
             return out
         except Exception as e:
@@ -455,8 +463,8 @@ class KiteClient:
             return out
 
     async def get_quote(self, instruments: list[str]) -> dict[str, Quote]:
-        async def primary() -> dict[str, Quote]:
-            params = [("i", inst) for inst in instruments]
+        async def primary(items: list[str]) -> dict[str, Quote]:
+            params = [("i", inst) for inst in items]
             data = await self._request(
                 "GET", "/quote", limiter=self._quote_limiter, params=params
             )
@@ -464,8 +472,8 @@ class KiteClient:
         return await self._with_backup("get_quote", instruments, primary)
 
     async def get_ohlc(self, instruments: list[str]) -> dict[str, OHLCQuote]:
-        async def primary() -> dict[str, OHLCQuote]:
-            params = [("i", inst) for inst in instruments]
+        async def primary(items: list[str]) -> dict[str, OHLCQuote]:
+            params = [("i", inst) for inst in items]
             data = await self._request(
                 "GET", "/quote/ohlc", limiter=self._quote_limiter, params=params
             )
@@ -473,8 +481,8 @@ class KiteClient:
         return await self._with_backup("get_ohlc", instruments, primary)
 
     async def get_ltp(self, instruments: list[str]) -> dict[str, LTPQuote]:
-        async def primary() -> dict[str, LTPQuote]:
-            params = [("i", inst) for inst in instruments]
+        async def primary(items: list[str]) -> dict[str, LTPQuote]:
+            params = [("i", inst) for inst in items]
             data = await self._request(
                 "GET", "/quote/ltp", limiter=self._quote_limiter, params=params
             )

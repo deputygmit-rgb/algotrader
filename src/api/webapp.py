@@ -164,9 +164,10 @@ PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-ot
                 "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact",
                 "/robots.txt", "/sitemap.xml",
                 # installable app: manifest, service worker, offline screen, Android app link
-                "/manifest.webmanifest", "/sw.js", "/offline", "/.well-known/assetlinks.json", "/privacy"}
+                "/manifest.webmanifest", "/sw.js", "/offline", "/.well-known/assetlinks.json", "/privacy",
+                "/about", "/disclaimer", "/disclosures"}
 # the only pages search engines may index; everything else is sent with noindex
-INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml", "/privacy"}
+INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml", "/privacy", "/about", "/disclaimer", "/disclosures"}
 
 
 def _real_service(zerodha_id: str) -> TradingService:
@@ -1189,9 +1190,45 @@ async def privacy_page(request: Request) -> HTMLResponse:
     """Privacy policy (linked from the landing page, the app stores and the manifest)."""
     landing = os.path.join(BASE_DIR, "templates", "privacy.html")
     updated = datetime.fromtimestamp(os.path.getmtime(landing)).strftime("%d %B %Y")
-    contact = (os.environ.get("PRIVACY_CONTACT_EMAIL") or os.environ.get("ADMIN_EMAIL") or "").split(",")[0].strip()
+    contact = os.environ.get("PRIVACY_CONTACT_EMAIL", "").split(",")[0].strip()    # never the admin's own address
     return templates.TemplateResponse(request, "privacy.html", {"request": request, "site_url": _public_url(),
                                                                 "updated": updated, "contact_email": contact})
+
+
+def _risk_line() -> str:
+    from src.api.legal_pages import RISK_LINE
+
+    return RISK_LINE
+
+
+LEGAL_LINKS = [("about", "About"), ("disclaimer", "Disclaimer"), ("disclosures", "Disclosures"), ("privacy", "Privacy")]
+
+
+async def _legal_page(request: Request, slug: str) -> HTMLResponse:
+    """About / Disclaimer / Disclosures (src/api/legal_pages.py)."""
+    from src.api import legal_pages
+
+    source = os.path.join(BASE_DIR, "src", "api", "legal_pages.py")
+    updated = datetime.fromtimestamp(os.path.getmtime(source)).strftime("%d %B %Y")
+    return templates.TemplateResponse(request, "legal.html", {
+        "request": request, "slug": slug, "page": legal_pages.pages()[slug], "site_url": _public_url(),
+        "updated": updated, "contact_email": legal_pages.contact_email(), "risk_line": legal_pages.RISK_LINE,
+        "legal_links": LEGAL_LINKS})
+
+
+@app.get("/about", response_class=HTMLResponse)
+async def about_page(request: Request) -> HTMLResponse:
+    return await _legal_page(request, "about")
+
+
+@app.get("/disclaimer", response_class=HTMLResponse)
+async def disclaimer_page(request: Request) -> HTMLResponse:
+    return await _legal_page(request, "disclaimer")
+
+
+@app.get("/disclosures", response_class=HTMLResponse)
+async def disclosures_page(request: Request) -> HTMLResponse:
+    return await _legal_page(request, "disclosures")
 
 
 # ── Push alerts (src/notify/push.py) ──
@@ -1299,7 +1336,7 @@ async def robots_txt() -> str:
     site = _public_url()
     blocked = "".join(f"User-agent: {bot}\n" for bot in AI_TRAINING_CRAWLERS)
     return (f"{blocked}Disallow: /\n\n"
-            "User-agent: *\nAllow: /$\nAllow: /privacy$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
+            "User-agent: *\nAllow: /$\nAllow: /privacy$\nAllow: /about$\nAllow: /disclaimer$\nAllow: /disclosures$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
             "Allow: /static/js/landing.js\nDisallow: /\n\n"
             f"Sitemap: {site}/sitemap.xml\n")
 
@@ -1313,7 +1350,9 @@ async def sitemap_xml() -> Response:
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
             f"  <url><loc>{site}/</loc><lastmod>{updated}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n"
             f"  <url><loc>{site}/privacy</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n"
-            "</urlset>\n")
+            + "".join(f"  <url><loc>{site}/{slug}</loc><changefreq>monthly</changefreq><priority>0.4</priority></url>\n"
+                      for slug in ("about", "disclaimer", "disclosures"))
+            + "</urlset>\n")
     return Response(body, media_type="application/xml")
 
 
@@ -1338,6 +1377,10 @@ async def dashboard(request: Request) -> HTMLResponse:
         "view_default_tab": VIEW_DEFAULT_TAB,
         "form_token": _form_token(),
         "is_admin": is_admin_session(request),
+        # broker / API linking is shown to admins and accounts above view access only: never in the
+        # public demo or a view-only account (the mock trading terminal needs no broker)
+        "risk_line": _risk_line(),
+        "show_broker_link": is_admin_session(request) or (demo_kind(svc) != "public" and not _is_view_only(request)),
         "is_authenticated": svc.is_authenticated,
         "is_running": svc.is_running,
         "zerodha_id": zerodha_id,
@@ -2489,12 +2532,19 @@ async def get_market_ohlc(request: Request) -> dict[str, Any]:
     return await svc.get_market_ohlc(instruments)
 
 
+OVERVIEW_MAX = 30
+_OVERVIEW_SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9&. _-]{0,39}")
+
+
 @app.get("/api/market/overview")
 async def get_market_overview(request: Request) -> dict[str, Any]:
     """Market overview for key indices/stocks."""
     svc = get_user_service(request)
-    raw = request.query_params.get("symbols", "")
-    symbols = [s.strip() for s in raw.split(",") if s.strip()] or None
+    raw = request.query_params.get("symbols", "")[:2000]
+    # NSE names ("NIFTY 50", "INFY", "M&M"): at most OVERVIEW_MAX, each a plausible name -
+    # every distinct list is a quote call (on the shared source account for view-only users)
+    symbols = [s for s in dict.fromkeys(x.strip().upper() for x in raw.split(","))
+               if _OVERVIEW_SYMBOL.fullmatch(s)][:OVERVIEW_MAX] or None
     return await svc.get_market_overview(symbols)
 
 

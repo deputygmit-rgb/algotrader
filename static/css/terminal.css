@@ -867,3 +867,8 @@ body.has-bnav .pwa-offline { bottom: calc(60px + env(safe-area-inset-bottom)); }
 .perf-params ul { margin: 8px 0 12px; padding-left: 18px; line-height: 1.7; color: var(--t-txt); }
 .perf-params td { white-space: normal; min-width: 160px; }
 @media (max-width: 640px) { .perf-spacer { display: none; } .perf-kpi b { font-size: 15px; } }
+
+/* risk disclosure under the terminal (src/api/legal_pages.py) */
+.t-legal { margin: 28px 0 8px; padding-top: 12px; border-top: 1px solid var(--t-line); color: var(--t-mute, #5d717d);
+           font-size: 11px; line-height: 1.6; }
+.t-legal a { color: var(--t-dim); }

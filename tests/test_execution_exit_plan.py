@@ -72,6 +72,7 @@ def test_scale_out_books_half_then_moves_stop_to_breakeven_and_resizes_orders():
 
 def test_time_exit_rules():
     t = _tracked(_signal(max_hold_bars=12, exit_by="15:15"))
+    t.entry_time = datetime(2026, 10, 19, 10, 0)          # a morning entry: the test must not depend on the clock
     assert not ExecutionEngine._time_exit_due(t, t.entry_time + timedelta(minutes=60))
     assert ExecutionEngine._time_exit_due(t, t.entry_time + timedelta(minutes=65))
     late = datetime.combine(t.entry_time.date(), dtime(15, 16))

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#05080c">
+    <meta name="description" content="{{ page.description }}">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="canonical" href="{{ site_url }}/{{ slug }}">
+    <title>{{ page.title }} — VerquoAI</title>
+    <style>
+        :root { color-scheme: dark; }
+        body { margin: 0; background: #05080c; color: #d7e3ea; font: 15px/1.7 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+        main { max-width: 760px; margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 20px 40px; }
+        a { color: #38d6ff; }
+        .logo { font: 800 16px/1 ui-monospace, "JetBrains Mono", monospace; letter-spacing: .18em; color: #38d6ff; text-decoration: none; }
+        nav.legal { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 18px; font-size: 13px; }
+        nav.legal a[aria-current="page"] { color: #fff; text-decoration: none; font-weight: 600; }
+        h1 { font-size: 28px; margin: 24px 0 4px; }
+        h2 { font-size: 18px; margin: 30px 0 8px; color: #fff; }
+        .muted { color: #8aa0ad; font-size: 13px; }
+        footer { max-width: 760px; margin: 0 auto; padding: 18px 20px calc(28px + env(safe-area-inset-bottom));
+                 border-top: 1px solid #1d2a33; color: #8aa0ad; font-size: 12.5px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+<main>
+    <a class="logo" href="/">VERQUOAI</a>
+    <nav class="legal" aria-label="About and legal">
+        {% for s, label in legal_links %}<a href="/{{ s }}"{% if s == slug %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+    </nav>
+    <h1>{{ page.title }}</h1>
+    <p class="muted">Last updated {{ updated }}.</p>
+    {% for heading, paragraphs in page.sections %}
+    <h2>{{ heading }}</h2>
+    {% for p in paragraphs %}<p>{{ p }}</p>{% endfor %}
+    {% endfor %}
+    <h2>Questions</h2>
+    <p>{% if contact_email %}Write to <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>.{% else %}Use the <a href="/#contact">contact form</a> on the home page.{% endif %}</p>
+</main>
+<footer><b>Risk disclosure.</b> {{ risk_line }} <a href="/disclaimer">Read the disclaimer</a>.</footer>
+</body>
+</html>

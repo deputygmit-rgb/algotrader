@@ -95,12 +95,15 @@
         more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
     };
     const LABELS = { overview: 'Home', 'market-flow': 'Flow', 'day-trade': 'Day Trade', positions: 'Positions',
+                     'oi-tracker': 'OI', swing: 'Swing',
                      orders: 'Orders', backtest: 'Backtest', agents: 'Agents', strategies: 'Strategies' };
     const svg = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.more}</svg>`;
     const realTab = name => tabs.querySelector(`.tab[data-tab="${CSS.escape(name)}"]`);
     // the main tabs; one this session cannot open (public demo) gives way to the next that it can
     const picks = [];
-    for (const name of ['overview', 'market-flow', 'day-trade', 'positions', 'backtest', 'agents', 'orders', 'strategies']) {
+    // (a view-only account has OI Tracker, Market Flow, Day Trade and Swing: all four fit)
+    for (const name of ['overview', 'market-flow', 'day-trade', 'positions', 'oi-tracker', 'swing', 'backtest', 'agents',
+                        'orders', 'strategies']) {
         if (picks.length < 4 && realTab(name)) picks.push(name);
     }
 

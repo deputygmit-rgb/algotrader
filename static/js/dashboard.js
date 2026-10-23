@@ -378,7 +378,7 @@ function updateStatusBadge(data) {
         // Simulated broker: always "connected"; a logged-in user can still link a trading account.
         statusBadge.textContent = data.running ? 'DEMO · LIVE' : 'DEMO';
         statusBadge.className = 'status-badge status-demo';
-        btnLogin.style.display = data.demo === 'user' ? '' : 'none';
+        if (btnLogin) btnLogin.style.display = data.demo === 'user' ? '' : 'none';
         btnStart.style.display = data.running ? 'none' : '';
         btnStop.style.display = data.running ? '' : 'none';
         return;
@@ -388,7 +388,7 @@ function updateStatusBadge(data) {
         statusBadge.textContent = data.running ? 'MARKET · LIVE' : 'MARKET VIEW';
         statusBadge.className = 'status-badge status-connected';
         statusBadge.title = 'Live market data, view only - connect your own trading account to see your portfolio.';
-        btnLogin.style.display = '';
+        if (btnLogin) btnLogin.style.display = '';
         btnStart.style.display = data.running ? 'none' : '';
         btnStop.style.display = data.running ? '' : 'none';
         return;
@@ -397,19 +397,19 @@ function updateStatusBadge(data) {
     if (data.running) {
         statusBadge.textContent = 'LIVE';
         statusBadge.className = 'status-badge status-live';
-        btnLogin.style.display = 'none';
+        if (btnLogin) btnLogin.style.display = 'none';
         btnStart.style.display = 'none';
         btnStop.style.display = '';
     } else if (data.authenticated) {
         statusBadge.textContent = 'CONNECTED';
         statusBadge.className = 'status-badge status-connected';
-        btnLogin.style.display = 'none';
+        if (btnLogin) btnLogin.style.display = 'none';
         btnStart.style.display = '';
         btnStop.style.display = 'none';
     } else {
         statusBadge.textContent = 'OFFLINE';
         statusBadge.className = 'status-badge status-offline';
-        btnLogin.style.display = '';
+        if (btnLogin) btnLogin.style.display = '';
         btnStart.style.display = 'none';
         btnStop.style.display = 'none';
     }

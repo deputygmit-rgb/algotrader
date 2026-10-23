@@ -1456,9 +1456,11 @@ class TradingService:
         if self._board.settings.get("enabled"):
             self._ensure_day_trade_loop()   # board auto-trade runs alongside live trading
         stream = self.__dict__.get("_market_stream_task")
-        already_connected = stream is not None and not stream.done()   # the OI tracker's stream: reuse it
+        if stream is None or stream.done():      # else: the OI tracker's stream, reused
+            # one tick stream, live trading or not: Stop Live hands it back to market data
+            self._market_stream_task = asyncio.create_task(self._ticker.connect(), name="market_stream")
+            self._market_stream_task.add_done_callback(self._task_exception_handler)
         for coro in [
-            *([] if already_connected else [self._ticker.connect()]),
             self._bar_flush_loop(),
             self._execution.start_reconciliation_loop(),
             self._position_update_loop(),
@@ -1484,7 +1486,13 @@ class TradingService:
         self._bar_aggs = {}
         self._live_bars = {}
         await self._execution.stop_reconciliation_loop()
-        await self._ticker.disconnect()
+        if self.__dict__.get("_oi_streaming") or self._oi_tracker.get_tracked_tokens():
+            # the live OI tracker keeps its prices: the stream stays up, for market data only
+            # (no bars, strategies or orders) - Stop Live stops trading, not the OI tab
+            self._ticker.on_ticks = self._on_market_ticks
+            self._ticker.on_order_update = None
+        else:
+            await self._ticker.disconnect()
         # strategies stop; positions still open keep their stops, exits and square-off managed
         engine = self._execution
         if any(not t.is_closed for t in engine._tracked_positions.values()) or engine._pending_orders:

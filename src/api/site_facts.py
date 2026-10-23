@@ -19,46 +19,47 @@ def site_url() -> str:
 
 
 ABOUT = (
-    "VerquoAI is software: a browser-based trading terminal for the Indian stock market (NSE and BSE). "
-    "It brings live market flow, intraday and swing setup boards, options open-interest analysis, "
-    "backtesting, paper trading and AI agents into one workspace, with risk limits and a kill switch. "
-    "You connect your own broker account through the broker's API - VerquoAI never holds your money or securities."
+    "VerquoAI is market analytics software with a mock trading terminal for the Indian stock market (NSE and BSE). "
+    "It brings live market flow, intraday and swing setup boards, options open-interest analysis, backtesting, "
+    "paper trading and AI monitoring agents into one workspace. Practise on a simulated market before risking money: "
+    "VerquoAI never holds your money or securities, and it gives no investment advice."
 )
 
 IS = [
-    "A trading terminal and analysis tool for NSE and BSE stocks, stock futures and index options.",
+    "Market analytics for NSE and BSE stocks, stock futures and index options, with a mock trading terminal.",
+    "A practice ground: the demo and paper trading fill orders against a simulated market with simulated cash.",
     "Rule-based: every signal comes from published rules applied to closed price bars, and is shown with its "
     "entry, stop, targets and how that setup has performed after costs - losing setups included.",
-    "Connected to your own broker account through its API. Orders, positions and funds stay with your broker.",
     "Available by request: workspaces are set up by our team. The demo runs on a simulated market and needs no account.",
-    "In your control: automated trading is off until you switch it on, and it works only within the limits you set.",
 ]
 
 ISNT = [
     "Not a broker or an exchange, and it does not hold client money or securities.",
     "Not investment advice: no stock tips, paid calls, recommendations or portfolio management. You make your own decisions.",
-    "Not a promise of returns: backtests and past signals do not predict future results, and trading can lose money.",
+    "Not a promise of returns: backtests, paper results and past signals do not predict future results, and trading can lose money.",
     "Not a tips channel: VerquoAI does not offer tips or calls through social media, Telegram or WhatsApp.",
 ]
 
 FAQ: list[tuple[str, str]] = [
     ("What is VerquoAI?",
-     "VerquoAI is a browser-based trading terminal for the Indian stock market. It shows live market flow, "
-     "rule-based intraday and swing setups, options open-interest analysis, backtests, paper trading and AI agents "
-     "in one workspace. It is software you use with your own broker account."),
+     "VerquoAI is market analytics software with a mock trading terminal for the Indian stock market. It shows live "
+     "market flow, rule-based intraday and swing setups, options open-interest analysis, backtests, paper trading and "
+     "AI monitoring agents in one workspace."),
+    ("What is the mock trading terminal?",
+     "A place to practise: orders in the demo and in paper trading fill against a simulated market with simulated "
+     "cash, so you can test your own rules and habits without risking money. Simulated fills are not real fills - "
+     "real orders can fill at other prices and pay real charges."),
     ("Does VerquoAI give stock tips or investment advice?",
      "No. VerquoAI does not give tips, paid calls or recommendations. Its signals are the output of published, "
      "rule-based setups shown with their track record, as information for your own analysis. You decide what to trade."),
-    ("Does VerquoAI hold my money or trade without me?",
-     "No. VerquoAI never holds money or securities: orders go only through your own broker account. Automated "
-     "trading is off by default; it runs only if you switch it on, within the risk, order-value and daily limits you set, "
-     "and a kill switch stops all trading at once."),
+    ("Does VerquoAI hold my money?",
+     "No. VerquoAI never holds money or securities, and nothing you do in the mock terminal reaches an exchange."),
     ("Which markets does it cover?",
-     "Indian markets: NSE and BSE stocks, stock futures and index options (NIFTY, SENSEX). Your broker connection "
-     "provides the live market data. When you request access, tell us your broker and we will confirm whether it can be connected."),
+     "Indian markets: NSE and BSE stocks, stock futures and index options (NIFTY, SENSEX)."),
     ("How do I get access?",
-     "Try the full terminal in the demo on a simulated market - no account needed. Then request access with the form "
-     "on this page; our team sets up your workspace and replies by email. You link your broker account each trading day."),
+     "Try the demo on a simulated market - no account needed. It opens backtests, strategies, paper trading, the OI "
+     "tools and agents; Market Flow, the setup boards and Analysis are part of a workspace. Request access with the "
+     "form on this page and our team replies by email."),
     ("Are the signals profitable?",
      "There is no guarantee. Every signal is followed to its outcome, net of costs, and shown on the board - winners and "
      "losers alike. Setups with a poor recent record are automatically weighted down or suspended."),
@@ -74,8 +75,8 @@ def json_ld() -> str:
         {
             "@type": "Organization", "@id": org_id, "name": SITE_NAME, "url": f"{url}/",
             "logo": f"{url}/static/img/apple-touch-icon.png", "description": ABOUT, "areaServed": "IN",
-            "knowsAbout": ["Indian stock market", "NSE", "BSE", "trading terminal", "options open interest",
-                           "backtesting", "algorithmic trading software"],
+            "knowsAbout": ["Indian stock market", "NSE", "BSE", "market analytics", "mock trading", "paper trading",
+                           "options open interest", "backtesting"],
         },
         {
             "@type": "WebSite", "@id": site_id, "name": SITE_NAME, "url": f"{url}/", "inLanguage": "en-IN",
@@ -98,4 +99,6 @@ def json_ld() -> str:
 
 
 def context() -> dict[str, Any]:
-    return {"site_about": ABOUT, "site_is": IS, "site_isnt": ISNT, "site_faq": FAQ, "site_json_ld": json_ld()}
+    from src.api.legal_pages import RISK_LINE
+
+    return {"risk_line": RISK_LINE, "site_about": ABOUT, "site_is": IS, "site_isnt": ISNT, "site_faq": FAQ, "site_json_ld": json_ld()}

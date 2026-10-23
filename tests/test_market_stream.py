@@ -72,8 +72,64 @@ def test_oi_tracking_starts_the_market_stream():
 
     src = inspect.getsource(TradingService.start_oi_tracking)
     assert "self._ensure_market_stream()" in src
-    live = inspect.getsource(TradingService.start_live)
-    assert "already_connected" in live                    # Start Live reuses the stream
+
+
+def _live_service():
+    """A service whose Start / Stop Live can run: every loop it starts is a stand-in."""
+    svc = _service()
+    svc._live_mode, svc._subscribed_tokens = "quote", []
+    svc._strategies, svc._bar_aggs, svc._live_bars = [], {}, {}
+    svc._board = SimpleNamespace(settings={})
+    svc._execution = SimpleNamespace(_tracked_positions={}, _pending_orders={})
+
+    async def idle(*a, **k):
+        await asyncio.sleep(3600)
+
+    async def done(*a, **k):
+        return None
+    svc._execution.start_reconciliation_loop = idle
+    svc._execution.stop_reconciliation_loop = done
+    svc._bar_flush_loop = svc._position_update_loop = svc._oi_snapshot_loop = idle
+    svc._seed_bar_data = done
+    svc.start_oi_tracking = done
+    svc._set_live_flag = lambda tokens: None
+    svc._strategy_tokens = lambda: []
+    disconnects = []
+
+    async def disconnect():
+        disconnects.append(True)
+    svc._ticker.disconnect = disconnect
+    return svc, disconnects
+
+
+def test_start_live_reuses_the_stream_and_stop_live_keeps_it_for_the_oi_tracker():
+    async def go():
+        svc, disconnects = _live_service()
+        svc._ensure_market_stream()                          # the OI tab opened the stream
+        await asyncio.sleep(0)
+        await svc.start_live([256265])
+        await asyncio.sleep(0)
+        assert svc._ticker.connects == 1                     # no second connection
+        assert svc._ticker.on_ticks == svc._on_ticks         # live trading builds bars and runs strategies
+        await svc.stop_live()
+        assert disconnects == [] and svc._ticker.on_ticks == svc._on_market_ticks   # OI tracker keeps its prices
+        assert svc._ticker.on_order_update is None
+        svc._market_stream_task.cancel()
+    asyncio.run(go())
+
+
+def test_stop_live_disconnects_when_nothing_else_uses_the_stream():
+    async def go():
+        svc, disconnects = _live_service()
+        svc._oi_streaming = False
+        svc._oi_tracker.get_tracked_tokens = lambda: []
+        await svc.start_live([256265])
+        await asyncio.sleep(0)
+        assert svc._ticker.connects == 1                     # Start Live opened it
+        await svc.stop_live()
+        assert disconnects == [True]
+        svc._market_stream_task.cancel()
+    asyncio.run(go())
 
 
 def test_backup_feed_and_live_trading_do_not_open_a_market_stream():

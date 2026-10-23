@@ -371,8 +371,15 @@ class Publisher:
             return []
         return svc.get_pcr_history(underlying) if kind == "pcr" else svc.get_straddle_history(underlying)
 
+    OVERVIEW_KEYS_KEPT = 20
+
     async def overview(self, symbols: Optional[list[str]]) -> dict[str, Any]:
-        key = "overview:" + ",".join(symbols or [])
+        key = "overview:" + ",".join(sorted(symbols or []))
+        # one entry per distinct symbol list: keep the most recent few, never an unbounded set
+        lists = sorted((k for k in self._cache if k.startswith("overview:")), key=lambda k: self._cache[k][0])
+        for stale in lists[:max(0, len(lists) - self.OVERVIEW_KEYS_KEPT)]:
+            if stale != key:
+                self._cache.pop(stale, None)
 
         async def build() -> dict[str, Any]:
             svc = self._svc()

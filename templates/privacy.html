@@ -30,7 +30,7 @@
     <h2>What we collect</h2>
     <ul>
         <li><b>Account details</b>: your email address (to send sign-in codes) and your trading account ID.</li>
-        <li><b>Broker connection</b>: the API key and secret you give us, stored encrypted, and the session your broker issues when you log in to it. We use them only to read your account and place the orders you or your strategies request.</li>
+        <li><b>Broker connection</b> (only for workspaces our team connects to a broker): the connection credentials, stored encrypted, and the session your broker issues when you log in to it. We use them only to read your account and place the orders you or your strategies request.</li>
         <li><b>Trading data</b>: orders, positions, holdings and margins read from your broker, and the signals, orders and results the app produces for you, kept so the app can manage your positions and show your history.</li>
         <li><b>Alerts</b>: if you turn on alerts, the push address your browser or phone gives us for this device and the alert types you chose.</li>
         <li><b>Usage</b>: anonymous counts of pages opened and buttons pressed, under a random visitor ID in a cookie, to improve the app.</li>
@@ -46,7 +46,7 @@
 
     <h2>Who else processes it</h2>
     <ul>
-        <li><b>Your broker</b>, through its official API, when you connect your account.</li>
+        <li><b>Your broker</b>, for workspaces connected to one.</li>
         <li><b>Push services</b> (Google, Apple, Mozilla, Microsoft, depending on your device) carry alerts. Alerts are encrypted end to end; these services cannot read them.</li>
         <li><b>Our email provider</b> delivers sign-in codes and replies to access requests.</li>
         <li><b>Google Fonts</b> serves the typefaces the pages use.</li>
@@ -55,7 +55,7 @@
     <h2>Security</h2>
     <ul>
         <li>All traffic is encrypted (HTTPS with HSTS). Sessions use secure, HTTP-only cookies, and every change you make is protected against cross-site requests.</li>
-        <li>Broker API secrets are encrypted at rest. Live trading, real orders and turning off the kill switch need a fresh confirmation code.</li>
+        <li>Broker connection credentials are encrypted at rest. Live trading, real orders and turning off the kill switch need a fresh confirmation code.</li>
         <li>The app never stores your account pages, prices or orders on your device; it keeps only its own program files there.</li>
         <li>Signing out removes alerts from that device. "Log out all devices" ends every session and removes every device's alerts.</li>
     </ul>

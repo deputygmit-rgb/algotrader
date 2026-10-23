@@ -32,7 +32,7 @@
             {% if demo_kind != 'public' %}<button id="pwa-alerts-btn" class="btn btn-outline btn-sm" type="button" hidden title="Trade and risk alerts on this device, even when the app is closed">Alerts</button>{% endif %}
             <button id="t-privacy-btn" class="btn btn-outline btn-sm" title="Mask account details and financial reports (Alt+P)">MASK: ON</button>
             <button class="btn btn-outline btn-sm" onclick="toggleKillSwitch()">Kill Switch</button>
-            <button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
+            {% if show_broker_link %}<button id="btn-login" class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>{% endif %}
             <button id="btn-start" class="btn btn-success btn-sm" style="display:none" onclick="showModal('modal-start-live')">Start Live</button>
             <button id="btn-stop" class="btn btn-danger btn-sm" style="display:none" onclick="stopLive()">Stop Live</button>
             <button class="btn btn-primary btn-sm" data-requires="agentic" onclick="showModal('modal-add-strategy')">+ Strategy</button>
@@ -54,16 +54,19 @@
             <button class="btn btn-success btn-sm" onclick="showModal('modal-contact')" data-track="demo-request-access">Request access</button>
             <a class="btn btn-primary btn-sm" href="/login" onclick="event.preventDefault(); exitDemoTo('/login')">Log in</a>
         </span>
-        {% else %}
+        {% elif show_broker_link %}
         <span class="t-demo-text">You're exploring with a simulated broker until you link your trading account. Orders fill in a private sandbox with &#8377;10 lakh of demo cash.</span>
         <span class="t-demo-actions">
             <button class="btn btn-primary btn-sm" onclick="loginKite()">Link trading account</button>
         </span>
+        {% else %}
+        <span class="t-demo-text">Mock trading terminal: a simulated market and broker. Orders fill in a private sandbox with &#8377;10 lakh of demo cash; nothing reaches an exchange.</span>
         {% endif %}
     </div>
     {% endif %}
     <div class="t-tape" id="t-tape" hidden><div class="t-tape-track" id="t-tape-track"></div></div>
 
+    {% if show_broker_link %}
     <div id="login-url-display" style="display:none;background:#1a2332;border:1px solid #00d4aa;padding:12px 20px;text-align:center;margin:0">
         <a id="login-url-link" href="#" target="_blank" rel="noopener" style="color:#00d4aa;font-weight:600;font-size:15px;text-decoration:underline">Click here to open your broker login</a>
         <span style="color:#8899aa;margin-left:12px;font-size:13px">(Opens in new tab. After login, copy the request_token from the URL and paste below)</span>
@@ -73,6 +76,7 @@
         </div>
         <p style="color:#667788;font-size:11px;margin-top:6px">After you log in at your broker, the URL will look like: ...?request_token=<b>XXXXXX</b>&status=success. Copy the token value.</p>
     </div>
+    {% endif %}
 
     <main class="main">
         <div class="tabs">
@@ -1054,7 +1058,7 @@
                     <path class="ag-link" data-link="executor" d="M222 182 C330 182 340 120 360 120"/>
                     <path class="ag-link" data-link="verifier" d="M678 58 C570 58 560 120 540 120"/>
                     <path class="ag-link" data-link="tracker" d="M678 182 C570 182 560 120 540 120"/>
-                    <g class="ag-node ag-ext" transform="translate(450,30)"><rect x="-92" y="-20" width="184" height="40" rx="4"/><text class="ag-node-name" y="5">BROKER API</text></g>
+                    <g class="ag-node ag-ext" transform="translate(450,30)"><rect x="-92" y="-20" width="184" height="40" rx="4"/><text class="ag-node-name" y="5">MARKET &amp; BROKER</text></g>
                     <g class="ag-node ag-hub" data-node="service" transform="translate(450,120)"><rect x="-90" y="-24" width="180" height="48" rx="4"/><text class="ag-node-name" y="-4">TRADING SERVICE</text><text class="ag-node-state" y="13">—</text></g>
                     <g class="ag-node" data-node="scanner" transform="translate(130,58)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⌖ SCANNER</text><text class="ag-node-state" y="13">—</text></g>
                     <g class="ag-node" data-node="executor" transform="translate(130,182)"><rect x="-92" y="-26" width="184" height="52" rx="4"/><text class="ag-node-name" y="-4">⚡ EXECUTOR</text><text class="ag-node-state" y="13">—</text></g>
@@ -2659,6 +2663,8 @@
             </div>
         </div>
 
+        <footer class="t-legal"><b>Risk disclosure.</b> {{ risk_line }}
+            <a href="/disclaimer" target="_blank" rel="noopener">Disclaimer</a> · <a href="/disclosures" target="_blank" rel="noopener">Disclosures</a> · <a href="/about" target="_blank" rel="noopener">About</a> · <a href="/privacy" target="_blank" rel="noopener">Privacy</a></footer>
     </main>
 
     <!-- Add Strategy Modal -->

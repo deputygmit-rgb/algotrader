@@ -289,6 +289,11 @@ class BackupQuotes:
                 wanted[q] = key
         out: dict[str, Quote] = {}
         items = list(wanted)
+        # the primary broker's instrument numbers (kept by backup_feed.remember_tokens): pages
+        # match quotes to live ticks by them, so a backup quote must not say 0
+        from src.api.backup_feed import _load_tokens
+
+        known = _load_tokens()
         try:
             for i in range(0, len(items), BATCH):
                 for d in await self.fetch_raw(items[i:i + BATCH]):
@@ -296,7 +301,9 @@ class BackupQuotes:
                     key = wanted.get((seg, ident)) or next(
                         (k for (s, x), k in wanted.items() if s == seg and x.lower() == ident.lower()), None)
                     if key:
-                        out[key] = self.to_quote(d)
+                        q = self.to_quote(d)
+                        q.instrument_token = known.get(key, 0)
+                        out[key] = q
         except (httpx.HTTPError, ValueError, RuntimeError) as e:
             self.stats["last_error"] = {"at": datetime.now().isoformat(timespec="seconds"), "error": str(e)[:200]}
             raise
