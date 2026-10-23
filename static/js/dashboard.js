@@ -348,6 +348,9 @@ async function loadFullStatus() {
     }
 }
 
+// view access (src/api/view_scope.py): OI Tracker, Market Flow, Day Trade and Swing only
+const VIEW_ONLY = document.body?.dataset.viewScope === 'view';
+
 async function loadStatus() {
     try {
         const data = await API.get('/api/status');
@@ -359,7 +362,7 @@ async function loadStatus() {
         updateTicksTable(data.ticks);
 
         updateStatusBadge(data);
-        loadVerifierFindings();
+        if (!VIEW_ONLY) loadVerifierFindings();
     } catch (e) {
         console.error('Status load error:', e);
     }
@@ -1563,6 +1566,34 @@ function fmtPct(v) {
     return (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%';
 }
 
+/* The server answers OI scans at once with the last stored report (``refreshing``)
+ * while one refresh runs: check back until the report's time changes, then show it. */
+function awaitRefreshedReport(url, shownTs, statusEl, onData, tries = 18) {
+    if (tries <= 0) return;
+    setTimeout(async () => {
+        try {
+            const d = await API.get(url);
+            if (!d.error && d.timestamp && d.timestamp !== shownTs) {
+                onData(d);
+                if (statusEl) {
+                    statusEl.textContent = 'Updated at ' + new Date(d.timestamp).toLocaleTimeString();
+                    statusEl.style.color = 'var(--accent-green)';
+                }
+                return;
+            }
+        } catch (e) { /* keep showing the stored report */ }
+        awaitRefreshedReport(url, shownTs, statusEl, onData, tries - 1);
+    }, 5000);
+}
+
+function showRefreshing(statusEl, data) {
+    if (!statusEl || !data.refreshing) return false;
+    const at = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : 'earlier';
+    statusEl.textContent = `Showing report from ${at} - refreshing...`;
+    statusEl.style.color = 'var(--accent-blue)';
+    return true;
+}
+
 /* ════════════════════════════════════════════
    OPTIONS OI  (Near-ATM Analysis)
    ════════════════════════════════════════════ */
@@ -1575,6 +1606,12 @@ async function runOptionsOIScan() {
         const data = await API.post('/api/oi/options/scan', { underlying: sel });
         if (data.error) throw new Error(data.error);
         cachedOptReport[sel] = data;
+        if (showRefreshing(statusEl, data)) {
+            renderOptionsOI(data);
+            awaitRefreshedReport(`/api/oi/options/report?underlying=${sel}`, data.timestamp, statusEl,
+                d => { cachedOptReport[sel] = d; if (document.getElementById('oi-underlying-select').value === sel) renderOptionsOI(d); });
+            return;
+        }
         if (data.refresh_warning) {
             const cachedAt = data.timestamp ? ` from ${new Date(data.timestamp).toLocaleString()}` : '';
             statusEl.textContent = `${data.refresh_warning} Showing cached report${cachedAt}.`;
@@ -1757,6 +1794,12 @@ async function runFuturesOIScan() {
         const data = await API.post('/api/oi/futures/scan', {});
         if (data.error) throw new Error(data.error);
         cachedFutReport = data;
+        if (showRefreshing(statusEl, data)) {
+            renderFuturesOI(data);
+            awaitRefreshedReport('/api/oi/futures/report', data.timestamp, statusEl,
+                d => { cachedFutReport = d; renderFuturesOI(d); });
+            return;
+        }
         if (data.refresh_warning) {
             const cachedAt = data.timestamp ? ` from ${new Date(data.timestamp).toLocaleString()}` : '';
             statusEl.textContent = `${data.refresh_warning} Showing cached report${cachedAt}.`;
@@ -6660,10 +6703,15 @@ function _getKeyMetricsForPillar(key, metrics) {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadFullStatus();
-    loadSignals();
     connectWS();
     statusInterval = setInterval(loadStatus, 10000);
     portfolioInterval = setInterval(loadFullStatus, 30000);
+    if (VIEW_ONLY) {
+        // only the four tabs exist: reopen the last one, else Market Flow
+        if (!restoreView()) document.querySelector(`.tabs .tab[data-tab="${document.body.dataset.viewDefault || 'market-flow'}"]`)?.click();
+        return;
+    }
+    loadSignals();
     // Load custom strategies into all dropdowns early
     loadCustomStrategiesDropdowns();
     loadFnOCustomStrategiesDropdowns();

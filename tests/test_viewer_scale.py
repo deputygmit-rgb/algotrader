@@ -110,7 +110,7 @@ def test_sign_in_email_is_sent_off_the_event_loop():
 
     for fn in (webapp.send_otp, webapp.step_up_send):
         src = inspect.getsource(fn)
-        assert "asyncio.to_thread(otp_auth.send_otp_email" in src, fn.__name__
+        assert "await _send_code(" in src, fn.__name__
 
 
 def test_stale_grace_is_short_enough_to_stay_live():
@@ -255,3 +255,50 @@ def test_the_option_analyser_keeps_only_its_underlyings_contracts():
     assert {d["tradingsymbol"] for d in first} == {"NIFTY1"}
     day, kept = an._instrument_cache["NFO:NIFTY"]
     assert len(kept) == 2000 and all(d["name"] == "NIFTY" for d in kept)      # not the 4000-row list
+
+
+def test_view_sessions_share_one_scanner_and_load_no_snapshot(monkeypatch):
+    from src.api import service
+
+    loads = []
+    monkeypatch.setattr(service, "_load_snapshot_soon", lambda scanner, path: loads.append(path))
+    monkeypatch.setattr(service, "_VIEW_SCANNER", None)
+    a = service.TradingService(zerodha_id="VIEW-AA0001", shared_market=True)
+    b = service.TradingService(zerodha_id="VIEW-BB0002", shared_market=True)
+    assert a._scanner is b._scanner and loads == []
+    assert asyncio.run(a.persist_analysis(force=True)) is False          # the shared view scanner is never saved
+
+
+def test_a_saved_snapshot_loads_off_the_event_loop():
+    from src.api import service
+
+    seen = {}
+
+    class Scanner:
+        def load_snapshot(self, path):
+            import threading
+            seen["thread"] = threading.current_thread().name
+
+    async def go():
+        import threading
+        seen["loop"] = threading.current_thread().name
+        service._load_snapshot_soon(Scanner(), "x.json.gz")
+        await asyncio.sleep(0.2)
+    asyncio.run(go())
+    assert seen["thread"] != seen["loop"]
+
+
+def test_the_sign_in_form_does_not_wait_long_for_a_slow_mail_server(monkeypatch):
+    from src.api import webapp
+
+    monkeypatch.setattr(webapp, "OTP_WAIT_S", 0.1)
+    monkeypatch.setattr(webapp.otp_auth, "send_otp_email", lambda otp, email, zid: time.sleep(0.5) or True)
+
+    async def go():
+        t = time.perf_counter()
+        ok = await webapp._send_code("123456", "a@example.com", "AB1234")
+        return ok, time.perf_counter() - t
+    ok, took = asyncio.run(go())
+    assert ok and took < 0.3
+    monkeypatch.setattr(webapp.otp_auth, "send_otp_email", lambda otp, email, zid: False)
+    assert asyncio.run(webapp._send_code("123456", "a@example.com", "AB1234")) is False   # a quick failure is reported

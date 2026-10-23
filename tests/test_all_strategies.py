@@ -191,6 +191,11 @@ def _make_engine(strategy: str, underlying: str = "NIFTY", capital: float = 500_
         slippage_model="zero",
         use_regime_filter=False,
     )
+    if strategy in RUNNER_STRATEGIES:
+        # the runners' own ₹30 minimum credit declines nearly every bar on these synthetic
+        # chains (NIFTY call spreads collect ~₹13-28 at 0.30 delta); these tests check the
+        # engine's wiring, so they use the same ₹15 the runner unit tests below use
+        defaults["strategy_params"] = {"min_credit": 15.0}
     defaults.update(kw)
     return FnOBacktestEngine(**defaults)
 
@@ -706,9 +711,14 @@ class TestPutCreditSpreadRunnerStateMachine:
         chain = self._make_chain()
         strat.update_chain(chain)
         strat._evaluate_entry()  # enter
+        # the legs are not open until the broker confirms both fills (live: an order can be rejected)
+        assert strat.state == PutSpreadState.PENDING_ENTRY
+        assert strat._evaluate_entry() == []
+        for n in (1, 2):
+            strat.notify_order_placed(f"o{n}", "leg")
+            strat.notify_order_filled(f"o{n}", 10.0)
         assert strat.state == PutSpreadState.SPREAD_OPEN
-        signals2 = strat._evaluate_entry()
-        assert signals2 == []
+        assert strat._evaluate_entry() == []
 
     def test_insufficient_credit_blocks_entry(self):
         strat = self._make_strat(min_credit=9999)
@@ -797,6 +807,12 @@ class TestCallCreditSpreadRunnerStateMachine:
         chain = self._make_chain()
         strat.update_chain(chain)
         strat._evaluate_entry()
+        # the legs are not open until the broker confirms both fills (live: an order can be rejected)
+        assert strat.state == SpreadState.PENDING_ENTRY
+        assert strat._evaluate_entry() == []
+        for n in (1, 2):
+            strat.notify_order_placed(f"o{n}", "leg")
+            strat.notify_order_filled(f"o{n}", 10.0)
         assert strat.state == SpreadState.SPREAD_OPEN
         assert strat._evaluate_entry() == []
 

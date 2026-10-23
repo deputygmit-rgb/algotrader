@@ -107,6 +107,35 @@ _DEMO_SCANNER: Optional[StockScanner] = None
 _DEMO_SCAN_REPORTS: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
+_VIEW_SCANNER: Optional[StockScanner] = None
+
+
+def _shared_view_scanner() -> StockScanner:
+    """One scanner for every view-only session: they all read the same shared market
+    data, and their Analysis pages show the source account's published scan. Each used
+    to load its own saved snapshot (daily history for hundreds of stocks) on creation -
+    a second of the event loop and a full copy in memory per viewer."""
+    global _VIEW_SCANNER
+    if _VIEW_SCANNER is None:
+        _VIEW_SCANNER = StockScanner()
+    return _VIEW_SCANNER
+
+
+def _load_snapshot_soon(scanner: StockScanner, path: str) -> None:
+    """Reload a saved analysis snapshot in a worker thread (decompressing it and building
+    hundreds of DataFrames held the event loop for over a second). Stocks asked for before
+    it lands are analysed afresh, as stale ones always are."""
+    def load() -> None:
+        try:
+            scanner.load_snapshot(path)
+        except Exception as e:
+            logger.warning("scanner_snapshot_load_failed", error=str(e))
+    try:
+        asyncio.get_running_loop().run_in_executor(None, load)
+    except RuntimeError:           # no event loop (scripts, tests): load now
+        load()
+
+
 def _shared_demo_scanner() -> StockScanner:
     global _DEMO_SCANNER
     if _DEMO_SCANNER is None:
@@ -199,17 +228,15 @@ class TradingService:
         self._oi_fno_bridge = OIFnOBridge()
         # Demo sessions all trade the same simulated market, so they share one
         # scanner (market analysis only - nothing about a session's account).
-        self._scanner = _shared_demo_scanner() if demo else StockScanner()
+        self._scanner = (_shared_demo_scanner() if demo
+                         else _shared_view_scanner() if shared_market else StockScanner())
         # Analysis survives restarts: reload the last snapshot (stocks analysed
         # today are served instantly; older ones refresh on first use).
         self._snapshot_saved_mono = 0.0
         self._snapshot_dirty = False
         self._refresh_tasks: dict[str, asyncio.Task] = {}   # background re-analysis, one per symbol
-        if not demo:
-            try:
-                self._scanner.load_snapshot(self._analysis_snapshot_path())
-            except Exception as e:
-                logger.warning("scanner_snapshot_load_failed", error=str(e))
+        if not demo and not shared_market:
+            _load_snapshot_soon(self._scanner, self._analysis_snapshot_path())
         self._strategies: list[BaseStrategy] = []
         # Live strategies run on completed bars built from ticks, each on its own
         # timeframe (see live_interval) so live matches the bars it was tested on.
@@ -661,6 +688,29 @@ class TradingService:
         return self._oi_tracker.get_all_tracked_data()
 
     async def get_futures_oi_report(self) -> dict[str, Any]:
+        """Futures OI: the last report at once (flagged ``refreshing``) while one refresh
+        runs in the background - a full refresh takes ~40 s through the broker's limits.
+        View-only sessions read the source account's shared report."""
+        pub = self._published()
+        if pub is not None:
+            return await pub.oi_futures()
+        last = self._futures_oi.get_last_report()
+        if last is not None:
+            self._refresh_soon("futures_oi", self._refresh_futures_oi)
+            return {**last.model_dump(), "cache_state": "cached", "refreshing": True}
+        return await self._refresh_futures_oi()
+
+    def _refresh_soon(self, name: str, refresh: Any) -> None:
+        """Run ``refresh()`` in the background unless one is already running."""
+        tasks = self.__dict__.setdefault("_refresh_tasks_oi", {})
+        running = tasks.get(name)
+        if running is not None and not running.done():
+            return
+        task = asyncio.get_running_loop().create_task(refresh())
+        task.add_done_callback(self._task_exception_handler)
+        tasks[name] = task
+
+    async def _refresh_futures_oi(self) -> dict[str, Any]:
         """Refresh futures OI, retaining the last usable report on refresh failure."""
         observed_report = self._futures_oi.get_last_report()
         async with self._futures_oi_scan_lock:
@@ -693,10 +743,27 @@ class TradingService:
 
     def get_futures_oi_cached(self) -> dict[str, Any]:
         """Return last computed futures OI report."""
+        pub = self._published()
+        if pub is not None:
+            hit = pub._cache.get("oi_futures") or pub._restore("oi_futures", 0.0)
+            return hit[1] if hit else {"error": "No data yet. Run scan first."}
         report = self._futures_oi.get_last_report()
         return {**report.model_dump(), "cache_state": "cached"} if report else {"error": "No data yet. Run scan first."}
 
     async def get_options_oi_report(self, underlying: str = "NIFTY", expiry: Optional[str] = None) -> dict[str, Any]:
+        """Options OI: the last report at once (flagged ``refreshing``) while one refresh runs.
+        View-only sessions read the source account's shared report (nearest expiry)."""
+        pub = self._published()
+        if pub is not None and not expiry:
+            return await pub.oi_options(underlying)
+        last = self._options_oi.get_last_report(underlying)
+        if last is not None and not expiry:
+            self._refresh_soon(f"options_oi_{underlying.upper()}",
+                               lambda: self._refresh_options_oi(underlying, None))
+            return {**last.model_dump(), "cache_state": "cached", "refreshing": True}
+        return await self._refresh_options_oi(underlying, expiry)
+
+    async def _refresh_options_oi(self, underlying: str = "NIFTY", expiry: Optional[str] = None) -> dict[str, Any]:
         """Refresh options OI, retaining the last usable report on refresh failure."""
         cached = self._options_oi.get_last_report(underlying)
         try:
@@ -724,6 +791,11 @@ class TradingService:
 
     def get_options_oi_cached(self, underlying: str = "NIFTY") -> dict[str, Any]:
         """Return last computed options OI report."""
+        pub = self._published()
+        if pub is not None:
+            key = "oi_options_SENSEX" if str(underlying).upper() == "SENSEX" else "oi_options_NIFTY"
+            hit = pub._cache.get(key) or pub._restore(key, 0.0)
+            return hit[1] if hit else {"error": "No data yet. Run scan first."}
         report = self._options_oi.get_last_report(underlying)
         return {**report.model_dump(), "cache_state": "cached"} if report else {"error": "No data yet. Run scan first."}
 
@@ -737,9 +809,15 @@ class TradingService:
             return {"error": str(e)}
 
     def get_pcr_history(self, underlying: str = "NIFTY") -> list[dict[str, Any]]:
+        pub = self._published()
+        if pub is not None:
+            return pub.oi_history("pcr", underlying)
         return self._options_oi.get_pcr_history(underlying)
 
     def get_straddle_history(self, underlying: str = "NIFTY") -> list[dict[str, Any]]:
+        pub = self._published()
+        if pub is not None:
+            return pub.oi_history("straddle", underlying)
         return self._options_oi.get_straddle_history(underlying)
 
     async def start_oi_tracking(
@@ -757,7 +835,11 @@ class TradingService:
         elif not self._oi_tracker.get_tracked_tokens():
             try:
                 nfo_instruments = await self._client.get_instruments("NFO")
-                self._oi_tracker.register_instruments([i.model_dump() for i in nfo_instruments])
+                # only NIFTY / SENSEX contracts: the tracker used to keep all ~100k NFO
+                # instruments as dicts (~100+ MB) per session that opened the OI tab
+                wanted = await asyncio.to_thread(
+                    lambda: [i.model_dump() for i in nfo_instruments if (i.name or "").upper() in ("NIFTY", "SENSEX")])
+                self._oi_tracker.register_instruments(wanted)
             except Exception as e:
                 logger.error("oi_tracking_instrument_fetch_failed", error=str(e))
 
@@ -811,6 +893,9 @@ class TradingService:
 
     async def oi_strategy_scan(self, underlying: str = "NIFTY") -> dict[str, Any]:
         """Run OI strategy scan: fetch options OI → detect trading signals."""
+        pub = self._published()
+        if pub is not None:
+            return await pub.oi_strategy(underlying)       # signals from the shared report, never executed
         try:
             report = await self._options_oi.analyze(underlying, self._client)
             result = self._oi_strategy.scan_for_signals(report)
@@ -3010,8 +3095,8 @@ class TradingService:
 
     async def persist_analysis(self, min_interval_s: float = 60.0, force: bool = False) -> bool:
         """Write the analysis snapshot in a worker thread, at most every ``min_interval_s``."""
-        if getattr(self, "is_demo", False):
-            return False                 # shared demo analysis: rebuilt by the next scan
+        if getattr(self, "is_demo", False) or getattr(self, "is_shared_market", False):
+            return False                 # shared demo / view analysis: rebuilt on use, not saved
         if not (force or self._snapshot_dirty):
             return False
         if not force and time.monotonic() - self._snapshot_saved_mono < min_interval_s:
@@ -3105,6 +3190,9 @@ class TradingService:
         return await self._market_data.get_ohlc(instruments)
 
     async def get_market_overview(self, symbols: list[str] | None = None) -> dict[str, Any]:
+        pub = self._published()
+        if pub is not None:
+            return await pub.overview(symbols)               # one quote call for every viewer
         return await self._market_data.get_market_overview(symbols)
 
     async def resolve_instrument_token(self, symbol: str, exchange: str = "NSE") -> int | None:

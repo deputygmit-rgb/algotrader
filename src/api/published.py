@@ -28,6 +28,8 @@ are never part of any product.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -41,6 +43,16 @@ FLOW_TTL_S = 2.0
 STALE_GRACE_S = 8.0          # past its TTL a product is still served (once) while it is rebuilt
 BOARD_TTL_S = 5.0
 SCAN_REFRESH_AFTER_S = 600.0     # a viewer asking for a scan older than this starts a fresh one
+# OI products: computed by the source once for every viewer. An older one is shown at
+# once (its timestamp says how old) while one refresh runs - the futures scan alone
+# takes ~40 s through the broker's rate limits - and kept on disk across restarts.
+OI_OPTIONS_TTL_S = 60.0
+OI_FUTURES_TTL_S = 300.0
+OI_STALE_S = 6 * 3600.0
+OVERVIEW_TTL_S = 5.0
+STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                         "data", "published")
+STORED_KEYS = ("oi_options_NIFTY", "oi_options_SENSEX", "oi_futures")
 
 # ── allowlists ─────────────────────────────────────────────────────────
 SCAN_REPORT_KEYS = {
@@ -231,7 +243,7 @@ class Publisher:
         self._cache[key] = (time.monotonic(), value)
         return value
 
-    async def _once(self, key: str, ttl: float, build: Any) -> Any:
+    async def _once(self, key: str, ttl: float, build: Any, stale_s: float = STALE_GRACE_S) -> Any:
         """The cached product, or one rebuild shared by every request that arrives
         meanwhile. Without it, all viewers polling when the cache expired rebuilt
         (and serialised) the product at the same moment - a stampede that held the
@@ -243,7 +255,9 @@ class Publisher:
         flight = (key, id(loop))
         pending = self._building.get(flight)
         last = self._cache.get(key)
-        if last is not None and time.monotonic() - last[0] < ttl + STALE_GRACE_S:
+        if last is None and key in STORED_KEYS:
+            last = self._restore(key, ttl)
+        if last is not None and time.monotonic() - last[0] < ttl + stale_s:
             # a little past its refresh: answer at once with it while one rebuild runs in the
             # background (otherwise every poll waits the source's quote round trip, ~1 s)
             if pending is None:
@@ -261,6 +275,8 @@ class Publisher:
             value = await build()
             if not (isinstance(value, dict) and value.get("error")):
                 self._put(key, value)
+                if key in STORED_KEYS:
+                    asyncio.get_running_loop().run_in_executor(None, self._store, key, value)
             future.set_result(value)
             return value
         except BaseException as e:
@@ -269,6 +285,105 @@ class Publisher:
             raise
         finally:
             self._building.pop(flight, None)
+
+    # ── stored copies (shown at once after a restart, until the first refresh lands) ──
+    @staticmethod
+    def _path(key: str) -> str:
+        return os.path.join(STORE_DIR, f"{key}.json")
+
+    def _store(self, key: str, value: Any) -> None:
+        try:
+            os.makedirs(STORE_DIR, exist_ok=True)
+            tmp = f"{self._path(key)}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(value, f, default=str)
+            os.replace(tmp, self._path(key))
+        except (OSError, TypeError, ValueError) as e:
+            logger.warning("published_store_failed", key=key, error=str(e))
+
+    def _restore(self, key: str, ttl: float) -> Optional[tuple[float, Any]]:
+        try:
+            with open(self._path(key), encoding="utf-8") as f:
+                value = json.load(f)
+        except (OSError, ValueError):
+            return None
+        hit = (time.monotonic() - ttl - 1.0, value)       # due for a refresh, served until then
+        self._cache[key] = hit
+        return hit
+
+    def _age_note(self, key: str, ttl: float, value: Any) -> Any:
+        """The product, flagged ``refreshing`` while an older copy is shown."""
+        hit = self._cache.get(key)
+        if not isinstance(value, dict) or value.get("error") or hit is None:
+            return value
+        return {**value, "refreshing": time.monotonic() - hit[0] >= ttl}
+
+    # ── OI tracker products ───────────────────────────────────────────
+    async def oi_options(self, underlying: str = "NIFTY") -> dict[str, Any]:
+        u = "SENSEX" if str(underlying).upper() == "SENSEX" else "NIFTY"
+        key = f"oi_options_{u}"
+
+        async def build() -> dict[str, Any]:
+            svc = self._svc()
+            if svc is None:
+                return {"error": UNAVAILABLE}
+            try:
+                return await svc.get_options_oi_report(u)
+            except Exception as e:
+                logger.warning("published_oi_options_failed", error=str(e))
+                return {"error": UNAVAILABLE}
+        return self._age_note(key, OI_OPTIONS_TTL_S, await self._once(key, OI_OPTIONS_TTL_S, build, stale_s=OI_STALE_S))
+
+    async def oi_futures(self) -> dict[str, Any]:
+        async def build() -> dict[str, Any]:
+            svc = self._svc()
+            if svc is None:
+                return {"error": UNAVAILABLE}
+            try:
+                return await svc.get_futures_oi_report()
+            except Exception as e:
+                logger.warning("published_oi_futures_failed", error=str(e))
+                return {"error": UNAVAILABLE}
+        value = await self._once("oi_futures", OI_FUTURES_TTL_S, build, stale_s=OI_STALE_S)
+        return self._age_note("oi_futures", OI_FUTURES_TTL_S, value)
+
+    async def oi_strategy(self, underlying: str = "NIFTY") -> dict[str, Any]:
+        """Signals from the shared options report (never executed: a scan, not a trade)."""
+        from src.options.oi_analysis import OptionsOIReport
+        from src.options.oi_strategy import OIStrategyEngine
+
+        report = await self.oi_options(underlying)
+        if report.get("error"):
+            return report
+        engine = self.__dict__.get("_oi_engine")
+        if engine is None:
+            engine = self._oi_engine = OIStrategyEngine()
+        try:
+            return engine.scan_for_signals(OptionsOIReport(**{k: v for k, v in report.items()
+                                                              if k in OptionsOIReport.model_fields})).model_dump()
+        except Exception as e:
+            logger.warning("published_oi_strategy_failed", error=str(e))
+            return {"error": UNAVAILABLE}
+
+    def oi_history(self, kind: str, underlying: str) -> list[dict[str, Any]]:
+        svc = self._svc()
+        if svc is None:
+            return []
+        return svc.get_pcr_history(underlying) if kind == "pcr" else svc.get_straddle_history(underlying)
+
+    async def overview(self, symbols: Optional[list[str]]) -> dict[str, Any]:
+        key = "overview:" + ",".join(symbols or [])
+
+        async def build() -> dict[str, Any]:
+            svc = self._svc()
+            if svc is None:
+                return {"error": UNAVAILABLE}
+            try:
+                return await svc.get_market_overview(symbols)
+            except Exception as e:
+                logger.warning("published_overview_failed", error=str(e))
+                return {"error": UNAVAILABLE}
+        return await self._once(key, OVERVIEW_TTL_S, build, stale_s=60.0)
 
     async def flow(self) -> dict[str, Any]:
         async def build() -> dict[str, Any]:

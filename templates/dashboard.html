@@ -17,7 +17,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
     <script src="/static/js/collapsible.js?v={{ collapsible_js_version }}" defer></script>
 </head>
-<body data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}"{% if demo_kind == 'public' %} data-demo-scope="public"{% endif %}>
+<body data-csrf="{{ csrf_token }}" data-user="{{ zerodha_id }}"{% if demo_kind == 'public' %} data-demo-scope="public"{% endif %}{% if view_only %} data-view-scope="view" data-view-default="{{ view_default_tab }}"{% endif %}>
     <header class="header">
         <div class="header-left">
             <a class="logo" href="/app" aria-label="VerquoAI workspace">VerquoAI™</a>
@@ -26,7 +26,7 @@
         </div>
         <div class="header-right">
             <span class="t-head-meta"><span data-t-session></span><span class="t-clock" data-t-clock></span></span>
-            <button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>
+            {% if not view_only %}<button id="t-agents-pill" class="ag-pill" title="Agent health">AGENTS</button>{% endif %}
             <span id="t-access" class="t-access" hidden title="Your account's access level"></span>
             <button class="btn btn-outline btn-sm" type="button" data-pwa-install hidden title="Install VerquoAI as an app on this device">Install app</button>
             {% if demo_kind != 'public' %}<button id="pwa-alerts-btn" class="btn btn-outline btn-sm" type="button" hidden title="Trade and risk alerts on this device, even when the app is closed">Alerts</button>{% endif %}
@@ -76,30 +76,30 @@
 
     <main class="main">
         <div class="tabs">
-            <button class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
-            <button class="tab" data-tab="positions" onclick="switchTab('positions');loadPositions()">Positions</button>
-            <button class="tab" data-tab="orders" onclick="switchTab('orders');loadOrders()">Orders</button>
-            <button class="tab" data-tab="signals" onclick="switchTab('signals');loadSignals();loadVerifierFindings()">Signals</button>
-            <button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>
-            <button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>
+            {% if not view_only %}<button class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="positions" onclick="switchTab('positions');loadPositions()">Positions</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="orders" onclick="switchTab('orders');loadOrders()">Orders</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="signals" onclick="switchTab('signals');loadSignals();loadVerifierFindings()">Signals</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="strategies" onclick="switchTab('strategies')">Strategies</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="risk" onclick="switchTab('risk')">Risk</button>{% endif %}
             <button class="tab" data-tab="oi-tracker" onclick="switchTab('oi-tracker');initOITracker()">OI Tracker</button>
             {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="market-flow" onclick="demoLocked(this)" title="Available in your own account">Market Flow &#128274;</button>{% else %}<button class="tab" data-tab="market-flow" onclick="switchTab('market-flow');MarketFlow.start()">Market Flow</button>{% endif %}
             {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="day-trade" onclick="demoLocked(this)" title="Available in your own account">Day Trade &#128274;</button>{% else %}<button class="tab" data-tab="day-trade" onclick="switchTab('day-trade');DayTrade.start()">Day Trade</button>{% endif %}
             {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="swing" onclick="demoLocked(this)" title="Available in your own account">Swing &#128274;</button>{% else %}<button class="tab" data-tab="swing" onclick="switchTab('swing');Swing.start()">Swing</button>{% endif %}
-            {% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="analysis" onclick="demoLocked(this)" title="Available in your own account">Analysis &#128274;</button>{% else %}<button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>{% endif %}
-            <button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>
-            <button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>
-            <button class="tab" data-tab="reports" onclick="switchTab('reports');loadReports()">Reports</button>
-            <button class="tab" data-tab="paper-trading" onclick="switchTab('paper-trading');loadCachedPaperResults()">Paper Trading</button>
-            <button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>
-            <button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>
-            <button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>
-            <button class="tab" data-tab="agents" onclick="switchTab('agents');AgentsView.start()">Agents</button>
+            {% if not view_only %}{% if demo_kind == 'public' %}<button class="tab tab-locked" data-locked="analysis" onclick="demoLocked(this)" title="Available in your own account">Analysis &#128274;</button>{% else %}<button class="tab" data-tab="analysis" onclick="switchTab('analysis');loadAnalysis()">Analysis</button>{% endif %}{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="charts" onclick="switchTab('charts')">Charts</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="backtest" onclick="switchTab('backtest');loadCachedBacktestResult()">Backtest</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="reports" onclick="switchTab('reports');loadReports()">Reports</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="paper-trading" onclick="switchTab('paper-trading');loadCachedPaperResults()">Paper Trading</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="replay" onclick="switchTab('replay')">Market Replay</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="strategy-builder" onclick="switchTab('strategy-builder');loadBuilderIndicators()">Strategy Builder</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="journal" onclick="switchTab('journal');loadJournal()">Journal</button>{% endif %}
+            {% if not view_only %}<button class="tab" data-tab="agents" onclick="switchTab('agents');AgentsView.start()">Agents</button>{% endif %}
             <span class="t-kbd" onclick="Terminal.open()" title="Command palette"><kbd>Ctrl</kbd>+<kbd>K</kbd> jump</span>
         </div>
 
         <!-- Overview Tab -->
-        <div id="tab-overview" class="tab-content active">
+        <div id="tab-overview" class="tab-content{% if not view_only %} active{% endif %}">
             <div class="t-hud">
                 <div class="t-hud-l"><span class="t-hud-title">OVERVIEW</span><span class="t-hud-sub">ACCOUNT · PORTFOLIO · P&amp;L · LIVE BOOK</span></div>
                 <div class="t-hud-r"><span data-t-session></span><span class="t-clock" data-t-clock></span></div>

@@ -68,10 +68,10 @@ def _start(c, age=10):
     return c.post("/demo/start", json={"form_token": webapp._form_token(time.time() - age)})
 
 
-def _user(monkeypatch, zid="AB1234"):
+def _user(monkeypatch, zid="AB1234", level="view"):
     monkeypatch.setattr(webapp.UserConfigService, "get_instance", staticmethod(
         lambda: SimpleNamespace(get_user=lambda z: SimpleNamespace(zerodha_id=zid, api_key="k", api_secret="s",
-                                                                   email="u@example.com", access_level="view")
+                                                                   email="u@example.com", access_level=level)
                                 if z.upper() == zid else None)))
     return webapp.otp_auth._create_session(zid)
 
@@ -120,7 +120,7 @@ def test_demo_skips_confirmation_code_but_real_account_does_not(_isolated, monke
             return await start({"kta_session": tok}, webapp.otp_auth.get_csrf_token(tok))
     assert asyncio.run(demo()).status_code == 200
 
-    token = _user(monkeypatch)
+    token = _user(monkeypatch, level="trade")          # a trading account (view access cannot start live at all)
     _isolated.mgr.get_service("AB1234").is_authenticated = True
     real = asyncio.run(start({"kta_session": token}, webapp.otp_auth.get_csrf_token(token)))
     assert real.status_code == 403 and real.json()["detail"] == "step_up_required"

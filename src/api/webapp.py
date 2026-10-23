@@ -53,6 +53,7 @@ from src.demo.sessions import (
     MAX_PER_NETWORK as DEMO_MAX_PER_NETWORK,
     PUBLIC_SESSION_SECONDS,
     demo_sessions,
+    is_demo_id,
     is_public_demo_id,
     new_public_id,
     shutdown_service,
@@ -60,6 +61,7 @@ from src.demo.sessions import (
 )
 from src.api.static_files import MinifiedStaticFiles
 from src.api.demo_scope import LOCKED_MESSAGE, public_demo_blocked
+from src.api.view_scope import VIEW_DEFAULT_TAB, VIEW_MESSAGE, VIEW_TABS, view_only_blocked
 from src.utils.exceptions import KiteError, KillSwitchError
 from src.utils.logger import get_logger
 
@@ -290,6 +292,16 @@ def get_real_user_service(request: Request) -> TradingService:
     return _real_service(zerodha_id)
 
 
+def _is_view_only(request: Request) -> bool:
+    """A signed-in account with view access (not the public demo)."""
+    cookies = getattr(request, "cookies", None) or {}
+    uid = otp_auth.get_session_user(cookies.get(SESSION_COOKIE, "")) or ""
+    if not uid or is_demo_id(uid):
+        return False
+    user = UserConfigService.get_instance().get_user(uid)
+    return user is not None and user.access_level == VIEW
+
+
 def _is_public_demo(request: Request) -> bool:
     cookies = getattr(request, "cookies", None) or {}
     return is_public_demo_id(otp_auth.get_session_user(cookies.get(SESSION_COOKIE, "")) or "")
@@ -434,6 +446,9 @@ async def auth_middleware(request: Request, call_next):
     elif path.startswith("/api/") and public_demo_blocked(path) and _is_public_demo(request):
         # Market Flow, the boards and Analysis are for accounts with access (src/api/demo_scope.py)
         response = JSONResponse({"error": LOCKED_MESSAGE, "demo_locked": True}, status_code=403)
+    elif path.startswith("/api/") and view_only_blocked(path, request.method) and _is_view_only(request):
+        # view access is OI Tracker, Market Flow, Day Trade and Swing (src/api/view_scope.py)
+        response = JSONResponse({"error": VIEW_MESSAGE, "view_locked": True}, status_code=403)
     elif request.method not in CSRF_EXEMPT_METHODS:
         token = request.cookies.get(SESSION_COOKIE, "")
         csrf_header = request.headers.get("X-CSRF-Token", "")
@@ -804,6 +819,27 @@ async def login_page(request: Request) -> HTMLResponse:
                                                                 "form_token": _form_token(), **site_facts.context()})
 
 
+OTP_WAIT_S = 1.5        # the sign-in form waits at most this long for the mail server
+
+
+async def _send_code(otp: str, email: str, zerodha_id: str) -> bool:
+    """Send a sign-in / confirmation code without making the person wait on Gmail.
+
+    SMTP (connect, TLS, login, send) runs in a thread and usually takes 2-4 s. The
+    real result is reported when it comes within ``OTP_WAIT_S``; after that the form
+    answers at once and the send finishes in the background (a failure is logged, and
+    the person can ask for the code again)."""
+    task = asyncio.ensure_future(asyncio.to_thread(otp_auth.send_otp_email, otp, email, zerodha_id))
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=OTP_WAIT_S)
+    except asyncio.TimeoutError:
+        def finished(t: asyncio.Future) -> None:
+            if t.cancelled() or t.exception() is not None or not t.result():
+                logger.error("otp_email_late_failure", zerodha_id=zerodha_id)
+        task.add_done_callback(finished)
+        return True
+
+
 @app.post("/auth/send-otp")
 async def send_otp(request: Request) -> dict[str, Any]:
     ip = _client_ip(request)
@@ -834,7 +870,7 @@ async def send_otp(request: Request) -> dict[str, Any]:
     
     # SMTP (connect, TLS, login, send) takes seconds: off the event loop, so one sign-in
     # does not stall every other request on the single worker
-    if not await asyncio.to_thread(otp_auth.send_otp_email, otp, user.email, zerodha_id):
+    if not await _send_code(otp, user.email, zerodha_id):
         if _dev_otp_fallback_enabled(request):
             logger.warning("otp_email_failed_dev_fallback_enabled", zerodha_id=zerodha_id)
             return {
@@ -1023,7 +1059,7 @@ async def step_up_send(request: Request) -> dict[str, Any]:
         otp = otp_auth.generate_otp(zerodha_id, purpose=STEP_UP_PURPOSE)
     except Exception as e:
         return {"success": False, "message": _public_error(e)}
-    if not await asyncio.to_thread(otp_auth.send_otp_email, otp, user.email, zerodha_id):
+    if not await _send_code(otp, user.email, zerodha_id):
         otp_auth.discard_pending_otp(zerodha_id, purpose=STEP_UP_PURPOSE)
         return {"success": False, "message": "Unable to deliver OTP. Check email configuration and try again."}
     return {"success": True, "message": "Confirmation code sent to your registered email"}
@@ -1296,6 +1332,10 @@ async def dashboard(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
         "demo_kind": demo_kind(svc),
+        # view access: OI Tracker, Market Flow, Day Trade and Swing only (src/api/view_scope.py)
+        "view_only": _is_view_only(request),
+        "view_tabs": VIEW_TABS,
+        "view_default_tab": VIEW_DEFAULT_TAB,
         "form_token": _form_token(),
         "is_admin": is_admin_session(request),
         "is_authenticated": svc.is_authenticated,

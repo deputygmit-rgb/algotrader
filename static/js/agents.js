@@ -541,6 +541,7 @@ const AgentsView = (() => {
     }
 
     function init() {
+        if (document.body.dataset.viewScope === 'view') return;     // view access has no agents
         document.getElementById('t-agents-pill')?.addEventListener('click', () => document.querySelector('[data-tab="agents"]')?.click());
         poll();
     }

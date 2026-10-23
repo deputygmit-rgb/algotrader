@@ -17,6 +17,7 @@ Unlike the equity BacktestEngine, this engine:
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, date, timedelta
 from typing import Any
 
@@ -74,6 +75,16 @@ class FnOBacktestEngine:
         "calendar_spread": StructureType.CALENDAR_SPREAD,
     }
 
+    # Strategies that manage their own legs (src/options/*_runner.py): the engine feeds
+    # them a chain each bar and fills their orders, instead of building a structure.
+    # They used to fall through STRATEGY_MAP's default and be backtested as an iron condor.
+    RUNNER_STRATEGIES: dict[str, tuple[str, str, StructureType]] = {
+        "put_credit_spread_runner": ("src.options.put_credit_spread_runner", "PutCreditSpreadRunnerStrategy",
+                                     StructureType.BULL_PUT_SPREAD),
+        "call_credit_spread_runner": ("src.options.call_credit_spread_runner", "CallCreditSpreadRunnerStrategy",
+                                      StructureType.BEAR_CALL_SPREAD),
+    }
+
     def __init__(
         self,
         strategy_name: str = "iron_condor",
@@ -87,6 +98,7 @@ class FnOBacktestEngine:
         delta_target: float = 0.16,        # for strike selection
         slippage_model: str = "realistic",
         use_regime_filter: bool = True,
+        strategy_params: dict[str, Any] | None = None,   # a runner's own settings (min_credit, deltas, width)
     ) -> None:
         self.strategy_name = strategy_name
         self.underlying = underlying.upper()
@@ -99,8 +111,11 @@ class FnOBacktestEngine:
         self.delta_target = delta_target
         self.slippage_model = slippage_model
         self.use_regime_filter = use_regime_filter
+        self.strategy_params = dict(strategy_params or {})
 
-        self.structure_type = self.STRATEGY_MAP.get(
+        runner = self.RUNNER_STRATEGIES.get(strategy_name.lower())
+        self.is_runner = runner is not None
+        self.structure_type = runner[2] if runner else self.STRATEGY_MAP.get(
             strategy_name.lower(), StructureType.IRON_CONDOR
         )
 
@@ -161,12 +176,15 @@ class FnOBacktestEngine:
                 resampled_bars=len(df),
             )
 
+        if self.is_runner:
+            return self._run_strategy_driven(df, tradingsymbol)
+
         # State tracking
         capital = self.initial_capital
         positions: list[MultiLegPosition] = []
         closed_positions: list[MultiLegPosition] = []
         equity_curve: list[float] = [capital]
-        bar_dates: list[str] = [str(df.index[0])]
+        bar_dates: list[str] = [str(self._parse_bar_date(df, 0))]
         greeks_history: list[dict] = []
         margin_history: list[dict] = []
         regime_history: list[dict] = []
@@ -194,7 +212,7 @@ class FnOBacktestEngine:
             bar = df.iloc[i]
             spot = float(bar["close"])
             bar_date = self._parse_bar_date(df, i)
-            bar_dates.append(str(df.index[i]) if not isinstance(df.index[i], int) else str(i))
+            bar_dates.append(str(self._parse_bar_date(df, i)))
 
             # ── 1. Regime classification ───
             price_history = closes[:i + 1]
@@ -383,8 +401,8 @@ class FnOBacktestEngine:
             "underlying": self.underlying,
             "tradingsymbol": tradingsymbol,
             "total_bars": len(df),
-            "start_date": str(df.index[0]),
-            "end_date": str(df.index[-1]),
+            "start_date": str(self._parse_bar_date(df, 0)),
+            "end_date": str(self._parse_bar_date(df, len(df) - 1)),
             "initial_capital": self.initial_capital,
             "final_capital": round(capital, 2),
             "total_return_pct": round(
@@ -393,6 +411,7 @@ class FnOBacktestEngine:
             "total_return_abs": round(capital - self.initial_capital, 2),
             "total_costs": round(total_costs, 2),
             **metrics,
+            "backtest_warnings": self._warnings(metrics.get("total_trades", 0)),
             "positions_opened": position_counter,
             "positions_closed": len(closed_positions),
             "trades": trades[-500:],
@@ -783,14 +802,23 @@ class FnOBacktestEngine:
         return struct_name in recommended or len(recommended) == 0
 
     def _parse_bar_date(self, df: pd.DataFrame, idx: int) -> date:
-        """Parse date from DataFrame index."""
-        val = df.index[idx]
-        if isinstance(val, (datetime, pd.Timestamp)):
-            return val.date()
-        try:
-            return datetime.fromisoformat(str(val)).date()
-        except (ValueError, TypeError):
-            return date.today()
+        """The bar's date: from a date index, else a ``timestamp`` / ``date`` column.
+
+        Data with a plain numeric index and its dates in a column (as stored bars and
+        CSV exports come) used to get today's date for every bar - time stood still:
+        expiries never arrived and days-to-expiry never fell."""
+        for val in (df.index[idx],
+                    *(df[col].iloc[idx] for col in ("timestamp", "date", "datetime", "ts") if col in df.columns)):
+            if isinstance(val, (datetime, pd.Timestamp)):
+                return val.date()
+            if isinstance(val, date):
+                return val
+            if isinstance(val, str):
+                try:
+                    return datetime.fromisoformat(val.replace("Z", "+00:00")).date()
+                except ValueError:
+                    continue
+        return date.today()
 
     def _compute_metrics(
         self,
@@ -844,6 +872,356 @@ class FnOBacktestEngine:
             "sharpe_ratio": round(sharpe, 4),
             "sortino_ratio": round(sortino, 4),
         }
+
+    @staticmethod
+    def _warnings(total_trades: int) -> list[str]:
+        out = ["Option prices are synthetic (Black-Scholes from historical volatility), not traded quotes."]
+        if total_trades < 10:
+            out.append(f"Only {total_trades} closed trades: too few to judge the strategy.")
+        return out
+
+    # ──────────────────────────────────────────────
+    # Option symbols and price lookups (synthetic and real chains)
+    # ──────────────────────────────────────────────
+
+    # ROOT + YYYYMMDD + C|P + strike, e.g. NIFTY20250327P24500 (roots may contain C / P: HCLTECH, ICICIBANK)
+    _OPTION_SYMBOL = re.compile(r"^(?P<root>[A-Z][A-Z0-9&-]*?)(?P<date>\d{8})(?P<kind>[CP])(?P<strike>\d+(?:\.\d+)?)$")
+
+    @staticmethod
+    def _parse_option_symbol(symbol: str) -> tuple[str, float] | None:
+        """("CE" | "PE", strike) from an engine option symbol, or None."""
+        m = FnOBacktestEngine._OPTION_SYMBOL.match(str(symbol or "").strip())
+        if not m:
+            return None
+        return ("CE" if m.group("kind") == "C" else "PE", float(m.group("strike")))
+
+    @staticmethod
+    def _extract_strike_from_symbol(symbol: str) -> float:
+        parsed = FnOBacktestEngine._parse_option_symbol(symbol)
+        return parsed[1] if parsed else 0.0
+
+    @staticmethod
+    def _option_symbol(underlying: str, expiry: Any, option_type: str, strike: float) -> str:
+        day = expiry.strftime("%Y%m%d") if hasattr(expiry, "strftime") else str(expiry).replace("-", "")[:8]
+        k = int(strike) if float(strike).is_integer() else strike
+        return f"{underlying}{day}{'C' if option_type == 'CE' else 'P'}{k}"
+
+    def _convert_synthetic_chain_to_option_chain_data(self, chain: SyntheticChain) -> Any:
+        """A synthetic chain in the live chain's model, so the runners read it exactly as
+        they read a live one (IV in percent, ``last_price`` / ``bid_price`` / ``ask_price``)."""
+        from src.options.chain import OptionChainData, OptionChainEntry, OptionContract
+
+        exchange = getattr(self._chain_builder, "exchange", "NFO")
+        lot = self._chain_builder.lot_size
+        expiry = str(chain.expiry)
+
+        def contract(q: Any) -> Any:
+            if q is None or q.price <= 0:
+                return None
+            return OptionContract(
+                tradingsymbol=self._option_symbol(chain.underlying, chain.expiry, q.option_type, q.strike),
+                exchange=exchange, underlying=chain.underlying, expiry=expiry, strike=float(q.strike),
+                option_type=q.option_type, lot_size=lot, last_price=round(q.price, 2),
+                bid_price=round(max(q.bid, 0.0), 2), ask_price=round(max(q.ask, 0.0), 2),
+                iv=round(q.iv * 100 if q.iv < 3 else q.iv, 2), delta=q.delta, gamma=q.gamma,
+                theta=q.theta, vega=q.vega, oi=int(q.oi or 0), volume=int(q.volume or 0),
+            )
+
+        entries = [OptionChainEntry(strike=float(k), ce=contract(v.get("CE")), pe=contract(v.get("PE")))
+                   for k, v in sorted(chain.strikes.items())]
+        return OptionChainData(
+            underlying=chain.underlying, spot_price=chain.spot_price, expiry=expiry,
+            atm_strike=chain.atm_strike, atm_iv=round(chain.atm_iv * 100 if chain.atm_iv < 3 else chain.atm_iv, 2),
+            total_ce_oi=chain.total_ce_oi, total_pe_oi=chain.total_pe_oi,
+            entries=[e for e in entries if e.ce or e.pe], updated_at=str(chain.timestamp),
+        )
+
+    @staticmethod
+    def _find_option_price_from_chain(chain: SyntheticChain | None, symbol: str) -> float | None:
+        parsed = FnOBacktestEngine._parse_option_symbol(symbol)
+        if chain is None or parsed is None:
+            return None
+        kind, strike = parsed
+        for k, quotes in chain.strikes.items():
+            if abs(float(k) - strike) < 0.01:
+                q = quotes.get(kind)
+                return round(q.price, 2) if q is not None and q.price > 0 else None
+        return None
+
+    @staticmethod
+    def _find_option_price_from_chain_data(chain: Any, symbol: str) -> float | None:
+        parsed = FnOBacktestEngine._parse_option_symbol(symbol)
+        if chain is None or parsed is None:
+            return None
+        kind, strike = parsed
+        for entry in chain.entries:
+            c = entry.ce if kind == "CE" else entry.pe
+            if c is not None and abs(float(c.strike or entry.strike) - strike) < 0.01 and c.last_price > 0:
+                return float(c.last_price)
+        return None
+
+    def _find_option_price_unified(self, synth: SyntheticChain | None, chain_data: Any, symbol: str) -> float | None:
+        """The synthetic chain's price, else the converted chain's, else None."""
+        price = self._find_option_price_from_chain(synth, symbol)
+        return price if price is not None else self._find_option_price_from_chain_data(chain_data, symbol)
+
+    # ──────────────────────────────────────────────
+    # Strategy-driven backtest (self-managed runners)
+    # ──────────────────────────────────────────────
+
+    def _make_runner(self) -> Any:
+        import importlib
+
+        module, cls, _ = self.RUNNER_STRATEGIES[self.strategy_name.lower()]
+        runner = getattr(importlib.import_module(module), cls)({
+            "underlying": self.underlying,
+            "exchange": getattr(self._chain_builder, "exchange", "NFO"),
+            "lot_size": self._chain_builder.lot_size,
+            "capital": self.initial_capital,
+            "profit_target_pct": self.profit_target_pct,
+            **self.strategy_params,
+            "disable_persistence": True,          # never read or overwrite the live position state
+        })
+        return runner
+
+    def _fill(self, synth: SyntheticChain, symbol: str, side: str, lots: int, bar_date: date) -> tuple[float, float]:
+        """(fill price, costs) for one leg at the chain's price, with slippage and India F&O charges."""
+        parsed = self._parse_option_symbol(symbol)
+        quote = synth.strikes.get(parsed[1], {}).get(parsed[0]) if parsed else None
+        if quote is None:
+            for k, quotes in synth.strikes.items():
+                if parsed and abs(float(k) - parsed[1]) < 0.01:
+                    quote = quotes.get(parsed[0])
+        if quote is None or quote.price <= 0:
+            return 0.0, 0.0
+        contract = self._chain_builder.make_contract(quote, synth)
+        fill = self._simulator.simulate_fill(
+            contract, OrderSide.BUY if side == "BUY" else OrderSide.SELL, lots, quote.price,
+            bid=quote.bid, ask=quote.ask, volume=quote.volume,
+            timestamp=datetime.combine(bar_date, datetime.min.time()),
+        )
+        price = fill.fill_price if fill.is_filled and fill.fill_price > 0 else quote.price
+        cost = self._cost_model.calculate(
+            contract, TransactionSide.BUY if side == "BUY" else TransactionSide.SELL, price, lots,
+            child_orders=max(1, fill.child_orders),
+        ).total
+        return round(price, 2), round(cost, 2)
+
+    def _run_strategy_driven(self, df: pd.DataFrame, tradingsymbol: str) -> dict[str, Any]:
+        """Drive a self-managed runner bar by bar on synthetic chains.
+
+        Each bar the runner sees a chain (the open spread's expiry while it holds one,
+        else the nearest expiry with ``entry_dte_min``..``entry_dte_max`` days left), its
+        orders fill at the chain's prices with slippage and costs, and a spread still
+        open at its expiry settles at intrinsic value."""
+        runner = self._make_runner()
+        lot = self._chain_builder.lot_size
+        closes = df["close"].values
+        capital = self.initial_capital
+        equity_curve: list[float] = [capital]
+        bar_dates: list[str] = [str(self._parse_bar_date(df, 0))]
+        trades: list[dict] = []
+        spreads: list[dict] = []            # one per round trip: {pnl, reason}
+        total_costs = 0.0
+        chains_built = chain_failures = bars_skipped = 0
+        open_legs: dict[str, dict] = {}     # symbol -> {side, qty, entry, leg}
+        position_expiry: date | None = None
+        spread_pnl = 0.0
+        trade_seq = 0
+
+        start_date = self._parse_bar_date(df, 0)
+        end_date = self._parse_bar_date(df, len(df) - 1)
+        expiries = sorted(self._chain_builder.get_expiry_dates(
+            start_date, end_date + timedelta(days=60), expiry_weekday=self._chain_builder.expiry_day))
+
+        def record(symbol: str, side: str, qty: int, price: float, costs: float, bar: int, day: date,
+                   leg: str, reason: str, pnl: float | None = None) -> None:
+            nonlocal trade_seq
+            trade_seq += 1
+            t = {"trade_id": f"{self.strategy_name}-{trade_seq}", "tradingsymbol": symbol,
+                 "transaction_type": side, "quantity": qty, "price": round(price, 2),
+                 "costs": round(costs, 2), "bar": bar, "date": str(day), "leg": leg, "reason": reason}
+            if pnl is not None:
+                t["pnl"] = round(pnl, 2)
+            trades.append(t)
+
+        def close_leg(symbol: str, price: float, costs: float, bar: int, day: date, reason: str) -> float:
+            leg = open_legs.pop(symbol)
+            sign = 1 if leg["side"] == "SELL" else -1          # a short leg profits when the price falls
+            pnl = sign * (leg["entry"] - price) * leg["qty"]
+            record(symbol, "BUY" if leg["side"] == "SELL" else "SELL", leg["qty"], price, costs, bar, day,
+                   leg["leg"] + "_exit", reason, pnl - costs)
+            return pnl
+
+        def finish_spread(reason: str) -> None:
+            nonlocal spread_pnl, position_expiry
+            spreads.append({"type": {"profit_target_hit": "PROFIT_TARGET", "expiry": "EXPIRY",
+                                      "final_exit": "FINAL_EXIT"}.get(reason, "STOP_LOSS"),
+                            "pnl": round(spread_pnl, 2), "reason": reason})
+            spread_pnl = 0.0
+            position_expiry = None
+
+        for i in range(max(21, 1), len(df)):
+            spot = float(df.iloc[i]["close"])
+            day = self._parse_bar_date(df, i)
+            bar_dates.append(str(self._parse_bar_date(df, i)))
+
+            # a spread still open on (or past) its expiry settles at intrinsic value
+            if open_legs and position_expiry is not None and day >= position_expiry:
+                for symbol in list(open_legs):
+                    kind, strike = self._parse_option_symbol(symbol)
+                    intrinsic = max(0.0, (strike - spot) if kind == "PE" else (spot - strike))
+                    leg_pnl = close_leg(symbol, intrinsic, 0.0, i, day, "expiry")
+                    capital += leg_pnl
+                    spread_pnl += leg_pnl
+                runner._reset_state("expiry")
+                finish_spread("expiry")
+
+            # an open spread is valued on its own expiry; without one the runner is offered the
+            # expiries in the entry window, nearest first, and takes the first its own rules accept
+            # (the nearest weekly is often too thin for its minimum credit)
+            if open_legs:
+                candidates = [position_expiry]
+            else:
+                candidates = [e for e in expiries if self.entry_dte_min <= (e - day).days <= self.entry_dte_max][:3]
+            if not candidates:
+                bars_skipped += 1
+                equity_curve.append(equity_curve[-1])
+                continue
+            hv = float(np.std(np.diff(np.log(closes[max(0, i - 20):i + 1]))) * math.sqrt(252)) if i > 2 else 0.2
+            synth, expiry, signals, entering = None, None, [], False
+            for n, candidate in enumerate(candidates):
+                try:
+                    chain = self._chain_builder.build_chain(
+                        spot=spot, timestamp=datetime.combine(day, datetime.min.time()),
+                        expiry=candidate, hv=hv if hv > 0 else 0.20)
+                except Exception:
+                    chain = None
+                if chain is None or not chain.strikes:
+                    chain_failures += 1
+                    continue
+                chains_built += 1
+                synth, expiry = chain, candidate
+                runner.update_chain(self._convert_synthetic_chain_to_option_chain_data(chain))
+                # what on_bar does, minus the live-order cooldown clock
+                if runner.is_in_trade:
+                    signals = runner._evaluate_exit([])
+                    break
+                if n == 0:
+                    runner._record_iv()            # one IV observation per bar
+                signals = runner._evaluate_entry()
+                if signals:
+                    entering = True
+                    break
+            if synth is None:
+                equity_curve.append(equity_curve[-1])
+                continue
+
+            for n, sig in enumerate(signals):
+                side = sig.transaction_type.value if hasattr(sig.transaction_type, "value") else str(sig.transaction_type)
+                lots = max(1, int(sig.quantity) // lot)
+                price, costs = self._fill(synth, sig.tradingsymbol, side, lots, day)
+                if price <= 0:
+                    price = float(sig.price or 0) or (self._find_option_price_from_chain(synth, sig.tradingsymbol) or 0.0)
+                capital -= costs
+                total_costs += costs
+                spread_pnl -= costs
+                meta = sig.metadata or {}
+                if entering:
+                    open_legs[sig.tradingsymbol] = {"side": side, "qty": int(sig.quantity), "entry": price,
+                                                    "leg": str(meta.get("leg", "leg"))}
+                    record(sig.tradingsymbol, side, int(sig.quantity), price, costs, i, day,
+                           str(meta.get("leg", "leg")), "entry")
+                    runner.notify_order_placed(f"bt-{trade_seq}", sig.tradingsymbol)
+                    runner.notify_order_filled(f"bt-{trade_seq}", price)
+                elif sig.tradingsymbol in open_legs:
+                    leg_pnl = close_leg(sig.tradingsymbol, price, costs, i, day, str(meta.get("reason", "exit")))
+                    capital += leg_pnl
+                    spread_pnl += leg_pnl
+            if entering and open_legs:
+                position_expiry = expiry
+            elif signals and not entering and not open_legs:
+                finish_spread(str((signals[0].metadata or {}).get("reason", "exit")))
+
+            # mark to market at this bar's chain
+            mtm = capital
+            for symbol, leg in open_legs.items():
+                now = self._find_option_price_from_chain(synth, symbol)
+                if now is not None:
+                    mtm += (1 if leg["side"] == "SELL" else -1) * (leg["entry"] - now) * leg["qty"]
+            equity_curve.append(mtm)
+
+        # anything still open at the end of the data closes at the last chain's prices
+        if open_legs:
+            last = len(df) - 1
+            day = self._parse_bar_date(df, last)
+            spot = float(df.iloc[last]["close"])
+            synth = None
+            if position_expiry is not None and position_expiry > day:
+                try:
+                    synth = self._chain_builder.build_chain(spot=spot, timestamp=datetime.combine(day, datetime.min.time()),
+                                                            expiry=position_expiry, hv=0.20)
+                except Exception:
+                    synth = None
+            for symbol in list(open_legs):
+                kind, strike = self._parse_option_symbol(symbol)
+                price = self._find_option_price_from_chain(synth, symbol) if synth else None
+                if price is None:
+                    price = max(0.0, (strike - spot) if kind == "PE" else (spot - strike))
+                leg_pnl = close_leg(symbol, price, 0.0, last, day, "final_exit")
+                capital += leg_pnl
+                spread_pnl += leg_pnl
+            runner._reset_state("final_exit")
+            finish_spread("final_exit")
+            equity_curve[-1] = capital
+
+        metrics = self._compute_metrics(np.array(equity_curve), [], spreads)
+        warnings = self._warnings(metrics.get("total_trades", 0))
+        if chain_failures:
+            warnings.append(f"{chain_failures} bars had no usable option chain and were skipped.")
+        return self._sanitize({
+            "engine": "fno_backtest_strategy_driven",
+            "strategy_name": self.strategy_name,
+            "structure": self.structure_type.value,
+            "underlying": self.underlying,
+            "tradingsymbol": tradingsymbol,
+            "total_bars": len(df),
+            "start_date": str(self._parse_bar_date(df, 0)),
+            "end_date": str(self._parse_bar_date(df, len(df) - 1)),
+            "initial_capital": self.initial_capital,
+            "final_capital": round(capital, 2),
+            "total_return_pct": round((capital - self.initial_capital) / self.initial_capital * 100, 2),
+            "total_return_abs": round(capital - self.initial_capital, 2),
+            "total_costs": round(total_costs, 2),
+            **metrics,
+            "backtest_warnings": warnings,
+            "positions_opened": len(spreads),
+            "positions_closed": len(spreads),
+            "trades": trades[-500:],
+            "spreads": spreads[-200:],
+            "equity_curve": [round(e, 2) for e in equity_curve],
+            "bar_dates": bar_dates[:len(equity_curve)],
+            "data_quality": {
+                "data_source": "synthetic_chain",
+                "total_bars_processed": max(0, len(df) - 21),
+                "chains_built": chains_built,
+                "chain_failures": chain_failures,
+                "bars_without_expiry": bars_skipped,
+            },
+            "strategy_final_state": {k: v for k, v in runner.get_status().items() if k != "params"},
+            "settings": {
+                "max_positions": 1,                    # a runner holds one spread at a time
+                "profit_target_pct": self.profit_target_pct,
+                "stop_loss_pct": self.stop_loss_pct,   # the runner's own premium stop applies (see strategy_final_state)
+                "entry_dte_min": self.entry_dte_min,
+                "entry_dte_max": self.entry_dte_max,
+                "delta_target": self.delta_target,
+                "slippage_model": self.slippage_model,
+                "use_regime_filter": self.use_regime_filter,
+                "lot_size": lot,
+                "strategy_params": self.strategy_params,
+            },
+        })
 
     @staticmethod
     def _sanitize(obj: Any) -> Any:
