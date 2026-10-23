@@ -86,7 +86,30 @@ def swing_trades(con: sqlite3.Connection, today: date) -> list[dict]:
     return out
 
 
+def load_env_file(path: str = os.path.join(ROOT, ".env")) -> None:
+    """Read KEY=VALUE lines from the app's .env into the environment, never
+    overriding what is already set: the service gets .env from systemd, a run
+    from a shell (sudo -u verquo python scripts/...) would otherwise lack the
+    mail settings."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip().removeprefix("export ").strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
 def main() -> None:
+    load_env_file()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", default=os.path.join(ROOT, "data", "market_data.db"))
     ap.add_argument("--out", default=PATH)

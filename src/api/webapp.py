@@ -373,6 +373,11 @@ async def auth_middleware(request: Request, call_next):
     else:
         response = await call_next(request)
 
+    if (path == "/app" or path.startswith("/app/") or request.method not in CSRF_EXEMPT_METHODS) \
+            and response.status_code < 400:
+        uid = otp_auth.get_session_user(request.cookies.get(SESSION_COOKIE, "")) or ""
+        if is_public_demo_id(uid):
+            demo_sessions.interact(uid)       # someone is using the demo, not just a polling tab
     return _apply_security_headers(response, request)
 
 
@@ -468,6 +473,8 @@ async def metrics_events(request: Request) -> Any:
     device = device_of(request.headers.get("user-agent", ""))
     if device == "bot":  # crawlers and scripts: accept, but don't store their clicks
         return {"ok": True}
+    if kind == "demo" and any(isinstance(e, dict) and e.get("event") != "page_leave" for e in events):
+        demo_sessions.interact(user_id)       # clicks / tab switches: the demo is in use
     visitor = getattr(request.state, "visitor_id", "")
     for e in events[:50]:
         if isinstance(e, dict):
@@ -805,7 +812,8 @@ async def demo_start(request: Request) -> Any:
     if demo_sessions.active_for_network(network) >= DEMO_MAX_PER_NETWORK:
         return JSONResponse({"success": False, "message": "You already have demo sessions open. Close one, or try again later."},
                             status_code=429)
-    if not demo_sessions.has_capacity():
+    if not demo_sessions.has_capacity() and not await demo_sessions.make_room():
+        logger.warning("demo_full", active=demo_sessions.active_public())
         return JSONResponse({"success": False, "message": "The demo is busy right now. Please try again in a few minutes."},
                             status_code=503)
     demo_id = new_public_id()

@@ -124,7 +124,10 @@ def test_hourly_bar_timing():
     assert len(completed_hourly(bars, datetime(2026, 10, 22, 12, 20))) == 3       # 09:15, 10:15 and 11:15 (closed 12:15)
 
 
-def test_candidates_come_from_the_scanner_and_shorts_need_futures():
+def test_candidates_come_from_the_scanner_and_shorts_need_futures(monkeypatch):
+    import src.api.swing_trade as st
+
+    monkeypatch.setattr(st, "ALLOW_SHORTS", True)
     flow = {"rows": [{"symbol": s, "universes": ["nifty500"] + (["fno"] if s in ("B", "S1") else []),
                       "bias": "LONG", "score": 50} for s in ("A", "B", "S1", "S2")]}
     scan = {"top_by_trend_score": [{"symbol": "A"}, {"symbol": "B"}], "rs_leaders": [{"symbol": "A"}],
@@ -157,3 +160,12 @@ def test_viewers_see_scanner_picks_and_market_fields_only():
     out = sanitize_swing(snap)
     assert [t["symbol"] for t in out["tracked"]] == ["A"] and [s["symbol"] for s in out["feed"]] == ["A"]
     assert "secret" not in out["feed"][0] and out["stats"]["closed"] == 1
+
+
+def test_board_is_long_only_by_default():
+    import src.api.swing_trade as st
+
+    assert st.ALLOW_SHORTS is False
+    flow = {"rows": [{"symbol": "S1", "universes": ["fno"], "bias": "SHORT", "score": 90}]}
+    assert swing_candidates({"top_by_trend_score": [{"symbol": "X"}], "near_52w_low": [{"symbol": "S1"}]}, flow) == []
+    assert swing_candidates(None, flow) == []

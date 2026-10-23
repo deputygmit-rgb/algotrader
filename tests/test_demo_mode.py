@@ -195,3 +195,52 @@ def test_demo_service_uses_its_own_market_store(tmp_path, monkeypatch):
     svc = TradingService(zerodha_id="DEMO-P-TEST0002", demo=True)
     assert svc.is_demo and svc._market_store is not shared()
     assert "DEMO-P-TEST0002" in svc._market_store._db_path
+
+
+# --- demo slots: a forgotten open tab must not hold one for hours -------------------
+
+def test_a_tab_that_only_polls_is_ended_and_its_session_too(_isolated, monkeypatch):
+    import time as _time
+
+    from src.demo import sessions as sessions_module
+
+    uid = "DEMO-P-IDLE0001"
+    token = webapp.otp_auth.create_demo_session(uid, 7200)
+    demo_sessions.register(uid, "net-a")
+    demo_sessions.touch(uid)
+    now = _time.time()
+    demo_sessions._interacted[uid] = now - sessions_module.INTERACTION_SECONDS - 5    # nobody used it
+    demo_sessions._last_seen[uid] = now                                                 # but the tab polls
+    assert asyncio.run(demo_sessions.reap()) == 1
+    assert webapp.otp_auth.get_session_user(token) is None                              # the cookie is dead too
+
+
+def test_a_full_demo_makes_room_from_the_least_used_session(_isolated, monkeypatch):
+    import time as _time
+
+    from src.demo import sessions as sessions_module
+
+    monkeypatch.setattr(sessions_module, "MAX_PUBLIC", 2)
+    now = _time.time()
+    for uid, quiet in (("DEMO-P-OLD00001", 900), ("DEMO-P-NEW00001", 30)):
+        demo_sessions.register(uid, uid)
+        demo_sessions._interacted[uid] = now - quiet
+    assert asyncio.run(demo_sessions.make_room()) is True
+    assert "DEMO-P-OLD00001" not in demo_sessions._last_seen and "DEMO-P-NEW00001" in demo_sessions._last_seen
+    demo_sessions.register("DEMO-P-NEW00002", "x")                                      # full again, all in use
+    assert asyncio.run(demo_sessions.make_room()) is False
+
+
+def test_page_loads_and_clicks_count_as_use_but_polls_do_not(_isolated):
+    async def go():
+        async with _client() as c:
+            assert (await c.post("/demo/start")).json()["success"] is True
+            (uid,) = list(demo_sessions._last_seen)
+            demo_sessions._interacted[uid] = 0.0
+            await c.get("/api/status")                                                  # a background poll
+            polled = demo_sessions._interacted[uid]
+            await c.post("/metrics/events", json={"events": [{"event": "click", "page": "/app"}]},
+                         headers={"User-Agent": "Mozilla/5.0 Chrome/120"})
+            return polled, demo_sessions._interacted[uid]
+    polled, clicked = asyncio.run(go())
+    assert polled == 0.0 and clicked > 0

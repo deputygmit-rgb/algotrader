@@ -42,6 +42,11 @@ MAX_AUTO_LONG = 16
 MAX_AUTO_SHORT = 6
 MAX_MANUAL = 15
 MAX_OPEN_TRADES = 5
+# Long-only. Replaying the stored 1-hour + daily bars (scripts/swing_efficacy.py),
+# shorts dragged in both halves of the history: longs +0.12R / +0.02R a trade,
+# all signals -0.08R / +0.04R; an overnight short also needs futures. The engine
+# still detects shorts (analyze_swing(allow_short=True)) for when this changes.
+ALLOW_SHORTS = False
 FETCH_CONCURRENCY = 4
 SELECT_EVERY_S = 1800.0
 SESSION_OPEN, SESSION_CLOSE = dtime(9, 15), dtime(15, 30)
@@ -101,7 +106,7 @@ def swing_candidates(scan: Optional[dict[str, Any]], flow: dict[str, Any]) -> li
             if sum(1 for _, side, _ in out if side == "LONG") >= MAX_AUTO_LONG:
                 break
             add(sym, "LONG", why)
-        for s in (scan.get("near_52w_low") or [])[:10]:
+        for s in (scan.get("near_52w_low") or [])[:10] if ALLOW_SHORTS else []:
             if s.get("symbol") in fno and sum(1 for _, side, _ in out if side == "SHORT") < MAX_AUTO_SHORT:
                 add(s["symbol"], "SHORT", "near a 52-week low (futures)")
         return out
@@ -110,7 +115,7 @@ def swing_candidates(scan: Optional[dict[str, Any]], flow: dict[str, Any]) -> li
     for r in ranked:
         if r.get("bias") == "LONG" and sum(1 for _, side, _ in out if side == "LONG") < MAX_AUTO_LONG:
             add(r["symbol"], "LONG", "money-flow long")
-        elif r.get("bias") == "SHORT" and r["symbol"] in fno and sum(1 for _, side, _ in out if side == "SHORT") < MAX_AUTO_SHORT:
+        elif ALLOW_SHORTS and r.get("bias") == "SHORT" and r["symbol"] in fno and                 sum(1 for _, side, _ in out if side == "SHORT") < MAX_AUTO_SHORT:
             add(r["symbol"], "SHORT", "money-flow short (futures)")
     return out
 
@@ -247,7 +252,8 @@ class SwingTracker:
             start_day = days[-WINDOW_SESSIONS] if len(days) >= WINDOW_SESSIONS else (days[0] if days else "")
             start = next((i for i, b in enumerate(hourly or []) if str(b["t"])[:10] >= start_day), 0)
             result = analyze_swing(hourly or [], daily or [], ltp=r.get("ltp"), direction=meta.get("side"),
-                                   allow_short=sym in fno or not rows, min_quality=MIN_QUALITY, start_index=start)
+                                   allow_short=ALLOW_SHORTS and (sym in fno or not rows), min_quality=MIN_QUALITY,
+                                   start_index=start)
             shown_h = (hourly or [])[-HOURLY_SHOWN:]
             offset = len(hourly or []) - len(shown_h)
             last_bar = shown_h[-1]["t"] if shown_h else None
