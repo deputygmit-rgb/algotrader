@@ -58,6 +58,9 @@ class TradingServiceAgent:
         # journals are enough - many public visitors at once must not exhaust the server.
         light = bool(getattr(service, "is_demo", False) or getattr(service, "is_shared_market", False))
         self.light = light
+        # A view-only session never trades or scans (the source account scans once for
+        # everyone): its agents are not started at all - no loops, no activity files.
+        self.view_only = bool(getattr(service, "is_shared_market", False))
         self.scanner = ScannerAgent(zerodha_id, service)
         self.verifier = VerifierAgent(zerodha_id, service, interval_seconds=LIGHT_VERIFIER_S if light else 45)
         self.executor = ExecutorAgent(zerodha_id, service, interval_seconds=LIGHT_EXECUTOR_S if light else 30)
@@ -66,7 +69,8 @@ class TradingServiceAgent:
             if light:
                 agent.activity = AgentActivity(agent=agent.NAME, owner=zerodha_id,
                                                max_events=LIGHT_EVENTS, max_trace=LIGHT_TRACE)
-            agent.activity.enable_persistence(default_log_dir())
+            if not self.view_only:
+                agent.activity.enable_persistence(default_log_dir())
 
     @property
     def agents(self) -> dict[str, Any]:
@@ -74,7 +78,7 @@ class TradingServiceAgent:
                 "executor": self.executor, "tracker": self.tracker}
 
     def start_supervision(self) -> None:
-        if self._heartbeat_task is not None:
+        if self._heartbeat_task is not None or self.view_only:
             return
         try:
             loop = asyncio.get_running_loop()

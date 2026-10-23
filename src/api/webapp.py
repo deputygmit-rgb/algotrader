@@ -188,10 +188,17 @@ def _service_for_session(token: str) -> TradingService:
     if is_public_demo_id(zerodha_id):
         demo_sessions.touch(zerodha_id)
         return mgr.get_service(zerodha_id, demo=True)
-    real = _real_service(zerodha_id)
-    if real.is_authenticated:
-        return real
-    shared = _shared_market_service(zerodha_id, real)
+    user_cfg = UserConfigService.get_instance().get_user(zerodha_id)
+    if user_cfg is not None and user_cfg.access_level == VIEW and not user_cfg.api_key:
+        # a view-only account without a broker app can never link a trading account: it
+        # gets the shared view (or the demo) without a full service of its own being built
+        # first - agents, journal, risk engine and OI recorder only to learn "not linked"
+        shared = _shared_market_service(zerodha_id, user_cfg)
+    else:
+        real = _real_service(zerodha_id)
+        if real.is_authenticated:
+            return real
+        shared = _shared_market_service(zerodha_id, real)
     if shared is not None:
         return shared
     demo_id = user_demo_id(zerodha_id)
@@ -199,7 +206,7 @@ def _service_for_session(token: str) -> TradingService:
     return mgr.get_service(demo_id, demo=True)
 
 
-def _shared_market_service(zerodha_id: str, real: TradingService) -> TradingService | None:
+def _shared_market_service(zerodha_id: str, real: Any) -> TradingService | None:
     """View-only accounts read live market data from the shared source account
     while it is logged in to Zerodha (src/api/shared_market.py)."""
     if real.access_level != VIEW or not SharedMarketHub.get_instance().available_for(zerodha_id):

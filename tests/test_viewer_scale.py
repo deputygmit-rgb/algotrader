@@ -137,3 +137,41 @@ def test_scripts_are_minified_at_startup(tmp_path):
     if not app.minify:
         return
     assert app.warm() == 1 and len(app._cache) == 1
+
+
+def test_a_view_account_without_an_api_key_gets_no_personal_service(monkeypatch):
+    from src.api import webapp
+
+    built = []
+    monkeypatch.setattr(webapp, "_real_service", lambda z: built.append(z) or (_ for _ in ()).throw(AssertionError(z)))
+    monkeypatch.setattr(webapp.UserConfigService, "get_instance", staticmethod(lambda: SimpleNamespace(
+        get_user=lambda z: SimpleNamespace(zerodha_id=z, api_key="", api_secret="", access_level="view"))))
+    shared = SimpleNamespace(uid="VIEW-VW0001")
+    monkeypatch.setattr(webapp, "_shared_market_service", lambda z, cfg: shared)
+    token = webapp.otp_auth._create_session("VW0001")
+    assert webapp._service_for_session(token) is shared and built == []
+
+
+def test_a_view_account_with_an_api_key_still_gets_its_own_service_first(monkeypatch):
+    from src.api import webapp
+
+    real = SimpleNamespace(is_authenticated=True, access_level="view")
+    monkeypatch.setattr(webapp, "_real_service", lambda z: real)
+    monkeypatch.setattr(webapp.UserConfigService, "get_instance", staticmethod(lambda: SimpleNamespace(
+        get_user=lambda z: SimpleNamespace(zerodha_id=z, api_key="k", api_secret="s", access_level="view"))))
+    token = webapp.otp_auth._create_session("SRC001")
+    assert webapp._service_for_session(token) is real
+
+
+def test_view_only_sessions_start_no_agents_and_write_no_activity_files():
+    from src.agent.supervisor import TradingServiceAgent
+
+    async def go():
+        svc = SimpleNamespace(is_shared_market=True, is_demo=False, is_running=False)
+        agent = TradingServiceAgent("VIEW-VW0001", svc)
+        agent.start_supervision()
+        return agent
+    agent = asyncio.run(go())
+    assert agent.view_only and agent._heartbeat_task is None
+    assert all(a._task is None and not a._alive for a in agent.agents.values())
+    assert all(getattr(a.activity, "_log_dir", None) in (None, "") for a in agent.agents.values())
