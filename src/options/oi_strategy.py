@@ -91,6 +91,12 @@ class OIStrategyAction(str, Enum):
     IRON_CONDOR = "IRON_CONDOR"
 
 
+def bias_side(bias: str) -> str:
+    """BULLISH / BEARISH for any bullish or bearish OI bias (mild included), else ""."""
+    b = (bias or "").upper()
+    return "BULLISH" if "BULLISH" in b else "BEARISH" if "BEARISH" in b else ""
+
+
 # ─────────────────────────────────────────────────────────────
 # Models
 # ─────────────────────────────────────────────────────────────
@@ -182,6 +188,8 @@ class OIScanResult(BaseModel):
     bearish_signals: int = 0
     combined_direction: str = ""
     combined_confidence: float = 0.0
+    direction_note: str = ""
+
 
 
 class OIStrategyConfig(BaseModel):
@@ -282,14 +290,37 @@ class OIStrategyEngine:
         # Filter out zero-confidence signals (from price sanity failures etc.)
         signals = [s for s in signals if s.confidence > 0]
 
-        # Compute combined direction
-        bullish = sum(1 for s in signals if s.direction == "BULLISH")
-        bearish = sum(1 for s in signals if s.direction == "BEARISH")
-        total_conf = sum(s.confidence for s in signals) if signals else 0
-        bull_conf = sum(s.confidence for s in signals if s.direction == "BULLISH")
-        bear_conf = sum(s.confidence for s in signals if s.direction == "BEARISH")
+        # One direction for the index: the OI bias (report.bias), the reading the
+        # Options OI tab shows, that is tracked against the market and weights the
+        # setup boards. A signal against it stays listed for reference but is not
+        # auto-traded and cannot form the combined trade.
+        lead = bias_side(report.bias)
+        for s in signals:
+            if lead and s.direction in ("BULLISH", "BEARISH") and s.direction != lead:
+                s.metadata["against_bias"] = True
+                s.reasons.append(f"Against the OI bias ({report.bias}): for reference, not auto-traded")
 
-        if bullish > bearish + 1 and bull_conf > bear_conf:
+        # The vote counts option buys only. Premium-selling signals (put writing,
+        # call writing, IV skew) are range / volatility trades: writing support and
+        # resistance nearly always appear together, and selling a rich put skew is
+        # not a call on direction.
+        directional = [s for s in signals if s.action in (OIStrategyAction.BUY_CE.value, OIStrategyAction.BUY_PE.value)]
+        bullish = sum(1 for s in directional if s.direction == "BULLISH")
+        bearish = sum(1 for s in directional if s.direction == "BEARISH")
+        bull_conf = sum(s.confidence for s in directional if s.direction == "BULLISH")
+        bear_conf = sum(s.confidence for s in directional if s.direction == "BEARISH")
+        vote = ("BULLISH" if bullish > bearish + 1 and bull_conf > bear_conf
+                else "BEARISH" if bearish > bullish + 1 and bear_conf > bull_conf else "NEUTRAL")
+        if lead and vote != lead:
+            note = (f"Option-buy signals lean {vote.lower()}, against the OI bias ({report.bias}): no combined trade"
+                    if vote != "NEUTRAL" else f"OI bias {report.bias}; option-buy signals do not confirm it yet")
+            vote = "NEUTRAL"
+        elif lead:
+            note = f"OI bias {report.bias}, confirmed by {bullish if lead == 'BULLISH' else bearish} option-buy signals"
+        else:
+            note = "OI bias neutral" + (f"; option-buy signals lean {vote.lower()}" if vote != "NEUTRAL" else "")
+
+        if vote == "BULLISH":
             combined_dir = "BULLISH"
             combined_conf = min(90, bull_conf / max(1, bullish))
             # Add combined signal
@@ -298,7 +329,7 @@ class OIStrategyEngine:
             )
             if combined:
                 signals.append(combined)
-        elif bearish > bullish + 1 and bear_conf > bull_conf:
+        elif vote == "BEARISH":
             combined_dir = "BEARISH"
             combined_conf = min(90, bear_conf / max(1, bearish))
             combined = self._create_combined_signal(
@@ -339,6 +370,7 @@ class OIStrategyEngine:
             bearish_signals=bearish,
             combined_direction=combined_dir,
             combined_confidence=round(combined_conf, 1),
+            direction_note=note,
         )
 
         # Cache scan result

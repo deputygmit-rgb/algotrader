@@ -32,7 +32,7 @@ from datetime import date, timedelta
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from src.analysis.efficacy import PATH, WINDOW_DAYS, oi_bias_record, save, summarize  # noqa: E402
+from src.analysis.efficacy import PATH, WINDOW_DAYS, oi_bias_record, save, summarize, window_records  # noqa: E402
 
 DAY_HISTORY_DAYS = WINDOW_DAYS + 45        # warm-up: the setups need 15 earlier sessions
 TRADE_FIELDS = ("quality", "status", "gross_r", "cost_r", "result_r", "mfe_r", "mae_r", "bars_held", "time", "exit_time")
@@ -75,6 +75,23 @@ def day_trades(con: sqlite3.Connection, today: date, names: dict[int, str] | Non
             if s.get("result_r") is not None and s["date"] < today.isoformat():
                 out.append(_trade("day", (names or {}).get(token, str(token)), s, s["date"]))
     return out
+
+
+def board_trades(con: sqlite3.Connection, today: date) -> list[dict]:
+    """Closed live Day Trade board signals (one per stock, setup and bar across accounts),
+    for the entry-window record: unlike the replay they went through the board's money-flow filter."""
+    since = (today - timedelta(days=WINDOW_DAYS)).isoformat()
+    try:
+        rows = con.execute("SELECT session, symbol, setup, side, signal_time, result_r FROM signals "
+                           "WHERE source='board' AND result_r IS NOT NULL AND session >= ? AND session < ?",
+                           (since, today.isoformat())).fetchall()
+    except sqlite3.Error:
+        return []
+    seen: dict[tuple, dict] = {}
+    for session, symbol, setup, side, t, r in rows:
+        seen.setdefault((session, symbol, setup, side, t),
+                        {"date": session, "setup": setup, "side": side, "time": t, "result_r": r})
+    return list(seen.values())
 
 
 def swing_trades(con: sqlite3.Connection, today: date, names: dict[int, str] | None = None) -> list[dict]:
@@ -173,10 +190,11 @@ def main() -> None:
         except sqlite3.Error:
             rows = []
         oi_bias[u] = oi_bias_record(rows)
+    windows = window_records(board_trades(con, today), today)
     con.close()
     records = summarize(trades, today, previous)
     note = f"{len(trades)} trades replayed in {time.time() - started:.0f}s"
-    save(records, today, args.out, note=note, oi_bias=oi_bias)
+    save(records, today, args.out, note=note, oi_bias=oi_bias, windows=windows)
     print(f"efficacy: {len(records)} setup records from {len(trades)} trades in {time.time() - started:.0f}s")
 
     # the full performance report: trades kept for the admin panel, Markdown kept and mailed
@@ -199,7 +217,7 @@ def main() -> None:
         from src.analysis import efficacy_report as report
 
         subject, text, html = report.build(records, previous, today, report.board_today(args.db, today), note,
-                                           oi_bias=oi_bias)
+                                           oi_bias=oi_bias, windows=windows)
         text += "\n\nThe full strategy performance report (per setup, per day, parameters) is attached as Markdown.\n"
         if args.preview:
             print(f"\nSubject: {subject}\n\n{text}\n\n{md}")

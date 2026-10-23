@@ -51,6 +51,16 @@ OI_HORIZON_MIN = 30
 OI_MIN_READINGS = 300          # directional readings before the bias is trusted or dropped
 OI_FULL_EDGE = 0.05            # hit rate this far above chance earns the full weight
 OI_UNPROVEN_FACTOR = 0.5       # until then: half weight
+# Entry window: the live Day Trade board's own record per setup, side and window
+# (signal up to EARLY_UNTIL, or later), from its closed trades - which, unlike the
+# replay, went through the board's money-flow filter. Shrunk harder than the
+# setup record (a few trend days must not make a window "proven") and worth at
+# most WINDOW_MAX_POINTS either way.
+EARLY_UNTIL = "10:30"
+WINDOW_PRIOR_TRADES = 40
+WINDOW_MAX_POINTS = 5
+WINDOW_R_TO_POINTS = 12        # +0.42R shrunk expectancy -> the full +5
+WINDOW_LABEL = {"early": f"to {EARLY_UNTIL}", "late": f"after {EARLY_UNTIL}"}
 
 
 def _key(kind: str, setup: str, side: str) -> str:
@@ -91,6 +101,37 @@ def summarize(trades: list[dict[str, Any]], as_of: date, previous: Optional[dict
     return out
 
 
+def entry_window(hhmm: Any) -> str:
+    """"early" for a signal at or before EARLY_UNTIL (its bar's close, HH:MM), else "late"."""
+    return "early" if str(hhmm or "")[:5] <= EARLY_UNTIL else "late"
+
+
+def window_records(trades: list[dict[str, Any]], as_of: date, kind: str = "day") -> dict[str, dict[str, Any]]:
+    """Record per (setup, side, entry window) from closed live board trades
+    ({setup, side, time, date, result_r}); only trades dated before ``as_of``."""
+    since = (as_of - timedelta(days=WINDOW_DAYS)).isoformat()
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for t in trades:
+        if t.get("result_r") is None or not t.get("time") or not (since <= str(t["date"]) < as_of.isoformat()):
+            continue
+        groups.setdefault(f"{_key(kind, t['setup'], t['side'])}|{entry_window(t['time'])}", []).append(t)
+    out: dict[str, dict[str, Any]] = {}
+    for key, ts in groups.items():
+        ts = sorted(ts, key=lambda t: (str(t["date"]), str(t["time"])))[-WINDOW_TRADES:]
+        rs = [float(t["result_r"]) for t in ts]
+        n = len(rs)
+        shrunk = sum(rs) / (n + WINDOW_PRIOR_TRADES)
+        _, setup, side, window = key.split("|")
+        out[key] = {
+            "kind": kind, "setup": setup, "side": side, "window": window, "n": n,
+            "avg_r": round(sum(rs) / n, 3), "shrunk_r": round(shrunk, 3),
+            "win_rate": round(sum(r > 0 for r in rs) / n * 100),
+            "adj": max(-WINDOW_MAX_POINTS, min(WINDOW_MAX_POINTS, int(round(shrunk * WINDOW_R_TO_POINTS)))),
+            "since": str(ts[0]["date"]), "until": str(ts[-1]["date"]),
+        }
+    return out
+
+
 def oi_bias_record(rows: list[tuple[str, str, float]], horizon_min: int = OI_HORIZON_MIN) -> dict[str, Any]:
     """Track record of the per-minute OI bias: ``rows`` are (ts, bias, spot) in time order."""
     from datetime import datetime as _dt
@@ -124,11 +165,12 @@ def oi_bias_record(rows: list[tuple[str, str, float]], horizon_min: int = OI_HOR
 
 
 def save(records: dict[str, dict[str, Any]], as_of: date, path: str = PATH, note: str = "",
-         oi_bias: Optional[dict[str, Any]] = None) -> None:
+         oi_bias: Optional[dict[str, Any]] = None, windows: Optional[dict[str, Any]] = None) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"as_of": as_of.isoformat(), "note": note, "records": records, "oi_bias": oi_bias or {}}, f, indent=1)
+        json.dump({"as_of": as_of.isoformat(), "note": note, "records": records, "oi_bias": oi_bias or {},
+                   "windows": windows or {}}, f, indent=1)
     os.replace(tmp, path)
 
 
@@ -140,6 +182,7 @@ class Efficacy:
         self.as_of: Optional[str] = None
         self.records: dict[str, dict[str, Any]] = {}
         self.oi_bias: dict[str, Any] = {}
+        self.windows: dict[str, dict[str, Any]] = {}
         self._mtime = 0.0
         self._checked = 0.0
 
@@ -159,6 +202,7 @@ class Efficacy:
                 data = json.load(f)
             self.records, self.as_of, self._mtime = dict(data.get("records") or {}), data.get("as_of"), mtime
             self.oi_bias = dict(data.get("oi_bias") or {})
+            self.windows = dict(data.get("windows") or {})
         except (OSError, ValueError):
             pass
 
@@ -166,21 +210,39 @@ class Efficacy:
         self._refresh()
         return self.records.get(_key(kind, setup, side))
 
+    def window_lookup(self, kind: str, setup: str, side: str, hhmm: Any) -> Optional[dict[str, Any]]:
+        self._refresh()
+        return self.windows.get(f"{_key(kind, setup, side)}|{entry_window(hhmm)}")
+
     def verdict(self, kind: str, signal: dict[str, Any], min_quality: float) -> dict[str, Any]:
-        """{n, avg_r, shrunk_r, adj, status, quality, skip} for one signal."""
+        """{n, avg_r, shrunk_r, adj, status, quality, skip, window...} for one signal:
+        the setup's record plus, on the Day Trade board, its entry window's record."""
         rec = self.lookup(kind, signal["setup"], signal["side"])
         base = int(signal.get("quality") or 0)
+        win = self.window_lookup(kind, signal["setup"], signal["side"], signal.get("time")) if kind == "day" else None
+        window = {
+            "window": entry_window(signal.get("time")) if kind == "day" else None,
+            "window_adj": win["adj"] if win else 0,
+            "window_n": win["n"] if win else 0,
+            "window_avg_r": win["avg_r"] if win else None,
+        }
+        adj = rec["adj"] if rec else 0
+        quality = max(0, min(100, base + adj + window["window_adj"]))
+        skip = None
+        if rec and rec["status"] == "suspended":
+            skip = f"setup suspended: {rec['avg_r']:+.2f}R a trade over its last {rec['n']}"
+        elif quality < min_quality and (adj < 0 or window["window_adj"] < 0):
+            why = []
+            if adj < 0:
+                why.append(f"{rec['avg_r']:+.2f}R a trade over its last {rec['n']}")
+            if window["window_adj"] < 0:
+                why.append(f"{win['avg_r']:+.2f}R {WINDOW_LABEL[window['window']]} over {win['n']}")
+            skip = f"weak lately: {' and '.join(why)} takes quality to {quality}"
         if not rec:
             return {"n": 0, "avg_r": None, "shrunk_r": None, "adj": 0, "status": "no record",
-                    "quality": base, "skip": None, "as_of": self.as_of}
-        quality = max(0, min(100, base + rec["adj"]))
-        skip = None
-        if rec["status"] == "suspended":
-            skip = f"setup suspended: {rec['avg_r']:+.2f}R a trade over its last {rec['n']}"
-        elif quality < min_quality:
-            skip = f"weak lately: {rec['avg_r']:+.2f}R a trade over its last {rec['n']} takes quality to {quality}"
+                    "quality": quality, "skip": skip, "as_of": self.as_of, **window}
         return {"n": rec["n"], "avg_r": rec["avg_r"], "shrunk_r": rec["shrunk_r"], "adj": rec["adj"],
-                "status": rec["status"], "quality": quality, "skip": skip, "as_of": self.as_of}
+                "status": rec["status"], "quality": quality, "skip": skip, "as_of": self.as_of, **window}
 
     def oi_weight(self, underlying: str = "NIFTY") -> float:
         """Quality points a full BULLISH / BEARISH agreement is worth now, by the bias's record."""
@@ -194,6 +256,11 @@ class Efficacy:
         self._refresh()
         rows = [r for r in self.records.values() if r["kind"] == kind]
         return sorted(rows, key=lambda r: (r["setup"], r["side"]))
+
+    def window_summary(self, kind: str = "day") -> list[dict[str, Any]]:
+        self._refresh()
+        rows = [r for r in self.windows.values() if r["kind"] == kind]
+        return sorted(rows, key=lambda r: (r["setup"], r["side"], r["window"]))
 
 
 _EFFICACY: Optional[Efficacy] = None
@@ -215,7 +282,7 @@ def apply_efficacy(kind: str, feed: list[dict[str, Any]], frozen: dict[str, dict
         if v is None:
             v = frozen[s["id"]] = eff.verdict(kind, s, min_quality)
         s["efficacy"] = v
-        if v["adj"]:
+        if v["quality"] != int(s.get("quality") or 0):
             s["base_quality_board"] = s["quality"]
             s["quality"] = v["quality"]
         if v["skip"] and not s.get("skipped"):

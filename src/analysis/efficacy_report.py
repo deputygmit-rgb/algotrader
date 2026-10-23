@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from datetime import date
 from typing import Any, Optional
 
-from src.analysis.efficacy import MAX_BONUS, MAX_PENALTY, MIN_TRADES, RESUME_ABOVE, SUSPEND_BELOW, WINDOW_DAYS, WINDOW_TRADES
+from src.analysis.efficacy import MAX_BONUS, MAX_PENALTY, MIN_TRADES, RESUME_ABOVE, SUSPEND_BELOW, WINDOW_DAYS, WINDOW_MAX_POINTS, WINDOW_TRADES
 
 BOARD = {"day": "DAY TRADE (5-minute setups)", "swing": "SWING (1-hour setups, daily context)"}
 
@@ -85,9 +85,18 @@ def oi_lines(oi_bias: Optional[dict[str, Any]]) -> list[str]:
     return out
 
 
+def window_lines(windows: Optional[dict[str, Any]]) -> list[str]:
+    from src.analysis.efficacy import WINDOW_LABEL
+
+    rows = sorted((windows or {}).values(), key=lambda r: (r["setup"], r["side"], r["window"]))
+    return [f"  {r['setup']} {r['side']} {WINDOW_LABEL.get(r['window'], r['window'])}: {r['avg_r']:+.2f}R a trade "
+            f"over {r['n']} ({r['win_rate']}% won), quality {r['adj']:+d}" for r in rows]
+
+
 def build(records: dict[str, dict[str, Any]], previous: dict[str, dict[str, Any]], today: date,
           board: dict[str, dict[str, Any]], note: str = "",
-          oi_bias: Optional[dict[str, Any]] = None) -> tuple[str, str, str]:
+          oi_bias: Optional[dict[str, Any]] = None,
+          windows: Optional[dict[str, Any]] = None) -> tuple[str, str, str]:
     """(subject, text, html) of the review."""
     by_kind: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in records.values():
@@ -122,6 +131,8 @@ def build(records: dict[str, dict[str, Any]], previous: dict[str, dict[str, Any]
         lines += ["  " + "  ".join(c.ljust(w) for c, w in zip(row, widths)) for row in table] + [""]
     lines += ["INDEX OPTIONS-OI BIAS (moves Day Trade quality by up to the weight shown)"] + (
         oi_lines(oi_bias) or ["  no record yet"]) + [""]
+    lines += [f"ENTRY WINDOW (live Day Trade board trades; moves quality by up to {WINDOW_MAX_POINTS} points)"] + (
+        window_lines(windows) or ["  no closed live board trades yet"]) + [""]
     lines.append("TODAY ON THE DAY TRADE BOARDS (live signals, replays excluded)")
     if board:
         for account, a in sorted(board.items()):
@@ -163,6 +174,9 @@ def build(records: dict[str, dict[str, Any]], previous: dict[str, dict[str, Any]
         for acc, a in sorted(board.items())) or "<li>No live board signals today.</li>"
     parts.append("<h3 style='font-family:sans-serif'>Index options-OI bias</h3><ul>"
                  + "".join(f"<li>{e(x.strip())}</li>" for x in oi_lines(oi_bias)) + "</ul>")
+    parts.append("<h3 style='font-family:sans-serif'>Entry window (live Day Trade board trades)</h3><ul>"
+                 + ("".join(f"<li>{e(x.strip())}</li>" for x in window_lines(windows))
+                    or "<li>No closed live board trades yet.</li>") + "</ul>")
     parts.append(f"<h3 style='font-family:sans-serif'>Today on the Day Trade boards</h3><ul>{board_items}</ul>")
     parts.append(f"<p style='font:12px sans-serif;color:#555'>{e(rules)} The record replays the stored bars through "
                  f"the same rules the boards use; past results do not promise future ones.{(' ' + e(note)) if note else ''}</p>")

@@ -110,6 +110,8 @@ class DayTradeTracker:
         self._lock = asyncio.Lock()
         # index OI bias at a bar close (market_regime.MarketBiasHistory.at); None = not used
         self.market_bias: Callable[[str], Any] | None = None
+        # SENSEX OI bias at a bar close: recorded for the shadow score only
+        self.sensex_bias: Callable[[str], Any] | None = None
 
     # ── persistence ─────────────────────────────────────────────────
     def to_state(self) -> dict[str, Any]:
@@ -224,6 +226,16 @@ class DayTradeTracker:
             await asyncio.gather(*(load(s) for s in due))
             return len(due)
 
+    def _shadow(self, s: dict[str, Any]) -> dict[str, Any]:
+        from src.analysis.market_regime import shadow_quality
+
+        bar_close = f"{str(s['bar_time'])[:10]}T{s['time']}"
+        sensex = self.sensex_bias(bar_close) if self.sensex_bias else None
+        eff = get_efficacy()
+        return {"sensex_bias": sensex, **shadow_quality(
+            1 if s["side"] == "LONG" else -1, s.get("base_quality"), s.get("market_bias"), sensex,
+            eff.oi_weight("NIFTY"), eff.oi_weight("SENSEX"))}
+
     def pending(self) -> int:
         return sum(1 for s in self._tracked if s not in self._bars)
 
@@ -274,6 +286,8 @@ class DayTradeTracker:
                     "market_oi_bias": flow.get("market_oi"),
                     "base_quality": s.get("base_quality"), "market_bias": s.get("market_bias"),
                     "market_adj": s.get("market_adj"),
+                    # recorded, not used: bars scaled to 75 + OI points only when NIFTY and SENSEX agree
+                    **self._shadow(s),
                 }
                 s["is_latest_bar"] = bool(last_bar) and s["bar_time"] == last_bar["t"]
                 s["bar_close"] = last_bar["c"] if last_bar else None

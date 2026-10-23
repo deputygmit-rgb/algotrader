@@ -109,6 +109,11 @@
             : m.source === 'backup' ? 'live from the BACKUP source (account not linked today) · no tick stream'
             : m.available ? (m.feed_connected ? 'live · feed connected' : 'live · feed idle') : 'waiting for the account to link today';
         $('adm-feed-state').className = m.available ? 'positive' : 'adm-muted';
+        // OI + flow history: recorded every session by the market-data account (src/api/market_recorder.py)
+        const r = m.recorder || {};
+        if (r.status) {
+            $('adm-feed-state').textContent += ` · history: ${r.status}${r.checked_at ? ` (${r.checked_at.slice(11, 16)})` : ''}`;
+        }
     }
 
     function renderBackup() {

@@ -149,8 +149,9 @@ const DayTrade = (() => {
     function effRows(s) {
         const e = s.efficacy;
         if (!e) return '';
-        if (!e.n) return '<dt>Track record</dt><dd class="mf-dim">none yet for this setup</dd>';
-        return `<dt>Track record</dt><dd class="${e.status === 'suspended' ? 'mf-rt' : e.avg_r >= 0 ? 'mf-gt' : ''}">${e.avg_r >= 0 ? '+' : ''}${Number(e.avg_r).toFixed(2)}R · last ${e.n}${e.status === 'suspended' ? ' · SUSPENDED' : ''}</dd>
+        const win = e.window_n ? `<dt class="dt-fi-sub">entry ${e.window === 'early' ? 'to 10:30' : 'after 10:30'}</dt><dd class="${e.window_avg_r >= 0 ? 'mf-gt' : ''}">${e.window_avg_r >= 0 ? '+' : ''}${Number(e.window_avg_r).toFixed(2)}R · ${e.window_n} live · quality ${e.window_adj > 0 ? '+' : ''}${e.window_adj}</dd>` : '';
+        if (!e.n) return '<dt>Track record</dt><dd class="mf-dim">none yet for this setup</dd>' + win;
+        return win + `<dt>Track record</dt><dd class="${e.status === 'suspended' ? 'mf-rt' : e.avg_r >= 0 ? 'mf-gt' : ''}">${e.avg_r >= 0 ? '+' : ''}${Number(e.avg_r).toFixed(2)}R · last ${e.n}${e.status === 'suspended' ? ' · SUSPENDED' : ''}</dd>
                 <dt class="dt-fi-sub">quality adjustment</dt><dd>${e.adj > 0 ? '+' : ''}${e.adj}${s.base_quality_board != null ? ` <span class="mf-dim">(${s.base_quality_board} → ${s.quality})</span>` : ''}</dd>`;
     }
 

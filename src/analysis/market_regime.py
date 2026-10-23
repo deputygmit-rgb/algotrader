@@ -33,6 +33,24 @@ BIAS_SCORE = {"BULLISH": 1.0, "MILDLY BULLISH": 0.5, "NEUTRAL": 0.0, "MILDLY BEA
 BiasAt = Callable[[str], Optional[str]]   # "YYYY-MM-DDTHH:MM" (bar close) -> bias label or None
 
 
+# Shadow score: recorded next to each Day Trade signal, never used to take or skip one.
+# The bar-based quality is scaled into 0..SHADOW_BAR_SCALE (it reaches 100 on most
+# with-trend breakouts, so the current OI points vanish into the 100 cap), and the
+# OI points count only when NIFTY and SENSEX agree. Compared against outcomes with
+# scripts/shadow_score_report.py before it replaces anything.
+SHADOW_BAR_SCALE = 75
+
+
+def shadow_quality(side: int, base_quality: Optional[float], nifty: Optional[str], sensex: Optional[str],
+                   nifty_weight: float = MARKET_WEIGHT, sensex_weight: float = MARKET_WEIGHT) -> dict[str, Any]:
+    """{shadow_quality, shadow_oi_adj} for a signal on ``side`` (+1 / -1)."""
+    n = side * BIAS_SCORE.get((nifty or "").upper(), 0.0)
+    s = side * BIAS_SCORE.get((sensex or "").upper(), 0.0)
+    oi = (nifty_weight * n + sensex_weight * s) / 2 if n * s > 0 else 0.0   # both with, or both against
+    bars = float(base_quality or 0) * SHADOW_BAR_SCALE / 100
+    return {"shadow_quality": int(round(max(0.0, min(100.0, bars + oi)))), "shadow_oi_adj": round(oi, 1)}
+
+
 def market_adjustment(side: int, bias: Optional[str], weight: float = MARKET_WEIGHT) -> int:
     """Quality points for a signal on ``side`` (+1 long / -1 short) given the market bias."""
     return int(round(weight * side * BIAS_SCORE.get((bias or "").upper(), 0.0)))

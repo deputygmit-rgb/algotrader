@@ -40,6 +40,7 @@ from src.api import site_facts
 from src.api.request_limiter import api_limiter
 from src.utils.memory import run_hygiene
 from src.analysis.efficacy import run_rebuilder
+from src.api.market_recorder import run_market_recorder
 from src.api.response_cache import shared_json
 from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth, rate_limit_subject
@@ -87,9 +88,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     hygiene = asyncio.create_task(run_hygiene())        # gc + return freed memory to the OS
     efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
     resume = asyncio.create_task(_resume_accounts())    # trading picks up again after a restart
+    recorder = asyncio.create_task(run_market_recorder())   # OI + flow history all session, visitor or not
     try:
         yield
     finally:
+        recorder.cancel()
         resume.cancel()
         reaper.cancel()
         viewer_reaper.cancel()

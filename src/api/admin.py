@@ -235,6 +235,7 @@ async def admin_overview(request: Request) -> dict[str, Any]:
             "available": hub.available,
             "feed_connected": hub.feed_connected,
             "source": hub.source_kind(),          # "primary", "backup" (no broker login today) or None
+            "recorder": _recorder_status(),         # OI + flow history recording (src/api/market_recorder.py)
             "candidates": [u["zerodha_id"] for u in users if u["has_api_key"]],
         },
         "backup_quotes": {**_backup().status(), "mode": _source_mode(),
@@ -362,6 +363,12 @@ async def admin_set_market_data(request: Request) -> dict[str, Any]:
     await hub.set_account(raw)
     _audit(request, admin, "market_data_account_changed", raw or "(off)", previous=previous or "(off)")
     return {"success": True}
+
+
+def _recorder_status() -> dict[str, Any]:
+    from src.api.market_recorder import status
+
+    return status()
 
 
 # ── backup market data (src/api/backup_quotes.py) ──────────────────────────

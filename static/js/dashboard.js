@@ -1200,7 +1200,8 @@ async function runOIStrategyScanBoth() {
         st.textContent = `Both scanned — NIFTY: ${nSigs}, SENSEX: ${sSigs} signals`;
         // Merge signals for display
         const allSignals = [...(d.nifty?.signals||[]), ...(d.sensex?.signals||[])];
-        const merged = {signals: allSignals, scan_time: new Date().toISOString()};
+        const merged = {signals: allSignals, scan_time: new Date().toISOString(),
+                        bias: d.nifty?.bias, direction_note: d.nifty?.direction_note ? 'NIFTY: ' + d.nifty.direction_note : ''};
         _oiStratLastScan = merged;
         renderOIStrategyScanResult(merged, 'BOTH');
         // Show summary cards from last response
@@ -1212,13 +1213,15 @@ async function runOIStrategyScanBoth() {
 function renderOIStrategyScanResult(data, index) {
     // Update summary cards
     const signals = data.signals || [];
-    const bullish = signals.filter(s => s.direction === 'BULLISH').length;
-    const bearish = signals.filter(s => s.direction === 'BEARISH').length;
-    const dir = bullish > bearish ? 'BULLISH' : bearish > bullish ? 'BEARISH' : 'NEUTRAL';
+    // the index direction is the OI bias (same as the Options OI tab); the note says
+    // whether the option-buy signals confirm it
+    const dir = data.bias || '--';
     const dirEl = document.getElementById('oi-strat-direction');
     dirEl.textContent = dir;
-    dirEl.style.color = dir === 'BULLISH' ? 'var(--success)' : dir === 'BEARISH' ? 'var(--danger)' : 'var(--text-muted)';
-    
+    dirEl.style.color = biasColor(dir);
+    const noteEl = document.getElementById('oi-strat-direction-note');
+    if (noteEl) noteEl.textContent = data.direction_note || 'OI bias';
+
     const avgConf = signals.length > 0 ? (signals.reduce((a,s) => a + (s.confidence||0), 0) / signals.length).toFixed(0) + '%' : '--';
     document.getElementById('oi-strat-confidence').textContent = avgConf;
     document.getElementById('oi-strat-signal-count').textContent = signals.length;
@@ -1236,7 +1239,7 @@ function renderOIStrategyScanResult(data, index) {
     }
     tbody.innerHTML = signals.map(s => {
         const dirColor = s.direction === 'BULLISH' ? 'var(--success)' : s.direction === 'BEARISH' ? 'var(--danger)' : 'var(--text-muted)';
-        const confPct = (s.confidence||0).toFixed(0) + '%';
+        const confPct = (s.confidence||0).toFixed(0) + '%' + (s.metadata && s.metadata.against_bias ? ' · vs bias' : '');
         const typeLabel = (s.signal_type||'').replace(/_/g,' ');
         return `<tr>
             <td>${s.underlying||index}</td>

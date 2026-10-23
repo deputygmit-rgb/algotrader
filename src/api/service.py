@@ -273,6 +273,8 @@ class TradingService:
         self._fno_history = FlowHistory()
         self._day_trade = DayTradeTracker(self._fetch_day_bars)
         self._day_trade.market_bias = self._market_bias.at
+        self._sensex_bias = MarketBiasHistory(self._market_store, "SENSEX")   # shadow score only
+        self._day_trade.sensex_bias = self._sensex_bias.at
         self._day_trade_task: Optional[asyncio.Task] = None
         self._day_trade_last_request = 0.0
         self._flow_snapshot_at = ""     # bar close of the last stored flow snapshot
@@ -798,7 +800,7 @@ class TradingService:
             # Auto-execute if configured
             if self._oi_strategy.config.auto_execute and result.signals:
                 for sig in result.signals:
-                    if sig.confidence >= 65:
+                    if sig.confidence >= 65 and not sig.metadata.get("against_bias"):
                         pos = self._oi_strategy.create_position_from_signal(sig)
                         # Record in journal
                         self._record_oi_journal_entry(pos, "ENTRY")
