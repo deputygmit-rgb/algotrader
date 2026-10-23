@@ -35,7 +35,10 @@ class Broker:
         if self.place_fails:
             raise RuntimeError("Price should be a multiple of tick size")
         self.placed.append(order)
-        return f"O{len(self.placed)}"
+        oid = f"O{len(self.placed)}"
+        if order.order_type == OrderType.MARKET:       # a market order fills at once
+            self.states.setdefault(oid, {"status": "COMPLETE", "filled": order.quantity, "price": 1488.0})
+        return oid
 
     async def cancel_order(self, order_id, variety=None):
         self.cancelled.append(order_id)

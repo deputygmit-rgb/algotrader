@@ -199,6 +199,7 @@ async def admin_page(request: Request) -> HTMLResponse:
         "css_version": web._static_version("css/dashboard.css"),
         "terminal_css_version": web._static_version("css/terminal.css"),
         "admin_js_version": web._static_version("js/admin.js"),
+        "admin_perf_js_version": web._static_version("js/admin_performance.js"),
         "secure_fetch_js_version": web._static_version("js/secure_fetch.js"),
     })
 
@@ -459,3 +460,102 @@ async def admin_contact_status(contact_id: int, request: Request) -> Any:
         return JSONResponse({"detail": "No such request."}, status_code=404)
     _audit(request, admin, "contact_status_changed", str(contact_id), status=status)
     return {"success": True}
+
+
+# ── strategy performance (src/analysis/performance_report.py) ───────────────
+PERFORMANCE_WINDOWS = (30, 60, 90, 120)
+_REPORT_FILE = re.compile(r"^performance-\d{4}-\d{2}-\d{2}\.md$")
+
+
+def _window(days: int) -> int:
+    if days not in PERFORMANCE_WINDOWS:
+        raise HTTPException(400, f"days must be one of {', '.join(map(str, PERFORMANCE_WINDOWS))}")
+    return days
+
+
+async def _performance(days: int) -> dict[str, Any]:
+    import asyncio
+
+    from src.analysis import performance_report as perf
+
+    report = await asyncio.to_thread(perf.report_for, days)
+    report["findings"] = perf.findings(report)
+    report["windows"] = list(PERFORMANCE_WINDOWS)
+    return report
+
+
+@router.get("/api/admin/performance")
+async def admin_performance(request: Request, days: int = 60) -> dict[str, Any]:
+    """Day Trade and Swing setups: per setup / side, per day, live board, parameters."""
+    require_admin(request)
+    return await _performance(_window(days))
+
+
+@router.get("/api/admin/performance.md")
+async def admin_performance_markdown(request: Request, days: int = 60) -> Any:
+    """The same report as a Markdown download."""
+    from fastapi.responses import Response
+
+    from src.analysis import performance_report as perf
+
+    admin = require_admin(request)
+    report = await _performance(_window(days))
+    _audit(request, admin, "performance_report_downloaded", f"{days} days")
+    return Response(perf.markdown(report), media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="verquoai-performance-{report["today"]}-{days}d.md"',
+        "Cache-Control": "no-store"})
+
+
+@router.post("/api/admin/performance/email")
+async def admin_performance_email(request: Request) -> dict[str, Any]:
+    """Email the report (Markdown attached) to the signed-in admin's own address."""
+    import asyncio
+
+    from src.analysis import performance_report as perf
+    from src.utils.mailer import send_mail
+
+    admin = _require_write(request)
+    days = _window(int((await _json(request)).get("days") or 60))
+    user = _users().get_user(admin)
+    if not user or not user.email:
+        raise HTTPException(400, "Your account has no email address.")
+    report = await _performance(days)
+    md = perf.markdown(report)
+    text = (f"VerquoAI strategy performance, last {days} days to {report['today']}.\n\n"
+            + "\n".join(f"- {f}" for f in report["findings"]) + "\n\nThe full report is attached as Markdown.\n")
+    sent = await asyncio.to_thread(send_mail, user.email, f"VerquoAI strategy performance — {report['today']} ({days} days)",
+                                   text, None, None, [(f"verquoai-performance-{report['today']}-{days}d.md", md, "markdown")])
+    _audit(request, admin, "performance_report_emailed", f"{days} days", sent=sent)
+    if not sent:
+        raise HTTPException(502, "The email could not be sent (check the SMTP settings).")
+    return {"success": True, "to": user.email}
+
+
+@router.get("/api/admin/performance/archive")
+async def admin_performance_archive(request: Request) -> dict[str, Any]:
+    """The nightly reports kept on the server (newest first)."""
+    from src.analysis import performance_report as perf
+
+    require_admin(request)
+    try:
+        names = sorted((n for n in os.listdir(perf.REPORT_DIR) if _REPORT_FILE.match(n)), reverse=True)
+    except OSError:
+        names = []
+    return {"reports": [{"name": n, "date": n[12:22]} for n in names]}
+
+
+@router.get("/api/admin/performance/archive/{name}")
+async def admin_performance_archive_file(name: str, request: Request) -> Any:
+    from fastapi.responses import FileResponse
+
+    from src.analysis import performance_report as perf
+
+    admin = require_admin(request)
+    if not _REPORT_FILE.match(name):
+        raise HTTPException(404, "Not Found")
+    path = os.path.join(perf.REPORT_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Not Found")
+    _audit(request, admin, "performance_report_downloaded", name)
+    return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=name,
+                        headers={"Cache-Control": "no-store"})

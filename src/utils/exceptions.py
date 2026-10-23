@@ -48,6 +48,11 @@ class NetworkError(KiteError):
         super().__init__(message, ErrorCategory.NETWORK, status_code)
 
 
+class OrderUncertainError(NetworkError):
+    """The broker's reply to an order request was lost: the order may or may not
+    exist. Never retried blindly - the caller looks the order up by its tag."""
+
+
 class RateLimitError(KiteError):
     def __init__(self, message: str = "Rate limit exceeded") -> None:
         super().__init__(message, ErrorCategory.RATE_LIMIT, 429)

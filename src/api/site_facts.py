@@ -73,7 +73,7 @@ def json_ld() -> str:
     graph: list[dict[str, Any]] = [
         {
             "@type": "Organization", "@id": org_id, "name": SITE_NAME, "url": f"{url}/",
-            "logo": f"{url}/static/favicon.svg", "description": ABOUT, "areaServed": "IN",
+            "logo": f"{url}/static/img/apple-touch-icon.png", "description": ABOUT, "areaServed": "IN",
             "knowsAbout": ["Indian stock market", "NSE", "BSE", "trading terminal", "options open interest",
                            "backtesting", "algorithmic trading software"],
         },

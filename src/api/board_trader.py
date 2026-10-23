@@ -101,7 +101,38 @@ class BoardTrader:
                         tracker_state = json.load(f).get("tracker", {})
                 except (OSError, ValueError):
                     tracker_state = {}
+        # decisions are also written the moment they are taken (before an order goes out):
+        # newer than the board file after a crash
+        orders_path = self._path(f"orders-{now.date().isoformat()}.json")
+        if orders_path and os.path.exists(orders_path):
+            try:
+                with open(orders_path, encoding="utf-8") as f:
+                    self._session = now.date().isoformat()        # today's decisions: not rolled away
+                    for sid, rec in json.load(f).items():
+                        if rec.get("decision") == "sending":
+                            rec = {**rec, "decision": "unknown", "reason": "the app restarted while this order was "
+                                   "being sent; the execution engine finds it by its tag if the broker has it"}
+                        self._orders[sid] = rec
+            except (OSError, ValueError) as e:
+                logger.warning("board_orders_unreadable", error=str(e))
         return tracker_state
+
+    def _flush_orders(self, now: datetime) -> None:
+        """Today's decisions to disk at once (atomic replace): a decision is durable before
+        its order is sent, so a crash and restart can never send the same signal again."""
+        path = self._path(f"orders-{now.date().isoformat()}.json")
+        if not path:
+            return
+        try:
+            os.makedirs(self._dir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._orders, f, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.error("board_orders_save_failed", error=str(e))
 
     def _latest_board_file(self) -> Optional[str]:
         if not self._dir or not os.path.isdir(self._dir):
@@ -297,12 +328,16 @@ class BoardTrader:
             if not qty:
                 self._decide(s, "skipped", now, reason=why)
                 continue
+            # write-ahead: the signal is marked before its order goes out
+            self._decide(s, "sending", now, quantity=qty)
+            self._flush_orders(now)
             try:
                 outcome = await send(s, qty, self)
             except Exception as e:   # the send path must never break the board loop
                 outcome = {"decision": "failed", "reason": str(e)}
             self._decide(s, outcome.get("decision", "failed"), now, quantity=qty,
                          **{k: v for k, v in outcome.items() if k != "decision"})
+            self._flush_orders(now)
 
     def annotate(self, snap: dict[str, Any]) -> dict[str, Any]:
         """Attach auto-trade settings and per-signal decisions for the UI."""

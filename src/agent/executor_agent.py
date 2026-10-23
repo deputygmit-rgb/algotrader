@@ -36,6 +36,7 @@ logger = get_logger(__name__)
 
 DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS = 30
 STALE_TICK_SECONDS = 60
+RECONNECT_COOLDOWN_SECONDS = 180   # a silent feed is reconnected at most this often
 
 
 class ExecutorAgent(BaseAgent):
@@ -215,6 +216,23 @@ class ExecutorAgent(BaseAgent):
         self.activity.record("finding" if not healthy else "info", msg, level)
         self.feed_status = status
 
+    async def _reconnect_silent_feed(self) -> None:
+        """Remedy, not just report: a feed that is connected but silent in market hours
+        is dropped and reopened (the service then refills the bars it missed)."""
+        now = time.time()
+        if now - self.__dict__.get("_last_reconnect_at", 0.0) < RECONNECT_COOLDOWN_SECONDS:
+            return
+        reconnect = getattr(self.service, "reconnect_feed", None)
+        if reconnect is None:
+            return
+        self._last_reconnect_at = now
+        try:
+            if await reconnect():
+                self.activity.record("action", "Feed silent in market hours: forced a reconnect", "warning")
+                logger.warning("executor_agent_forced_reconnect", zerodha_id=self.zerodha_id)
+        except Exception as e:
+            logger.error("executor_agent_reconnect_failed", zerodha_id=self.zerodha_id, error=str(e))
+
     def _summarise_window(self) -> None:
         w = self.window
         self.last_window = {k: w.get(k, 0) for k in ("ticks", "bars", "evaluations", "signals", "orders", "ignored", "blocked", "errors")}
@@ -255,6 +273,8 @@ class ExecutorAgent(BaseAgent):
                             self.tick_age_seconds is None or self.tick_age_seconds > STALE_TICK_SECONDS
                         )
                         self._set_feed("stale" if stale else "streaming")
+                        if stale:
+                            await self._reconnect_silent_feed()
                     self.last_error = None
                     self._summarise_window()
                     w = self.last_window

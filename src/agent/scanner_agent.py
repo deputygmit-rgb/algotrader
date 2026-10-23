@@ -85,6 +85,10 @@ class ScannerAgent(BaseAgent):
         warm = getattr(self.service, "warm_portfolio_analysis", None)
         if warm is None or time.monotonic() - self._portfolio_warmed_mono < PORTFOLIO_WARM_SECONDS:
             return
+        if getattr(self.service, "is_demo", False) or getattr(self.service, "is_shared_market", False):
+            # simulated / no holdings: no warm-up, and no research pre-fetch (news and
+            # annual reports for the demo's holdings, repeated for every demo visitor)
+            return
         self._portfolio_warmed_mono = time.monotonic()
         self.activity.set_task("Refreshing analysis for held and traded stocks", "act")
         try:

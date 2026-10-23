@@ -103,7 +103,7 @@ const DayTrade = (() => {
         const r = rValue(s);
         const rCls = r === null ? '' : r > 0 ? 'mf-gt' : r < 0 ? 'mf-rt' : '';
         return `<tr data-sym="${esc(s.symbol)}" data-id="${esc(s.id)}" class="${OPEN.has(s.status) ? 'is-open' : ''}${s.backfilled || s.skipped ? ' bf' : ''}${focus?.id === s.id ? ' sel' : ''}"
-            title="${esc(`${s.trigger} · signal at ${s.time} bar close · ${s.entry_time ? `filled ${s.entry_time} open` : 'fills at next bar open'} · T2 ${num(s.target2)} · risk ${num(s.risk_pct)}% · best ${sgn(s.mfe_r)}R / worst ${sgn(s.mae_r)}R`)}">
+            title="${esc(`${s.trigger ?? s.label} · signal at ${s.time} bar close · ${s.entry_time ? `filled ${s.entry_time} open` : 'fills at next bar open'} · T2 ${num(s.target2)} · risk ${num(s.risk_pct)}% · best ${sgn(s.mfe_r)}R / worst ${sgn(s.mae_r)}R`)}">
             <td>${esc(s.time)}${s.backfilled ? '<i title="Signal closed before the stock was tracked; replayed from history and left out of the stats">bf</i>' : ''}${s.skipped ? `<i title="Not taken: ${esc(s.skipped)}; left out of the stats">skip</i>` : ''}</td>
             <th>${esc(s.symbol)}</th>
             <td><span class="dt-side ${s.side === 'LONG' ? 'long' : 'short'}">${s.side}</span></td>
@@ -300,7 +300,7 @@ const DayTrade = (() => {
             ${st.skipped ? `<span title="Not taken: portfolio full, or the setup's recent record suspended / weakened it — not in the stats">SKIPPED <b>${st.skipped}</b></span>` : ''}
             ${!replayMode && st.replayed ? `<span title="Signals from before a stock was tracked — not tradeable, not in the stats">REPLAYED <b>${st.replayed}</b> excl.</span>` : ''}`;
 
-        $('dt-eff').innerHTML = effChips(data.efficacy, data.efficacy_as_of, Object.fromEntries(Object.entries(SETUP_RULE).map(([k]) => [k, k])));
+        $('dt-eff').innerHTML = effChips(data.efficacy, data.efficacy_as_of, {});
         const feed = data.feed.filter(feedFilter);
         $('dt-feed').innerHTML = feed.length
             ? `<table class="dt-table"><thead><tr><th title="Bar close time when the signal fired">SIGNAL</th><th>SYMBOL</th><th>SIDE</th><th>SETUP</th><th>Q</th><th>ENTRY</th><th>STOP</th><th>T1</th><th>STATUS</th><th>R</th><th title="Board auto-trade decision for this signal">ORDER</th></tr></thead>
@@ -393,14 +393,20 @@ const DayTrade = (() => {
     // ── setup chart (selected signal) ───────────────────────────────
     // The setup's own geometry is recomputed here with the engine's rules
     // (src/analysis/intraday_setups.py), so the chart shows exactly what fired.
-    const SETUP_RULE = {
-        ORB: { vol: 1.3, long: 'A close above the 09:15–09:30 opening-range high', short: 'A close below the 09:15–09:30 opening-range low', stop: 'the opening range’s midpoint' },
-        PD_BREAK: { vol: 1.3, long: 'A close above the previous session’s high', short: 'A close below the previous session’s low', stop: 'the breakout bar’s low (short: high)' },
-        VWAP_RECLAIM: { vol: 1.2, long: 'Two closes below VWAP, then a bullish close back above it with EMA 9 rising', short: 'Two closes above VWAP, then a bearish close back below it with EMA 9 falling', stop: 'the signal bar’s low (short: high)' },
-        SQUEEZE: { vol: 1.5, long: 'Six bars inside a box narrower than 0.35 daily ATR, then a close above the box', short: 'Six bars inside a box narrower than 0.35 daily ATR, then a close below the box', stop: 'the far side of the box' },
-        PULLBACK: { vol: 0, long: 'Uptrend (EMA 9 > EMA 20, three closes above VWAP); the bar dips to EMA 20 / VWAP and closes bullish above EMA 9', short: 'Downtrend (EMA 9 < EMA 20, three closes below VWAP); the bar rallies to EMA 20 / VWAP and closes bearish below EMA 9', stop: 'the signal bar’s low (short: high)' },
-    };
-    const TOD_NOTE = ' The bar must also trade at least 1.2× the normal volume for its time of day (20-session median), so a quiet lunch window or a squeeze’s own quiet box cannot make an ordinary bar look like a surge.';
+    // setup rules come from the server for signed-in accounts (src/api/setup_rules.py)
+    let SETUP_RULE = {};
+    let TOD_NOTE = '';
+    async function loadRules() {
+        if (Object.keys(SETUP_RULE).length) return;
+        try {
+            const res = await fetch('/api/market/setup-rules');
+            if (!res.ok) return;
+            const r = await res.json();
+            SETUP_RULE = r.day || {};
+            TOD_NOTE = r.day_tod_note || '';
+            if (data) render();
+        } catch (e) { /* the detail shows without the rule text */ }
+    }
     const VOL_LOOKBACK = 10, SQUEEZE_BARS = 6, ORB_BARS = 3;
     const hhmm = b => String(b.t).slice(11, 16);
     const closeOf = b => {
@@ -701,9 +707,8 @@ const DayTrade = (() => {
             s.skipped ? `Not taken: ${esc(s.skipped)}.` : '',
             s.order ? `Auto-trade: ${esc(s.order.decision)}${s.order.reason ? ` — ${esc(s.order.reason)}` : ''}${s.order.order_id ? ` · order #${esc(s.order.order_id)}` : ''}.` : '',
         ].filter(Boolean).map(n => `<p class="dt-fi-note">${n}</p>`).join('');
-        return `${chips}
-            <div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
-                <p>${esc(long ? rule.long : rule.short)}${rule.vol ? ` on ≥ ${rule.vol}× the 10-bar average volume` : ''}.${TOD_NOTE} Stop: ${esc(rule.stop)}, kept 0.5–1.2 daily ATR from the fill.</p>
+        const method = `<div class="dt-fi"><h4>${esc(s.label)} · <span class="dt-side ${long ? 'long' : 'short'}">${s.side}</span></h4>
+                ${rule.long ? `<p>${esc(long ? rule.long : rule.short)}${rule.vol ? ` on ≥ ${rule.vol}× the 10-bar average volume` : ''}.${TOD_NOTE} Stop: ${esc(rule.stop)}, kept 0.5–1.2 daily ATR from the fill.</p>` : ''}
                 <p class="dt-fi-trig">${esc(s.trigger)}</p></div>
             <div class="dt-fi"><h4>WHY IT QUALIFIED</h4><dl>
                 <dt>Volume vs 10 bars</dt><dd>${(s.vol_x ?? g.volX) == null ? '—' : `${Number(s.vol_x ?? g.volX).toFixed(2)}×`}${rule.vol ? ` / needs ${rule.vol}×` : ''}</dd>
@@ -715,7 +720,9 @@ const DayTrade = (() => {
                 <dt class="dt-fi-sub">NIFTY OI bias</dt><dd>${s.market_bias ? `${esc(s.market_bias)} ${s.market_adj > 0 ? '+' : ''}${s.market_adj ?? 0}` : 'no reading · 0'}</dd>
                 ${effRows(s)}
                 ${s.flow_bias ? `<dt>Money flow</dt><dd>${esc(s.flow_bias)}${s.flow_score != null ? ` · ${sgn(s.flow_score, 0)}` : ''}</dd>` : ''}
-            </dl></div>
+            </dl></div>`;
+        return `${chips}
+            ${method}
             <div class="dt-fi"><h4>TRADE PLAN</h4><dl>
                 <dt>Signal</dt><dd>${esc(s.time)} bar close</dd>
                 <dt>Entry</dt><dd>${num(s.entry)} · ${filled}</dd>
@@ -810,7 +817,7 @@ const DayTrade = (() => {
             $('dt-add').value = '';
             track(sym, 'add');
         });
-        $('dt-replay-form').addEventListener('submit', e => {
+        $('dt-replay-form')?.addEventListener('submit', e => {
             e.preventDefault();
             let symbols = $('dt-replay-symbols').value.split(',').map(x => x.trim().toUpperCase()).filter(x => /^[A-Z0-9&.-]{1,32}$/.test(x));
             if (!symbols.length && data) symbols = [...data.tracked].sort(cardOrder).slice(0, 5).map(t => t.symbol);
@@ -853,9 +860,9 @@ const DayTrade = (() => {
             });
             mfDemo.addEventListener('change', () => { dtDemo.checked = mfDemo.checked; });
         }
-        $('dt-auto-btn').addEventListener('click', () => { $('dt-auto').hidden = !$('dt-auto').hidden; if (!$('dt-auto').hidden) loadAuto(); });
-        $('dt-auto-save').addEventListener('click', () => saveAuto(autoForm()));
-        $('dt-auto-toggle').addEventListener('click', async () => {
+        $('dt-auto-btn')?.addEventListener('click', () => { $('dt-auto').hidden = !$('dt-auto').hidden; if (!$('dt-auto').hidden) loadAuto(); });
+        $('dt-auto-save')?.addEventListener('click', () => saveAuto(autoForm()));
+        $('dt-auto-toggle')?.addEventListener('click', async () => {
             const enabling = !(auto && auto.enabled);
             if (enabling) {
                 const f = autoForm();
@@ -876,7 +883,7 @@ const DayTrade = (() => {
     }
 
     function start() {
-        if (!started) { bind(); started = true; }
+        if (!started) { bind(); started = true; loadRules(); }
         poll();
     }
 

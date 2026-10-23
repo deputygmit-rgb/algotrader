@@ -189,12 +189,12 @@ function restoreView() {
     const tab = params.get('tab');
     const view = params.get('view');
     const button = tab && document.querySelector(`.tabs .tab[data-tab="${CSS.escape(tab)}"]`);
-    if (!button || tab === 'overview') return;
+    if (!button || tab === 'overview') return false;
     button.click();                      // runs the tab's own loaders (onclick)
     if (view && typeof switchAnalysisView === 'function') switchAnalysisView(view);
     let saved = null;
     try { saved = JSON.parse(sessionStorage.getItem('dash.scroll') || 'null'); } catch (e) { saved = null; }
-    if (!saved || saved.tab !== tab || !saved.y) return;
+    if (!saved || saved.tab !== tab || !saved.y) return true;
     // content loads asynchronously: retry until the page is tall enough, unless the user scrolls first
     let userScrolled = false;
     const mark = () => { userScrolled = true; };
@@ -203,12 +203,20 @@ function restoreView() {
     [150, 600, 1500, 3000].forEach(ms => setTimeout(() => {
         if (!userScrolled && Math.abs(window.scrollY - saved.y) > 4) window.scrollTo(0, saved.y);
     }, ms));
+    return true;
 }
 
 window.addEventListener('pagehide', saveScroll);
 document.addEventListener('click', e => { if (e.target.closest('[data-stock], a[href^="/app/stock/"]')) saveScroll(); }, true);
 
+// the public demo locks Market Flow, the boards and Analysis: the server leaves
+// their panels out and refuses their endpoints (src/api/demo_scope.py)
+function demoLocked(btn) {
+    showToast(`${btn.textContent.replace(/\W+$/, '').trim()} is available in your own account - request access to use it.`, 'info');
+}
+
 function switchTab(tabName) {
+    if (!document.getElementById(`tab-${tabName}`)) tabName = 'overview';
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     const tabBtn = document.querySelector(`[data-tab="${tabName}"]`);
@@ -3252,6 +3260,7 @@ function renderDeepProfile(el, d) {
 }
 
 async function logoutUser() {
+    if (window.vqBeforeLogout) await window.vqBeforeLogout();     // this device's alerts end with the session
     try {
         await API.post('/auth/logout', {});
     } catch (e) {}
@@ -3260,6 +3269,7 @@ async function logoutUser() {
 
 // Leave a public demo (ends its sandbox) and go somewhere else, e.g. the login panel.
 async function exitDemoTo(url) {
+    if (window.vqBeforeLogout) await window.vqBeforeLogout();     // this device's alerts end with the session
     try {
         await API.post('/auth/logout', {});
     } catch (e) {}
@@ -3268,6 +3278,7 @@ async function exitDemoTo(url) {
 
 async function logoutAllDevices() {
     if (!confirm('Log out of VerquoAI on every browser and device?')) return;
+    if (window.vqBeforeLogout) await window.vqBeforeLogout();
     try {
         await API.post('/auth/logout-all', {});
     } catch (e) {}

@@ -25,8 +25,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.routing import Match
 
@@ -57,6 +56,8 @@ from src.demo.sessions import (
     shutdown_service,
     user_demo_id,
 )
+from src.api.static_files import MinifiedStaticFiles
+from src.api.demo_scope import LOCKED_MESSAGE, public_demo_blocked
 from src.utils.exceptions import KiteError, KillSwitchError
 from src.utils.logger import get_logger
 
@@ -85,9 +86,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     flusher = asyncio.create_task(metrics.run_flusher())
     hygiene = asyncio.create_task(run_hygiene())        # gc + return freed memory to the OS
     efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
+    resume = asyncio.create_task(_resume_accounts())    # trading picks up again after a restart
     try:
         yield
     finally:
+        resume.cancel()
         reaper.cancel()
         viewer_reaper.cancel()
         hygiene.cancel()
@@ -95,6 +98,34 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         flusher.cancel()
         await asyncio.to_thread(metrics.flush)
         await mcp_driver.shutdown()
+
+
+async def _resume_accounts() -> None:
+    """After the process restarts (crash, out-of-memory kill, deploy), accounts that were
+    trading - or have orders / positions in flight - are picked up again at once, instead
+    of waiting for someone to press Start Live (see ``TradingService.resume_after_restart``).
+    One without a broker session resumes when it next logs in."""
+    await asyncio.sleep(2)
+    try:
+        from src.data.market_data_store import get_market_data_store
+
+        accounts = await asyncio.to_thread(get_market_data_store().engine_accounts)
+    except Exception as e:
+        logger.error("resume_accounts_failed", error=str(e))
+        return
+    for zid in accounts:
+        if zid.startswith(("DEMO-", "VIEW-")):
+            continue
+        user_cfg = UserConfigService.get_instance().get_user(zid)
+        if not user_cfg:
+            continue
+        try:
+            svc = TradingServiceManager.get_instance().get_service(zid, api_key=user_cfg.api_key,
+                                                                   api_secret=user_cfg.api_secret)
+            result = await svc.resume_after_restart()
+            logger.warning("account_resume_after_restart", zerodha_id=zid, **result)
+        except Exception as e:
+            logger.error("account_resume_failed", zerodha_id=zid, error=str(e))
 
 
 # No /docs, /redoc or /openapi.json: they would publish the whole API (and its
@@ -111,13 +142,19 @@ async def _access_denied(request: Request, exc: AccessDenied) -> JSONResponse:
 app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+# scripts are served minified (src/api/static_files.py); nginx sends /static/js/ here for that
+app.mount("/static", MinifiedStaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 SESSION_COOKIE = "kta_session"
 
 PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-otp", "/auth/callback",
-                "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact"}
+                "/api/auth/callback", "/api/auth/postback", "/metrics/events", "/contact",
+                "/robots.txt", "/sitemap.xml",
+                # installable app: manifest, service worker, offline screen, Android app link
+                "/manifest.webmanifest", "/sw.js", "/offline", "/.well-known/assetlinks.json", "/privacy"}
+# the only pages search engines may index; everything else is sent with noindex
+INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml", "/privacy"}
 
 
 def _real_service(zerodha_id: str) -> TradingService:
@@ -236,6 +273,11 @@ def get_real_user_service(request: Request) -> TradingService:
     return _real_service(zerodha_id)
 
 
+def _is_public_demo(request: Request) -> bool:
+    cookies = getattr(request, "cookies", None) or {}
+    return is_public_demo_id(otp_auth.get_session_user(cookies.get(SESSION_COOKIE, "")) or "")
+
+
 def demo_kind(svc: TradingService) -> str:
     """'public', 'user' (not connected to Zerodha yet) or '' for a real service."""
     if not getattr(svc, "is_demo", False):
@@ -314,6 +356,8 @@ def _content_security_policy(request: Request) -> str:
         "img-src 'self' data: https:",
         f"connect-src 'self' {ws_origin}",
         "object-src 'none'",
+        "worker-src 'self'",
+        "manifest-src 'self'",
         "base-uri 'self'",
         "form-action 'self'",
         "frame-ancestors 'none'",
@@ -325,6 +369,9 @@ def _apply_security_headers(response, request: Request):
     if request.url.path == "/admin" or request.url.path.startswith("/api/admin/"):
         # personal data and account settings: never cached, never indexed
         response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    elif request.url.path not in INDEXABLE_PATHS and not request.url.path.startswith("/static/"):
+        # the terminal, its API and the sign-in page stay out of search results
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -344,7 +391,10 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     response = None
 
-    if path.startswith("/static/") or path in PUBLIC_PATHS:
+    if path != "/robots.txt" and _AI_CRAWLER.search(request.headers.get("user-agent", "")):
+        # robots.txt asks them to stay away; this is for the ones that do not ask
+        response = PlainTextResponse("Crawling for AI training is not permitted.", status_code=403)
+    elif path.startswith("/static/") or path in PUBLIC_PATHS:
         response = await call_next(request)
     elif path.startswith("/ws/"):
         token = request.cookies.get(SESSION_COOKIE, "")
@@ -364,6 +414,9 @@ async def auth_middleware(request: Request, call_next):
         # per account, on top of nginx's per-IP limit (src/api/request_limiter.py)
         response = JSONResponse({"error": "Too many requests - please slow down"}, status_code=429,
                                 headers={"Retry-After": "2"})
+    elif path.startswith("/api/") and public_demo_blocked(path) and _is_public_demo(request):
+        # Market Flow, the boards and Analysis are for accounts with access (src/api/demo_scope.py)
+        response = JSONResponse({"error": LOCKED_MESSAGE, "demo_locked": True}, status_code=403)
     elif request.method not in CSRF_EXEMPT_METHODS:
         token = request.cookies.get(SESSION_COOKIE, "")
         csrf_header = request.headers.get("X-CSRF-Token", "")
@@ -489,6 +542,14 @@ async def metrics_events(request: Request) -> Any:
 
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+PHONE_HINT = "Please enter your phone number: 10 to 15 digits, with the country code if outside India."
+
+
+def _valid_phone(phone: str) -> bool:
+    """Required on access requests: digits with optional +, spaces, dashes, dots, brackets; 10-15 digits."""
+    return bool(re.fullmatch(r"\+?[0-9() .\-]{10,20}", phone)) and 10 <= sum(c.isdigit() for c in phone) <= 15
 
 
 def _clean(value: Any, limit: int, multiline: bool = False) -> str:
@@ -663,8 +724,8 @@ async def contact(request: Request) -> Any:
         return JSONResponse({"success": False, "message": "Please tell us your name."}, status_code=400)
     if not _EMAIL.match(email):
         return JSONResponse({"success": False, "message": "Please enter a valid email address."}, status_code=400)
-    if phone and not re.fullmatch(r"[0-9+\-() ]{6,20}", phone):
-        return JSONResponse({"success": False, "message": "Please enter a valid phone number."}, status_code=400)
+    if not _valid_phone(phone):
+        return JSONResponse({"success": False, "message": PHONE_HINT}, status_code=400)
     if trading_id and not re.fullmatch(r"[A-Z0-9]{4,10}", trading_id):
         return JSONResponse({"success": False, "message": "Trading ID should be 4-10 letters or digits."}, status_code=400)
     if access_level not in ACCESS_LEVELS:
@@ -718,7 +779,7 @@ async def contact(request: Request) -> Any:
 async def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
         return RedirectResponse("/app", status_code=302)
-    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True,
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": True, "site_url": _public_url(),
                                                                 "form_token": _form_token(), **site_facts.context()})
 
 
@@ -801,11 +862,51 @@ async def verify_otp(request: Request) -> Any:
         return {"success": False, "message": "Invalid or expired OTP"}
 
 
+DEMO_TOKEN_MIN_AGE = 1           # seconds between the page loading and the demo starting
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _demo_start_refusal(request: Request, body: dict[str, Any]) -> tuple[str, str, int] | None:
+    """Why a demo start looks scripted: (reason, message, status), or None.
+
+    A demo costs a simulated market and four agents, so it is only started from
+    our own page, by a browser, at least a second after that page was rendered
+    (the page's signed ``form_token``)."""
+    if device_of(request.headers.get("user-agent", "")) == "bot":
+        return "bot_agent", "The demo opens in a web browser.", 403
+    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+        return "cross_site", "Open the demo from verquoai.com.", 403
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host", ""):
+        return "cross_origin", "Open the demo from verquoai.com.", 403
+    token = str(body.get("form_token") or "")
+    ts, _, _ = token.partition(".")
+    state = _form_token_state(token)
+    if state == "fast" and ts.isdigit() and time.time() - int(ts) >= DEMO_TOKEN_MIN_AGE:
+        state = "ok"
+    if state == "fast":
+        return "too_fast", "One moment - starting the demo…", 429
+    if state != "ok":
+        return "no_token", "This page has expired. Please reload it and try again.", 400
+    return None
+
+
 @app.post("/demo/start")
 async def demo_start(request: Request) -> Any:
     """Open the terminal on a simulated market and broker, no account needed."""
     if is_logged_in(request):
         return {"success": True, "redirect": "/app"}
+    refusal = _demo_start_refusal(request, await _json_body(request))
+    if refusal:
+        logger.info("demo_start_refused", reason=refusal[0], ip=_client_ip(request))
+        return JSONResponse({"success": False, "message": refusal[1]}, status_code=refusal[2])
     if not otp_auth.check_ip_rate_limit("demo-start", _client_ip(request), max_requests=6, window_seconds=3600):
         return JSONResponse({"success": False, "message": "Too many demo sessions from this network. Try again later."},
                             status_code=429)
@@ -856,9 +957,14 @@ async def logout(request: Request) -> Any:
 
 @app.post("/auth/logout-all")
 async def logout_all(request: Request) -> Any:
-    """End this user's sessions on every browser and device."""
+    """End this user's sessions on every browser and device (and their push alerts)."""
     zerodha_id = get_session_zerodha_id(request)
     count = otp_auth.logout_all(zerodha_id) if zerodha_id else 0
+    if zerodha_id:
+        try:
+            await asyncio.to_thread(_push().remove_account, zerodha_id)
+        except Exception as e:
+            logger.warning("push_cleanup_failed", error=str(e))
     response = JSONResponse({"success": True, "sessions_ended": count})
     response.delete_cookie(SESSION_COOKIE)
     return response
@@ -926,8 +1032,230 @@ templates.env.globals["static_version"] = _static_version
 
 @app.get("/", response_class=HTMLResponse)
 async def landing_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False,
+    return templates.TemplateResponse(request, "landing.html", {"request": request, "open_login": False, "site_url": _public_url(),
                                                                 "form_token": _form_token(), **site_facts.context()})
+
+
+# ── Installable app (Android Play Store via a Trusted Web Activity, Mac, iPhone) ──
+APP_THEME = "#05080c"
+
+
+def _static_digest(*names: str) -> str:
+    h = hashlib.sha256()
+    for name in names:
+        try:
+            with open(os.path.join(BASE_DIR, "static", name), "rb") as f:
+                h.update(f.read())
+        except OSError:
+            pass
+    return h.hexdigest()[:12]
+
+
+@app.get("/manifest.webmanifest")
+async def web_manifest() -> Response:
+    """What makes the terminal installable: name, icons, opening on the terminal, shortcuts."""
+    icons = [
+        {"src": "/static/img/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+        {"src": "/static/img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+        {"src": "/static/img/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        {"src": "/static/img/icon-mono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "monochrome"},
+    ]
+    shortcuts = [{"name": name, "short_name": short, "url": f"/app#tab={tab}",
+                  "icons": [{"src": "/static/img/icon-192.png", "sizes": "192x192"}]}
+                 for name, short, tab in (("Market Flow", "Flow", "market-flow"), ("Day Trade board", "Day Trade", "day-trade"),
+                                          ("Positions", "Positions", "positions"), ("Orders", "Orders", "orders"))]
+    manifest = {
+        "id": "/app", "name": "VerquoAI Trading Terminal", "short_name": "VerquoAI",
+        "description": "Market flow, intraday setups, options OI, AI agents, backtests and risk controls for Indian markets.",
+        "start_url": "/app?source=app", "scope": "/", "display": "standalone",
+        "display_override": ["window-controls-overlay", "standalone"],
+        "orientation": "any", "background_color": APP_THEME, "theme_color": APP_THEME,
+        "categories": ["finance", "business", "productivity"], "lang": "en-IN", "dir": "ltr",
+        "icons": icons, "shortcuts": shortcuts,
+        "screenshots": [
+            {"src": "/static/img/screen-phone-1.png", "sizes": "1080x2340", "type": "image/png", "form_factor": "narrow",
+             "label": "The terminal on a phone"},
+            {"src": "/static/img/screen-phone-2.png", "sizes": "1080x2340", "type": "image/png", "form_factor": "narrow",
+             "label": "Backtests on a phone"},
+            {"src": "/static/img/screen-wide-1.png", "sizes": "1920x1080", "type": "image/png", "form_factor": "wide",
+             "label": "AI agents on a desktop"},
+        ],
+        "prefer_related_applications": False,
+    }
+    package = os.environ.get("ANDROID_PACKAGE_NAME", "").strip()
+    if package:
+        manifest["related_applications"] = [{"platform": "play", "id": package,
+                                             "url": f"https://play.google.com/store/apps/details?id={package}"}]
+    return Response(json.dumps(manifest), media_type="application/manifest+json",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/sw.js")
+async def service_worker() -> Response:
+    """The service worker, served from the site root so it controls the whole app. Its
+    cache version follows the static files it caches, so a release replaces old copies."""
+    path = os.path.join(BASE_DIR, "static", "sw.js")
+    with open(path, encoding="utf-8") as f:
+        body = f.read()
+    version = _static_digest("sw.js", "js/dashboard.js", "js/pwa.js", "css/terminal.css", "css/landing.css")
+    return Response(body.replace("__VERSION__", version), media_type="text/javascript",
+                    headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/offline", response_class=HTMLResponse)
+async def offline_page(request: Request) -> HTMLResponse:
+    """Shown by the service worker when the server cannot be reached (instead of a browser error)."""
+    return templates.TemplateResponse(request, "offline.html", {"request": request})
+
+
+@app.get("/.well-known/assetlinks.json")
+async def asset_links() -> Response:
+    """Digital Asset Links: proves the Android app (Trusted Web Activity) and this site have one
+    owner, so it opens full screen with no browser bar. ``ANDROID_PACKAGE_NAME`` and
+    ``ANDROID_CERT_SHA256`` (the Play app-signing certificate; several, comma-separated) in .env."""
+    package = os.environ.get("ANDROID_PACKAGE_NAME", "").strip()
+    prints = [p.strip().upper() for p in os.environ.get("ANDROID_CERT_SHA256", "").split(",") if p.strip()]
+    if not package or not all(re.fullmatch(r"([0-9A-F]{2}:){31}[0-9A-F]{2}", p) for p in prints) or not prints:
+        statements: list[dict[str, Any]] = []
+    else:
+        statements = [{"relation": ["delegate_permission/common.handle_all_urls"],
+                       "target": {"namespace": "android_app", "package_name": package,
+                                  "sha256_cert_fingerprints": prints}}]
+    return Response(json.dumps(statements), media_type="application/json",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request) -> HTMLResponse:
+    """Privacy policy (linked from the landing page, the app stores and the manifest)."""
+    landing = os.path.join(BASE_DIR, "templates", "privacy.html")
+    updated = datetime.fromtimestamp(os.path.getmtime(landing)).strftime("%d %B %Y")
+    contact = (os.environ.get("PRIVACY_CONTACT_EMAIL") or os.environ.get("ADMIN_EMAIL") or "").split(",")[0].strip()
+    return templates.TemplateResponse(request, "privacy.html", {"request": request, "site_url": _public_url(),
+                                                                "updated": updated, "contact_email": contact})
+
+
+# ── Push alerts (src/notify/push.py) ──
+def _push() -> Any:
+    from src.notify.push import PushService
+
+    return PushService.get_instance()
+
+
+def _push_account(request: Request) -> str:
+    """The signed-in account alerts belong to (never a public demo)."""
+    zid = get_session_zerodha_id(request)
+    if not zid or is_public_demo_id(zid):
+        raise HTTPException(403, "Alerts need your own account")
+    return zid
+
+
+@app.get("/api/push/key")
+async def push_key(request: Request) -> dict[str, Any]:
+    _push_account(request)
+    return {"key": await asyncio.to_thread(_push().public_key)}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request) -> dict[str, Any]:
+    from src.notify.push import PushError
+
+    account = _push_account(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object expected")
+    service = _push()
+    prefs = body.get("prefs")
+    sub = body.get("subscription") or {}
+    if prefs is None and isinstance(sub, dict):
+        # a refresh from the app's start-up: keep this device's saved choices
+        prefs = await asyncio.to_thread(service.prefs_for, account, str(sub.get("endpoint") or ""))
+    try:
+        return await asyncio.to_thread(service.subscribe, account, sub, prefs,
+                                       request.headers.get("user-agent", ""))
+    except PushError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/push/resubscribe")
+async def push_resubscribe(request: Request) -> dict[str, Any]:
+    """The browser rotated a subscription (service worker): the new one replaces the old,
+    with the old one's choices."""
+    from src.notify.push import PushError
+
+    account = _push_account(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object expected")
+    service = _push()
+    old = str(body.get("old_endpoint") or "")
+    prefs = await asyncio.to_thread(service.prefs_for, account, old) if old else None
+    try:
+        result = await asyncio.to_thread(service.subscribe, account, body.get("subscription"), prefs,
+                                         request.headers.get("user-agent", ""))
+    except PushError as e:
+        raise HTTPException(400, str(e)) from e
+    if old:
+        await asyncio.to_thread(service.unsubscribe, account, old)
+    return result
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request) -> dict[str, Any]:
+    account = _push_account(request)
+    body = await request.json()
+    endpoint = str((body or {}).get("endpoint") or "") if isinstance(body, dict) else ""
+    return {"removed": await asyncio.to_thread(_push().unsubscribe, account, endpoint)}
+
+
+@app.get("/api/push/devices")
+async def push_devices(request: Request, endpoint: str = "") -> dict[str, Any]:
+    """This device's alert choices (``endpoint``), or how many devices get alerts."""
+    account = _push_account(request)
+    service = _push()
+    if endpoint:
+        return {"prefs": await asyncio.to_thread(service.prefs_for, account, endpoint)}
+    return {"devices": len(await asyncio.to_thread(service.devices, account))}
+
+
+@app.post("/api/push/test")
+async def push_test(request: Request) -> dict[str, Any]:
+    account = _push_account(request)
+    delivered = await _push().notify(account, "risk", "VerquoAI alerts are on",
+                                     "This is how trade and risk alerts will look.", "/app", "test")
+    return {"delivered": delivered}
+
+
+# Crawlers that collect pages to train AI models: refused everywhere (the product's
+# text and screens are ours). Search engines, including AI search, may read the
+# landing page only.
+AI_TRAINING_CRAWLERS = ("GPTBot", "CCBot", "Google-Extended", "ClaudeBot", "anthropic-ai", "Bytespider",
+                        "Applebot-Extended", "meta-externalagent", "FacebookBot", "Diffbot", "ImagesiftBot",
+                        "omgili", "cohere-ai", "AI2Bot", "Timpibot", "img2dataset")
+_AI_CRAWLER = re.compile("|".join(re.escape(b) for b in AI_TRAINING_CRAWLERS), re.IGNORECASE)
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt() -> str:
+    site = _public_url()
+    blocked = "".join(f"User-agent: {bot}\n" for bot in AI_TRAINING_CRAWLERS)
+    return (f"{blocked}Disallow: /\n\n"
+            "User-agent: *\nAllow: /$\nAllow: /privacy$\nAllow: /static/css/\nAllow: /static/img/\nAllow: /static/favicon.svg\n"
+            "Allow: /static/js/landing.js\nDisallow: /\n\n"
+            f"Sitemap: {site}/sitemap.xml\n")
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml() -> Response:
+    site = _public_url()
+    landing = os.path.join(BASE_DIR, "templates", "landing.html")
+    updated = datetime.fromtimestamp(os.path.getmtime(landing)).date().isoformat()
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f"  <url><loc>{site}/</loc><lastmod>{updated}</lastmod><changefreq>weekly</changefreq><priority>1.0</priority></url>\n"
+            f"  <url><loc>{site}/privacy</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n"
+            "</urlset>\n")
+    return Response(body, media_type="application/xml")
 
 
 @app.get("/app", response_class=HTMLResponse)
@@ -2188,6 +2516,14 @@ async def get_day_trade(request: Request) -> Any:
     if not svc.is_authenticated:
         return {"error": "Trading account not linked"}
     return shared_json(request, await svc.get_day_trade())
+
+
+@app.get("/api/market/setup-rules")
+async def get_setup_rules() -> dict[str, Any]:
+    """The boards' setup rules in words (refused to the public demo: src/api/demo_scope.py)."""
+    from src.api.setup_rules import setup_rules
+
+    return setup_rules()
 
 
 @app.get("/api/market/day-trade/replay")

@@ -5,10 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="theme-color" content="#05080c">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="VerquoAI">
     <meta name="description" content="VerquoAI is software: a trading terminal for Indian markets (NSE, BSE) with live market flow, rule-based intraday and swing setups, options OI, backtests and AI agents. Not a broker and not investment advice. Try it on a simulated market.">
-    <link rel="canonical" href="https://verquoai.com/">
     <script type="application/ld+json">{{ site_json_ld | safe }}</script>
     <title>VerquoAI™ — Trading terminal for market flow, setups and agents</title>
+    {% if open_login %}<meta name="robots" content="noindex, follow">{% else %}<meta name="robots" content="index, follow, max-image-preview:large">{% endif %}
+    <link rel="canonical" href="{{ site_url }}/">
+    <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="VerquoAI">
+    <meta property="og:url" content="{{ site_url }}/">
+    <meta property="og:title" content="VerquoAI — Trading terminal for Indian markets">
+    <meta property="og:description" content="Live market flow, 5-minute intraday setups, options OI, AI agents, backtests and risk controls in one terminal. Try it on a simulated market.">
+    <meta property="og:image" content="{{ site_url }}/static/img/og-card.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="The VerquoAI terminal: market flow and intraday setups">
+    <meta property="og:locale" content="en_IN">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="VerquoAI — Trading terminal for Indian markets">
+    <meta name="twitter:description" content="Market flow, intraday setups, options OI, AI agents and backtests in one terminal.">
+    <meta name="twitter:image" content="{{ site_url }}/static/img/og-card.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -27,6 +48,7 @@
                 <a href="#contact">Contact</a>
             </nav>
             <div class="top-actions">
+                <button class="btn btn-ghost" type="button" data-pwa-install hidden>Install app</button>
                 <a class="btn btn-ghost" href="/login" data-open-login>Sign in</a>
                 <button class="btn btn-primary" type="button" data-start-demo>Try demo</button>
             </div>
@@ -43,7 +65,7 @@
                 <button class="btn btn-primary btn-lg" type="button" data-start-demo>Open the live demo →</button>
                 <a class="btn btn-ghost btn-lg" href="#contact">Request access</a>
             </div>
-            <p class="hero-note">The demo is the full terminal on a simulated market and broker. No account, nothing real at stake.</p>
+            <p class="hero-note">The demo runs backtests, strategies, paper trading, OI tools and agents on a simulated market. No account, nothing real at stake.</p>
             <div class="demo-error" data-demo-error role="alert"></div>
         </section>
 
@@ -165,7 +187,7 @@
 
                 <div class="term-foot">
                     <span>SIMULATED PREVIEW · illustrative values, not market data</span>
-                    <a href="/app" data-start-demo="market-flow" id="term-open">Open Market Flow in the demo →</a>
+                    <a href="#contact" id="term-open">Request access to Market Flow →</a>
                 </div>
             </div>
         </section>
@@ -173,10 +195,10 @@
         <section class="shell section reveal" id="features">
             <h2 class="section-title">One terminal. Every step of the trade.</h2>
             <div class="features">
-                <a class="feature spot" href="/app" data-start-demo="market-flow"><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="/app" data-start-demo="day-trade"><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">01 · FLOW</span><h3>Market Flow</h3><p>Where money is moving across NIFTY 50, F&amp;O and NIFTY 500 — price, futures OI and build-ups, live.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">02 · SETUPS</span><h3>Day Trade board</h3><p>Opening-range, previous-day, VWAP and squeeze setups on 5-minute bars. Click a signal to see its setup charted: the trigger, the volume spike and the trade plan to T1 / T2.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="oi-tracker"><span class="f-tag">03 · OPTIONS</span><h3>OI Tracker</h3><p>Call and put walls, PCR, max pain and the market's options bias, minute by minute.</p><span class="f-go">Open in demo →</span></a>
-                <a class="feature spot" href="/app" data-start-demo="analysis"><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
+                <a class="feature spot" href="#contact" data-locked-feature><span class="f-tag">04 · RESEARCH</span><h3>Scanner &amp; analysis</h3><p>Super performers, Stage 2 trends, VCP setups and relative-strength leaders across the NIFTY 500.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="backtest"><span class="f-tag">05 · STRATEGY</span><h3>Backtest &amp; paper trade</h3><p>Test a strategy on history, replay sessions bar by bar, then paper trade it before going live.</p><span class="f-go">Open in demo →</span></a>
                 <a class="feature spot" href="/app" data-start-demo="agents"><span class="f-tag">06 · AGENTS</span><h3>AI agents &amp; risk</h3><p>Agents scan, verify, execute and track — inside your limits, with a kill switch that stays on after a loss trip.</p><span class="f-go">Open in demo →</span></a>
             </div>
@@ -185,7 +207,7 @@
         <section class="shell section reveal" id="steps">
             <h2 class="section-title">From preview to your own terminal</h2>
             <ol class="steps">
-                <li><b>1 · Try the demo</b><span>The full terminal on a simulated market. Every tab works.</span></li>
+                <li><b>1 · Try the demo</b><span>Backtests, strategies, paper trading and agents on a simulated market.</span></li>
                 <li><b>2 · Request access</b><span>Choose view-only, trading or agentic access. We reply by email.</span></li>
                 <li><b>3 · Link your broker</b><span>Sign in with your Trading ID and link your broker account each trading day.</span></li>
             </ol>
@@ -227,7 +249,7 @@
                     <ul class="contact-points">
                         <li>Your own private workspace and trading account link</li>
                         <li>Help getting your broker API connected</li>
-                        <li>Try everything first in the demo, no account needed</li>
+                        <li>Try backtests and strategies in the demo, no account needed</li>
                     </ul>
                 </div>
                 <form data-contact-form="landing" novalidate>
@@ -235,7 +257,7 @@
                     <div class="contact-grid">
                         <label class="field"><span>Name</span><input name="name" type="text" maxlength="80" autocomplete="name" required></label>
                         <label class="field"><span>Email</span><input name="email" type="email" maxlength="120" autocomplete="email" required></label>
-                        <label class="field"><span>Phone <em>(optional)</em></span><input name="phone" type="tel" maxlength="20" autocomplete="tel"></label>
+                        <label class="field"><span>Phone</span><input name="phone" type="tel" inputmode="tel" maxlength="20" autocomplete="tel" placeholder="+91 98765 43210" required></label>
                         <label class="field"><span>Trading ID <em>(optional)</em></span><input name="trading_id" type="text" maxlength="10" autocapitalize="characters" style="text-transform:uppercase"></label>
                     </div>
                     <fieldset class="access-choice">
@@ -261,7 +283,7 @@
     </main>
 
     <footer class="shell foot">
-        <span>© <span id="year"></span> VerquoAI™</span>
+        <span>© <span id="year"></span> VerquoAI™ · <a href="/privacy">Privacy</a></span>
         <span>Market analysis and trading workflow tools. Trading involves risk. We record anonymous usage (pages and buttons clicked) to improve VerquoAI.</span>
     </footer>
 
@@ -296,7 +318,7 @@
         </div>
 
         <div class="login-alt">
-            No account yet? Explore the full workspace on a simulated market first.
+            No account yet? Try backtests, strategies and paper trading on a simulated market first.
             <button class="btn btn-ghost btn-lg btn-block" type="button" data-start-demo>Try the demo instead</button>
             <div class="demo-error" data-demo-error role="alert"></div>
         </div>
@@ -305,5 +327,6 @@
     <script src="/static/js/landing.js?v={{ static_version('js/landing.js') }}" defer></script>
     <script src="/static/js/contact.js?v={{ static_version('js/contact.js') }}" defer></script>
     <script src="/static/js/metrics.js?v={{ static_version('js/metrics.js') }}" defer></script>
+    <script src="/static/js/pwa.js?v={{ static_version('js/pwa.js') }}" defer></script>
 </body>
 </html>

@@ -124,6 +124,12 @@ class KiteTicker:
                 logger.info("websocket_reconnecting", attempt=self._reconnect_attempts, delay=delay)
                 await asyncio.sleep(delay)
 
+    async def force_reconnect(self) -> None:
+        """Drop a connection that is open but silent; the connect loop opens a new one."""
+        if self._ws:
+            logger.warning("websocket_forced_reconnect")
+            await self._ws.close()
+
     async def disconnect(self) -> None:
         self._running = False
         if self._ws:

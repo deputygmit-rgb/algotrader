@@ -22,11 +22,20 @@ class Broker:
         self.orders = {}          # order_id -> {status, filled, price}
         self.net, self.holdings = [], []
         self._auth = SimpleNamespace(is_authenticated=True)
+        self.fill_market = True
 
     async def place_order(self, order):
         self.placed.append(order)
         oid = f"O{len(self.placed)}"
-        self.orders[oid] = {"status": "TRIGGER PENDING" if order.order_type == OrderType.SL else "OPEN", "filled": 0}
+        if order.order_type == OrderType.MARKET and self.fill_market and (not order.tag or order.tag[14:15] in ("X", "P")):
+            # an exit / partial exit at market fills at once (at the last price when one is scripted);
+            # entries are settled by each test
+            ltp = next((p.get("last_price", 0.0) for p in self.net if p["tradingsymbol"] == order.tradingsymbol), 0.0)
+            self.orders[oid] = {"status": "COMPLETE", "filled": order.quantity, "price": ltp}
+        else:
+            self.orders[oid] = {"status": "TRIGGER PENDING" if order.order_type == OrderType.SL else "OPEN",
+                                "filled": 0}
+        self.orders[oid]["tag"] = order.tag
         return oid
 
     async def cancel_order(self, order_id, variety=None):
@@ -44,7 +53,7 @@ class Broker:
         st = self.orders.get(oid, {"status": "CANCELLED", "filled": 0})
         return SimpleNamespace(order_id=oid, status=st["status"], filled_quantity=st.get("filled", 0),
                                average_price=st.get("price", 0.0), status_message=st.get("message"),
-                               pending_quantity=0)
+                               pending_quantity=0, tag=st.get("tag"), tags=[], order_timestamp=oid)
 
     async def get_orders(self):
         return [self._order(oid) for oid in self.orders]
@@ -171,7 +180,7 @@ def test_state_survives_a_restart_and_protection_is_refreshed(tmp_path):
     broker2.holdings = [{"tradingsymbol": "INFY", "quantity": 10, "t1_quantity": 0}]
     engine2 = _engine(broker2, store)
     counts = asyncio.run(engine2.restore_state())
-    assert counts == {"pending": 1, "positions": 1}
+    assert counts == {"pending": 1, "positions": 1, "intents": 0, "closed": 0}
     restored = engine2._tracked_positions[oid]
     assert restored.quantity == 10 and restored.current_stop_loss == 1490.0 and restored.product == "CNC"
     assert pending_oid in engine2._pending_orders

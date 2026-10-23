@@ -696,6 +696,8 @@
     const markOverflow = () => tabBar.classList.toggle('more', tabBar.scrollLeft + tabBar.clientWidth < tabBar.scrollWidth - 4);
     tabBar.addEventListener('scroll', markOverflow, { passive: true });
     let view = 'flow';
+    // tabs the public demo does not include (src/api/demo_scope.py)
+    const ACCOUNT_ONLY = new Set(['market-flow', 'day-trade', 'swing', 'analysis']);
     const DEMO_LABEL = { 'market-flow': 'Market Flow', 'day-trade': 'Day Trade', 'oi-tracker': 'OI Tracker', agents: 'Agents', backtest: 'Backtest' };
     function moveInk(tab) {
         ink.style.width = `${tab.offsetWidth}px`;
@@ -713,8 +715,15 @@
         view = tab.dataset.view;
         moveInk(tab);
         const open = $('term-open');
-        open.dataset.startDemo = tab.dataset.demoTab;
-        open.textContent = `Open ${view === 'day' ? 'the Day Trade board' : DEMO_LABEL[tab.dataset.demoTab]} in the demo →`;
+        const label = view === 'day' ? 'the Day Trade board' : DEMO_LABEL[tab.dataset.demoTab];
+        if (ACCOUNT_ONLY.has(tab.dataset.demoTab)) {
+            // not in the public demo: these are for accounts with access
+            delete open.dataset.startDemo;
+            open.textContent = `Request access to ${label} →`;
+        } else {
+            open.dataset.startDemo = tab.dataset.demoTab;
+            open.textContent = `Open ${label} in the demo →`;
+        }
         if (focus) tab.focus();
         const left = tab.offsetLeft - tabBar.scrollLeft, right = left + tab.offsetWidth;
         if (left < 0 || right > tabBar.clientWidth) tabBar.scrollTo({ left: tab.offsetLeft - 16, behavior: reducedMotion ? 'auto' : 'smooth' });
@@ -869,7 +878,17 @@
         errors.forEach(e => { e.textContent = ''; });
         button?.setAttribute('aria-busy', 'true');
         try {
-            const res = await fetch('/demo/start', { method: 'POST' });
+            // the page's signed render time: the server starts demos for this page only
+            const formToken = document.querySelector('input[name="form_token"]')?.value || '';
+            const start = () => fetch('/demo/start', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ form_token: formToken }),
+            });
+            let res = await start();
+            if (res.status === 429 && /moment/.test((await res.clone().json().catch(() => ({}))).message || '')) {
+                await new Promise(r => setTimeout(r, 1200));      // clicked within a second of the page loading
+                res = await start();
+            }
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) throw new Error(data.message || 'The demo could not start. Please try again.');
             window.location.href = `/app${tab ? '#tab=' + encodeURIComponent(tab) : ''}`;
@@ -882,6 +901,12 @@
         event.preventDefault();
         startDemo(node.dataset.startDemo || '', node);
     }));
+    // the preview's link starts the demo, or asks for access for tabs the demo does not include
+    $('term-open').addEventListener('click', event => {
+        if (event.currentTarget.dataset.startDemo === undefined) return;
+        event.preventDefault();
+        startDemo(event.currentTarget.dataset.startDemo, event.currentTarget);
+    });
 
     // ── sign-in panel ──────────────────────────────────────────────────
     const panel = $('login-panel');
@@ -900,7 +925,9 @@
         document.body.classList.add('login-open');
         panel.setAttribute('aria-hidden', 'false');
         if (location.pathname !== '/login') history.replaceState(null, '', '/login');
-        setTimeout(() => $('trading-id-input').focus(), 60);
+        // desktop: straight into the first field. Touch screens: no automatic focus - on a
+        // phone it pops the keyboard and scrolls the panel (and its close button) away
+        if (window.matchMedia('(pointer: fine)').matches) setTimeout(() => $('trading-id-input').focus(), 60);
     };
     const close = () => {
         document.body.classList.remove('login-open');

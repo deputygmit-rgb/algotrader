@@ -379,3 +379,25 @@ body.login-open .login-panel { transform: none; }
     *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
     .js .reveal:not(.shown) { opacity: 1; transform: none; }
 }
+
+
+/* installed app (static/js/pwa.js) */
+[data-pwa-install][hidden] { display: none !important; }
+.pwa-offline { position: fixed; left: 0; right: 0; bottom: 0; z-index: 400; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: #3a1d22; color: #ffd9de; border-top: 1px solid #ff5a6e; font: 600 12px/1.4 ui-monospace, monospace; text-align: center; }
+.pwa-offline[hidden] { display: none; }
+
+
+/* iPhone notch / status bar and home indicator (the page draws edge to edge: viewport-fit=cover,
+   and the installed app's status bar is translucent): keep tappable controls out of them */
+.top { padding-top: env(safe-area-inset-top); }
+.login-panel {
+    padding-top: max(20px, calc(env(safe-area-inset-top) + 12px));
+    padding-bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px));
+    padding-right: max(16px, env(safe-area-inset-right));
+    overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+}
+/* the close button stays in reach (just below the status bar) when the panel scrolls */
+.login-head { position: sticky; top: env(safe-area-inset-top); z-index: 2; background: var(--panel); padding: 4px 0; }
+.login-close { position: relative; z-index: 3; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.mobile-cta { padding-bottom: max(10px, env(safe-area-inset-bottom)); }

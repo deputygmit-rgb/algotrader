@@ -12,10 +12,11 @@ described by the user-facing "scan -> verify -> execute -> track" workflow.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from src.agent.activity import default_log_dir
+from src.agent.activity import AgentActivity, default_log_dir
 from src.agent.executor_agent import ExecutorAgent
 from src.agent.market_hours import is_market_open
 from src.agent.scanner_agent import ScannerAgent
@@ -29,7 +30,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 HEARTBEAT_INTERVAL_SECONDS = 60
+MAX_RESTARTS_PER_HOUR = 5        # a crashed agent is restarted with a doubling pause, at most this often
 
+# light mode (demo / view-only sessions): cycle seconds and journal sizes
+LIGHT_VERIFIER_S, LIGHT_EXECUTOR_S, LIGHT_TRACKER_S = 180, 60, 60
+LIGHT_EVENTS, LIGHT_TRACE = 100, 300
 
 class TradingServiceAgent:
     """Supervises a single per-user TradingService and its pipeline sub-agents.
@@ -44,14 +49,23 @@ class TradingServiceAgent:
         self.zerodha_id = zerodha_id
         self.service = service
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._restarts: dict[str, list[float]] = {}     # agent -> restart times (monotonic)
         self._alive = True
         self.created_at = datetime.now().isoformat(timespec="seconds")
         self.last_heartbeat_at: Optional[str] = None
+        # Demo and view-only sessions run the agents in a light mode: they place no real
+        # orders and share the market data, so slower cycles and smaller in-memory
+        # journals are enough - many public visitors at once must not exhaust the server.
+        light = bool(getattr(service, "is_demo", False) or getattr(service, "is_shared_market", False))
+        self.light = light
         self.scanner = ScannerAgent(zerodha_id, service)
-        self.verifier = VerifierAgent(zerodha_id, service)
-        self.executor = ExecutorAgent(zerodha_id, service)
-        self.tracker = TrackerAgent(zerodha_id, service)
+        self.verifier = VerifierAgent(zerodha_id, service, interval_seconds=LIGHT_VERIFIER_S if light else 45)
+        self.executor = ExecutorAgent(zerodha_id, service, interval_seconds=LIGHT_EXECUTOR_S if light else 30)
+        self.tracker = TrackerAgent(zerodha_id, service, interval_seconds=LIGHT_TRACKER_S if light else 20)
         for agent in self.agents.values():
+            if light:
+                agent.activity = AgentActivity(agent=agent.NAME, owner=zerodha_id,
+                                               max_events=LIGHT_EVENTS, max_trace=LIGHT_TRACE)
             agent.activity.enable_persistence(default_log_dir())
 
     @property
@@ -78,10 +92,30 @@ class TradingServiceAgent:
         self.executor.start()
         self.tracker.start()
 
+    def _restart_crashed(self) -> None:
+        """A crashed agent is started again, with a growing pause (at most
+        ``MAX_RESTARTS_PER_HOUR`` an hour, so a fault that crashes it at once does not spin)."""
+        now = time.monotonic()
+        for name, agent in self.agents.items():
+            if agent.status().get("state") != "crashed":
+                continue
+            history = [t for t in self._restarts.get(name, []) if now - t < 3600]
+            if len(history) >= MAX_RESTARTS_PER_HOUR:
+                continue
+            if history and now - history[-1] < 30 * (2 ** (len(history) - 1)):
+                continue
+            if agent.restart():
+                self._restarts[name] = history + [now]
+                logger.warning("agent_restarted", zerodha_id=self.zerodha_id, agent=name, restarts_this_hour=len(history) + 1)
+
     async def _heartbeat(self) -> None:
         while self._alive:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
             self.last_heartbeat_at = datetime.now().isoformat(timespec="seconds")
+            try:
+                self._restart_crashed()
+            except Exception as e:
+                logger.error("agent_restart_failed", zerodha_id=self.zerodha_id, error=str(e))
             record = getattr(self.service, "ensure_session_recording", None)
             if record is not None:
                 try:
@@ -166,7 +200,12 @@ class TradingServiceSupervisorAgent:
         agent = self._agents.pop(uid, None)
         if agent:
             agent.stop_supervision()
-            logger.info("agent_removed", zerodha_id=uid)
+            try:
+                cancelled = agent.service.cancel_background_tasks()
+            except Exception as e:      # removal must complete even if a task misbehaves
+                cancelled = 0
+                logger.warning("service_task_cancel_failed", zerodha_id=uid, error=str(e))
+            logger.info("agent_removed", zerodha_id=uid, tasks_cancelled=cancelled)
 
     def list_agents(self) -> list[str]:
         return list(self._agents.keys())

@@ -2,8 +2,17 @@
 
 Polls the broker via the already-existing ``TradingService.get_positions()``
 and ``get_orders()`` methods and keeps a snapshot for monitoring/dashboard use.
-Purely read-only - does not place, modify, or cancel anything, so it cannot
-change trading behavior or duplicate order actions.
+It never places, modifies or cancels an order itself. When its cross-check
+finds a problem it hands it to the execution engine's own recovery (which
+uses the engine's guards: tags, confirmation passes, no duplicate orders):
+
+* ``untracked`` -> the engine looks for entries sent before a restart (by tag);
+* ``stale``     -> the engine reconciles positions with the broker;
+* ``unprotected`` while nothing manages the position -> the engine's loops are
+  started (they re-place the stop).
+
+It keeps watching while the app holds positions or orders, even with live
+trading off (after a restart, or after Stop Live with positions open).
 
 Each sync is traced; the event log records what changed at the broker since
 the previous sync: positions opened, closed or resized, and orders placed or
@@ -128,9 +137,40 @@ class TrackerAgent(BaseAgent):
                 self.activity.record("change", text, level, order_id=oid)
         self._positions, self._orders = positions, order_state
 
+    def _engine_busy(self) -> bool:
+        engine = getattr(self.service, "_execution", None)
+        tracked = getattr(engine, "_tracked_positions", None) or {}
+        return bool(getattr(engine, "_pending_orders", None)) or any(not t.is_closed for t in tracked.values())
+
+    async def _remedy(self, found: dict[str, dict[str, Any]]) -> None:
+        """Hand each kind of finding to the engine's recovery (see the module docstring)."""
+        engine = getattr(self.service, "_execution", None)
+        kinds = {f["kind"] for f in found.values()}
+        if engine is None or not kinds:
+            return
+        try:
+            if "untracked" in kinds and hasattr(engine, "resolve_intents"):
+                result = await engine.resolve_intents()
+                if result.get("adopted"):
+                    self.activity.record("action", f"Adopted {result['adopted']} entry order(s) sent before a restart",
+                                         "warning")
+            if "stale" in kinds and hasattr(engine, "reconcile_positions"):
+                result = await engine.reconcile_positions()
+                if any(result.values()):
+                    self.activity.record("action", f"Followed the broker: {result['closed']} closed, "
+                                                   f"{result['shrunk']} reduced outside the app", "warning")
+            if "unprotected" in kinds and not engine.__dict__.get("_loops_active"):
+                start = getattr(self.service, "start_management", None)
+                if start is not None:
+                    start()
+                    self.activity.record("action", "Position without a live stop and nothing managing it: "
+                                                   "started the engine's management loops", "error")
+        except Exception as e:
+            logger.error("tracker_agent_remedy_failed", zerodha_id=self.zerodha_id, error=str(e))
+
     async def _run_loop(self) -> None:
         while self._alive:
-            if self.service.is_running and self.service.is_authenticated:
+            if (self.service.is_running or self._engine_busy()) and self.service.is_authenticated:
                 self._set_state("syncing")
                 self.activity.cycle_start()
                 self.activity.set_task("Fetching positions and orders from the broker", "observe")
@@ -163,7 +203,10 @@ class TrackerAgent(BaseAgent):
                     ][:20]
                     self._journal_changes(net, orders)
                     self.activity.set_task("Cross-checking broker positions with the app's tracked positions", "decide")
-                    self.cross_check(net, orders)
+                    found = self.cross_check(net, orders)
+                    if found:
+                        self.activity.set_task("Handing findings to the engine's recovery", "act")
+                        await self._remedy(found)
                     self.syncs += 1
                     self.activity.work(len(net) + len(orders))
                     try:

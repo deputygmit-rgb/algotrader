@@ -38,7 +38,8 @@ def _post(path, body, headers=None):
 
 
 def _form(**extra):
-    return {"name": "Asha", "email": "asha@example.com", "form_token": webapp._form_token(time.time() - 10),
+    return {"name": "Asha", "email": "asha@example.com", "phone": "+91 98765 43210",
+            "form_token": webapp._form_token(time.time() - 10),
             **CHOICES, **extra}
 
 
@@ -116,7 +117,9 @@ def test_pages_carry_a_fresh_form_token():
 def test_one_network_cannot_hold_every_demo_slot(app_state, monkeypatch):
     sessions = demo_module.DemoSessions()
     monkeypatch.setattr(webapp, "demo_sessions", sessions)
-    codes = [_post("/demo/start", {}).status_code for _ in range(4)]
+    browser = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36"}
+    codes = [_post("/demo/start", {"form_token": webapp._form_token(time.time() - 10)}, browser).status_code
+             for _ in range(4)]
     assert codes == [200, 200, 429, 429]
 
 

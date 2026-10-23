@@ -254,6 +254,8 @@ class TradingService:
                                           account=zerodha_id or "")
         self._execution.set_event_sink(self._lifecycle.event)
         self._execution.attach_state_store(self._market_store, zerodha_id or "")
+        self._risk.attach_state_store(self._market_store, zerodha_id or "")      # a kill switch survives restarts
+        self._risk.on_kill_switch = lambda reason: self._emit("risk.kill_switch_on", reason=reason)
         # the board scores signals with the index OI bias at each bar close (market_regime)
         from src.analysis.market_regime import MarketBiasHistory
 
@@ -356,7 +358,74 @@ class TradingService:
 
     async def authenticate(self, request_token: str) -> dict[str, Any]:
         session = await self._auth.generate_session(request_token)
+        # a session that was trading, or has orders / positions in flight, picks up again
+        try:
+            task = asyncio.get_running_loop().create_task(self.resume_after_restart(), name="resume_after_login")
+            task.add_done_callback(self._task_exception_handler)
+        except RuntimeError:
+            pass
         return {"user_id": session.user_id, "user_name": session.user_name}
+
+    # ── Recovery after a restart (crash, out-of-memory kill, deploy) or a new login ──
+    def _live_flag(self) -> Optional[dict[str, Any]]:
+        try:
+            return self._market_store.load_engine_state(self._zerodha_id or "").get("session", {}).get("live")
+        except Exception as e:
+            logger.error("live_flag_read_failed", error=str(e))
+            return None
+
+    def _set_live_flag(self, tokens: Optional[list[int]]) -> None:
+        """Live trading on (with its instruments) or off, kept across restarts."""
+        store = self.__dict__.get("_market_store")
+        if store is None or not self._zerodha_id or self.__dict__.get("is_demo"):
+            return
+        try:
+            if tokens is None:
+                store.delete_engine_state(self._zerodha_id, "session", "live")
+            else:
+                store.save_engine_state(self._zerodha_id, "session", "live", {
+                    "tokens": tokens, "mode": self.__dict__.get("_live_mode", "quote"),
+                    "started_at": datetime.now().isoformat(timespec="seconds")})
+        except Exception as e:
+            logger.error("live_flag_write_failed", error=str(e))
+
+    async def resume_after_restart(self) -> dict[str, Any]:
+        """Pick trading up again once there is a broker session.
+
+        * Live trading was on when the process stopped -> it is started again with
+          the same instruments (strategies, ticker, engine).
+        * Otherwise, orders or positions still in flight -> the engine alone manages
+          them: fills settled, stops kept, exits confirmed, the 15:15 square-off -
+          and no strategy sends a new order.
+        """
+        if self.__dict__.get("is_demo") or self.__dict__.get("is_shared_market"):
+            return {"resumed": "no"}
+        if self._running:
+            return {"resumed": "already running"}
+        if not self.is_authenticated:
+            return {"resumed": "waiting for a broker session"}
+        flag = self._live_flag()
+        if flag:
+            self._live_mode = flag.get("mode") or "quote"
+            result = await self.start_live(list(flag.get("tokens") or []), self._live_mode)
+            logger.warning("live_trading_resumed", zerodha_id=self._zerodha_id, **result)
+            return {"resumed": "live trading", **result}
+        state = self._market_store.load_engine_state(self._zerodha_id or "")
+        if any(state.get(k) for k in ("pending", "position", "intent", "closed")):
+            self.start_management()
+            return {"resumed": "managing open orders and positions"}
+        return {"resumed": "nothing to resume"}
+
+    def start_management(self) -> None:
+        """Run the execution engine's loops on their own: open positions keep their
+        stops, exits and square-off while live trading is off (no ticker, no strategies)."""
+        if self._execution.__dict__.get("_loops_active"):
+            return
+        task = asyncio.get_running_loop().create_task(self._execution.start_reconciliation_loop(),
+                                                      name="engine_management")
+        task.add_done_callback(self._task_exception_handler)
+        self._management_task = task
+        logger.warning("engine_managing_open_positions", zerodha_id=self._zerodha_id)
 
     async def search_instruments(self, query: str, exchange: str = "NSE") -> list[dict[str, Any]]:
         if exchange not in self._instruments_cache:
@@ -1268,6 +1337,8 @@ class TradingService:
         # also the instruments restored strategies were promoted on
         tokens = list(dict.fromkeys([*tokens, *self._strategy_tokens()]))
         self._subscribed_tokens = tokens
+        self._live_mode = mode
+        self._set_live_flag(tokens)          # resumed after a restart until Stop Live
 
         self._ticker.on_ticks = self._on_ticks
         self._ticker.on_connect = self._on_connect
@@ -1305,10 +1376,15 @@ class TradingService:
 
     async def stop_live(self) -> dict[str, Any]:
         self._running = False
+        self._set_live_flag(None)
         self._bar_aggs = {}
         self._live_bars = {}
         await self._execution.stop_reconciliation_loop()
         await self._ticker.disconnect()
+        # strategies stop; positions still open keep their stops, exits and square-off managed
+        engine = self._execution
+        if any(not t.is_closed for t in engine._tracked_positions.values()) or engine._pending_orders:
+            self.start_management()
         logger.info("live_trading_stopped")
         return {"success": True}
 
@@ -2016,6 +2092,31 @@ class TradingService:
         bus = self.__dict__.get("telemetry")
         if bus is not None:
             bus.emit(topic, **data)
+        if topic.startswith(self.PUSH_TOPICS):
+            self._push_alert(topic, data)
+
+    # events that can become a push alert on the account's devices (src/notify/push.py)
+    PUSH_TOPICS = ("lifecycle.", "board.signal", "risk.kill_switch_on")
+
+    def _push_alert(self, topic: str, data: dict[str, Any]) -> None:
+        """Fire-and-forget alert for a real account (not demo or view-only sessions)."""
+        account = self.__dict__.get("_zerodha_id")
+        if not account or self.__dict__.get("is_demo") or self.__dict__.get("is_shared_market"):
+            return
+        try:
+            from src.notify.push import PushService, alert_for
+
+            alert = alert_for(topic, data)
+            if alert is None:
+                return
+            category, title, body, tag = alert
+            url = {"signals": "/app#tab=day-trade", "trades": "/app#tab=positions"}.get(category, "/app#tab=agents")
+            asyncio.get_running_loop().create_task(
+                PushService.get_instance().notify(account, category, title, body, url, tag))
+        except RuntimeError:
+            pass                    # no running loop (sync caller in tests)
+        except Exception as e:
+            logger.warning("push_alert_failed", topic=topic, error=str(e))
 
     def _on_lifecycle_event(self, topic: str, **ev: Any) -> None:
         """A signal reached a new stage: tell the agents and stream it to the dashboard."""
@@ -2104,16 +2205,48 @@ class TradingService:
                     except Exception as e:
                         logger.error("bar_flush_error", token=token, interval=iv, error=str(e))
 
+    FEED_GAP_REFILL_S = 60      # a feed outage this long: the missed bars are fetched from history
+
     async def _on_connect(self) -> None:
         logger.info("ticker_connected")
         await self._broadcast_ws({"type": "status", "data": {"connected": True}})
+        down_at = self.__dict__.get("_feed_down_at")
+        self._feed_down_at = None
+        if down_at and self._running and time.time() - down_at >= self.FEED_GAP_REFILL_S:
+            task = asyncio.get_running_loop().create_task(self._refill_after_outage(time.time() - down_at),
+                                                          name="bar_refill")
+            task.add_done_callback(self._task_exception_handler)
+
+    def _mark_feed_down(self) -> None:
+        if self._running and self.__dict__.get("_feed_down_at") is None:
+            self._feed_down_at = time.time()
 
     async def _on_close(self, code: int, reason: str) -> None:
         logger.warning("ticker_closed", code=code, reason=reason)
+        self._mark_feed_down()
         await self._broadcast_ws({"type": "status", "data": {"connected": False}})
 
     async def _on_error(self, error: Exception) -> None:
         logger.error("ticker_error", error=str(error))
+        self._mark_feed_down()
+
+    async def _refill_after_outage(self, gap_s: float) -> None:
+        """After a feed outage the bars it missed come from history and the forming bar
+        is rebuilt, so no strategy sees a bar stitched across the gap - and no bar that
+        closed during the outage fires a late signal (only bars closing from now on do)."""
+        self._bar_aggs = {}
+        await self._seed_bar_data(list(self.__dict__.get("_subscribed_tokens") or []))
+        logger.warning("bars_refilled_after_feed_outage", gap_seconds=round(gap_s))
+        self._emit("feed.refilled", gap_seconds=round(gap_s))
+
+    async def reconnect_feed(self) -> bool:
+        """Force a new feed connection (the Executor agent's remedy for a silent feed)."""
+        force = getattr(self.__dict__.get("_ticker"), "force_reconnect", None)
+        if force is None or not self._running:
+            return False
+        self._mark_feed_down()
+        await force()
+        return True
 
     async def _on_order_update(self, data: dict[str, Any]) -> None:
         self._journal.record_trade(
@@ -2353,6 +2486,18 @@ class TradingService:
                               trigger=signal.metadata.get("trigger"), source=signal.metadata.get("source") or "strategy")
         outcome: dict[str, Any] = {"decision": "", "reason": "", "order_id": ""}
         try:
+            pending_for = getattr(self._execution, "pending_entry_for", None)
+            pending = pending_for(signal.tradingsymbol, signal.strategy_name) if pending_for else None
+            if pending is not None:
+                # the strategy's last entry has not filled yet: a second order would double the position
+                if is_exit:
+                    await self._execution.cancel_pending_entry(pending)
+                reason = ("exit signal: cancelled the entry still working" if is_exit
+                          else "entry order still working for this strategy and symbol")
+                self._emit("signal.ignored", **sig_info, reason=reason)
+                outcome.update(decision="ignored", reason=reason, order_id=pending)
+                self._lifecycle_event(lid, "IGNORED", sig_info, reason=reason)
+                return None
             open_pos = self._execution.open_position_for(signal.tradingsymbol, signal.strategy_name)
             if open_pos is not None:
                 # a signal carrying its own exit plan (metadata["exec"]) is managed by that plan
@@ -2405,6 +2550,13 @@ class TradingService:
                     self._emit("risk.blocked", **sig_info, error=blocked)
                     self._lifecycle_event(lid, "BLOCKED", sig_info, by="pre-trade checklist", reason=blocked)
                     return None
+            if not self.__dict__.get("_pnl_checked"):
+                # first order since start-up: the loss limit sees today's real P&L, not 0
+                try:
+                    await self._refresh_risk_pnl()
+                    self._pnl_checked = True
+                except Exception as e:
+                    logger.warning("risk_pnl_refresh_before_order_failed", error=str(e))
             try:
                 order_id = await self._execution.execute_signal(signal)
                 outcome.update(decision="sent" if order_id else "failed", order_id=order_id or "",
@@ -2465,6 +2617,31 @@ class TradingService:
             return None if report.passed else "preflight: " + "; ".join(report.blocked_reasons)
         except Exception as e:      # a checklist that cannot run must not wave the order through
             return f"preflight could not run: {e}"
+
+    def _ledger_swing(self, snap: dict[str, Any]) -> None:
+        """Swing board signals in the signals ledger (source "swing"), written when a signal
+        first appears and whenever its status changes - the live half of the performance report."""
+        seen = self.__dict__.setdefault("_swing_ledger_seen", {})
+        stamp = datetime.now().isoformat(timespec="seconds")
+        for sig in snap.get("feed") or []:
+            if seen.get(sig["id"]) == sig.get("status"):
+                continue
+            row = {
+                "source": "swing", "account": self._zerodha_id or "", "strategy": "swing_setups",
+                "symbol": sig.get("symbol"), "timeframe": "60minute",
+                "session": str(sig.get("bar_time") or "")[:10], "bar_time": str(sig.get("bar_time") or "")[:16],
+                "signal_time": str(sig.get("time") or "")[11:16], "side": sig.get("side"), "setup": sig.get("setup"),
+                **{k: sig.get(k) for k in ("quality", "entry", "stop", "target1", "target2", "risk_pct", "status",
+                                            "entry_time", "exit_time", "bars_held", "mfe_r", "mae_r", "gross_r",
+                                            "cost_r", "result_r", "backfilled", "flow_bias")},
+                "skipped": sig.get("skipped") or "",
+            }
+            try:
+                self._market_store.upsert_signal(f"swing|{self._zerodha_id or ''}|{sig['id']}", row, stamp)
+                seen[sig["id"]] = sig.get("status")
+            except Exception as e:      # the ledger must never break the board
+                logger.warning("swing_ledger_failed", signal_id=sig.get("id"), error=str(e))
+                return
 
     def _ledger_live_signal(self, signal: Signal, timeframe: str, outcome: dict[str, Any]) -> None:
         """Record a live strategy signal and what became of it in the signals ledger."""
@@ -2970,6 +3147,29 @@ class TradingService:
                     logger.warning("fno_baseline_save_failed", error=str(e))
         logger.info("fno_baselines_loaded", count=len(self._fno_baselines))
 
+    # background tasks a session may start outside live trading (live trading's own
+    # loops end with stop_live)
+    _BACKGROUND_TASKS = ("_day_trade_task", "_oi_bias_task", "_oi_snapshot_task", "_replay_task",
+                         "_fno_baseline_task", "_swing_task", "_management_task")
+
+    def cancel_background_tasks(self) -> int:
+        """Stop every loop this session runs, when it is removed (demo expiry, logout,
+        admin). Each running loop holds the whole session - agents, caches, the board,
+        the engine - so a removed session whose loops kept running was never freed:
+        every demo visitor of the day stayed in memory (the OI-bias recorder is an
+        endless loop) until the process was killed for running out of memory."""
+        self._oi_streaming = False                     # ends the OI broadcast loop
+        cancelled = 0
+        for name in self._BACKGROUND_TASKS:
+            task = self.__dict__.get(name)
+            if task is not None and not task.done():
+                task.cancel()
+                cancelled += 1
+        clients = self.__dict__.get("_ws_clients")
+        if clients:
+            clients.clear()
+        return cancelled
+
     def _published(self) -> Any:
         """The source account's published products, for a view-only (shared market data) session."""
         if not self.__dict__.get("is_shared_market"):
@@ -3067,7 +3267,7 @@ class TradingService:
         contract = next((c for c in self._fno_universe if c.symbol == symbol), None)
         if contract is None:
             return []
-        if self.is_demo:
+        if self.__dict__.get("is_demo"):
             # one copy per symbol and bar window for every demo session (not stored:
             # simulated bars are regenerated on demand)
             bucket = bar_bucket(datetime.now())
@@ -3170,7 +3370,7 @@ class TradingService:
         self._board.save(self._day_trade.to_state(), now)
         snap = self._board.annotate(snap)
         snap["autotrade"]["live_trading"] = self._running and bool(getattr(self._execution, "_running", False))
-        if self.is_demo:
+        if self.__dict__.get("is_demo"):
             # a logged-in user whose Zerodha session is not connected (it expires every
             # morning) is served this simulated board: say so on screen
             snap["demo"] = True
@@ -3187,8 +3387,8 @@ class TradingService:
         Every viewer used to fetch and analyse the NIFTY / SENSEX option chains
         every minute through the source account's shared rate limits, writing
         the same rows again."""
-        if self.__dict__.get("is_shared_market"):
-            return
+        if self.__dict__.get("is_shared_market") or self.__dict__.get("is_demo"):
+            return     # viewers read the source's history; a demo's simulated chain is not worth recording
         if self._oi_bias_task is None or self._oi_bias_task.done():
             self._oi_bias_task = asyncio.create_task(self._oi_bias_loop(), name="oi_bias_recorder")
             self._oi_bias_task.add_done_callback(self._task_exception_handler)
@@ -3385,6 +3585,7 @@ class TradingService:
             self._swing_task = asyncio.create_task(self._swing.refresh(now), name="swing_bars")
             self._swing_task.add_done_callback(self._task_exception_handler)
         snap = await asyncio.to_thread(self._swing.snapshot, flow, now)
+        self._ledger_swing(snap)
         if self.is_demo:
             snap["demo"] = True
         self._swing_cache = (time.monotonic(), snap)

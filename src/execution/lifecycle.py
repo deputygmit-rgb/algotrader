@@ -47,8 +47,17 @@ STAGES: dict[str, tuple[str, str]] = {
     "EXITING": ("tracker", "warning"),
     "CLOSED": ("tracker", "info"),
     "RESTORED": ("tracker", "warning"),
+    # recovery: crashes, lost replies, failed exits, changes made outside the app
+    "ADOPTED": ("tracker", "warning"),
+    "NOT_PLACED": ("executor", "warning"),
+    "EXPIRED": ("executor", "warning"),
+    "EXIT_FAILED": ("tracker", "error"),
+    "SCALE_FAILED": ("tracker", "error"),
+    "OCO_DOUBLE_FILL": ("tracker", "error"),
+    "UNPROTECTED": ("tracker", "error"),
+    "RESIZED": ("tracker", "warning"),
 }
-TERMINAL = {"BLOCKED", "IGNORED", "REJECTED", "CANCELLED", "CLOSED"}
+TERMINAL = {"BLOCKED", "IGNORED", "REJECTED", "CANCELLED", "CLOSED", "NOT_PLACED", "EXPIRED"}
 MAX_TRACKED = 300          # signals kept in memory for the Agents view
 
 
@@ -89,6 +98,23 @@ def describe(ev: dict[str, Any]) -> str:
         return f"{head} — closed ({d.get('reason')}) @ {d.get('exit_price')} · P&L {d.get('pnl')}"
     if st == "RESTORED":
         return f"{head} — {d.get('kind')} #{d.get('order_id')} restored after restart"
+    if st == "ADOPTED":
+        what = d.get("kind") or f"{d.get('leg')} order"
+        return f"{head} — {what} #{d.get('order_id')} found at the broker by its tag and adopted"
+    if st == "NOT_PLACED":
+        return f"{head} — not placed: {d.get('reason')}"
+    if st == "EXPIRED":
+        return f"{head} — entry #{d.get('order_id')} dropped: {d.get('reason')}"
+    if st == "EXIT_FAILED":
+        return f"{head} — exit attempt {d.get('attempt')} failed: {d.get('reason')}. {d.get('note') or ''}".strip()
+    if st == "SCALE_FAILED":
+        return f"{head} — partial exit not filled ({d.get('status')}): {d.get('returned')} back in the position"
+    if st == "OCO_DOUBLE_FILL":
+        return f"{head} — stop and target both filled: {d.get('quantity')} extra flattened at market"
+    if st == "UNPROTECTED":
+        return f"{head} — no app stop: {d.get('reason')}"
+    if st == "RESIZED":
+        return f"{head} — now {d.get('quantity')}: {d.get('reason')}"
     return f"{head} — {st}"
 
 
@@ -109,6 +135,18 @@ def lifecycle_id_of(obj: Any) -> str:
 def order_tag(lifecycle_id: str) -> Optional[str]:
     """Kite order tag (alphanumeric, <= 20 chars) marking an order as the app's."""
     return f"AT{lifecycle_id}"[:20] if lifecycle_id else None
+
+
+# order legs after the entry (the entry keeps the plain ``order_tag``)
+LEG_STOP, LEG_TARGET, LEG_EXIT, LEG_PARTIAL = "S", "T", "X", "P"
+
+
+def leg_tag(lifecycle_id: str, leg: str) -> Optional[str]:
+    """Kite tag for one order after the entry: the entry's tag, the leg letter and a
+    short random suffix (<= 17 chars). Each attempt has its own tag, so after a lost
+    reply or a crash the order can be found in the order book by it, and the live
+    orders of a leg by the prefix ``order_tag(id) + leg``."""
+    return f"AT{lifecycle_id}{leg}{uuid.uuid4().hex[:3]}"[:20] if lifecycle_id else None
 
 
 class SignalLifecycle:
