@@ -39,12 +39,42 @@ DISCLAIMER = ("Rule-based setup from VerquoAI's analytics - information only, no
               "or investment advice. Trading involves substantial risk.")
 
 
+TOKEN_RE = re.compile(r"\d{5,15}:[A-Za-z0-9_-]{30,60}")
+CHAT_RE = re.compile(r"-?\d{5,20}|@[A-Za-z0-9_]{5,32}")
+_reported: set[str] = set()
+
+
+def _clean(name: str) -> str:
+    return os.environ.get(name, "").strip().strip("\"'").strip()
+
+
+def config_problem() -> str:
+    """Why posting is off, in words (never the values): "" when the settings are usable."""
+    token, chat = _clean("TELEGRAM_BOT_TOKEN"), _clean("TELEGRAM_CHAT_ID")
+    if not token and not chat:
+        return "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not set"
+    if not token:
+        return "TELEGRAM_BOT_TOKEN is not set"
+    if not TOKEN_RE.fullmatch(token):
+        return "TELEGRAM_BOT_TOKEN is not a bot token (digits, a colon, ~35 characters - as @BotFather gives it)"
+    if not chat:
+        return "TELEGRAM_CHAT_ID is not set"
+    if "t.me" in chat or chat.startswith("http"):
+        return "TELEGRAM_CHAT_ID holds a link: it must be the channel's numeric id (-100...)"
+    if not CHAT_RE.fullmatch(chat):
+        return "TELEGRAM_CHAT_ID is not a channel id (-100... number)"
+    return ""
+
+
 def _config() -> tuple[str, str]:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{30,60}", token) or not re.fullmatch(r"-?\d{5,20}|@[A-Za-z0-9_]{5,32}", chat):
+    problem = config_problem()
+    if problem:
+        # once per problem: the settings are partly there but unusable (not when Telegram is simply off)
+        if (_clean("TELEGRAM_BOT_TOKEN") or _clean("TELEGRAM_CHAT_ID")) and problem not in _reported:
+            _reported.add(problem)
+            logger.warning("telegram_not_configured", problem=problem)
         return "", ""
-    return token, chat
+    return _clean("TELEGRAM_BOT_TOKEN"), _clean("TELEGRAM_CHAT_ID")
 
 
 def enabled() -> bool:

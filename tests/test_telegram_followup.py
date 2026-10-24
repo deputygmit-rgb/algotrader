@@ -88,3 +88,13 @@ def test_the_week_old_request_gets_one_update(tmp_path, monkeypatch):
     assert to == "a@b.co" and subject == f"Your VerquoAI access request #{old} - an update"
     assert "completing broker compliance" in text and "https://t.me/+AbCdEf123" in text and f"#{old}" in text
     assert asyncio.run(webapp.send_due_followups()) == 0                 # once only
+
+
+def test_a_bad_setting_is_named_not_silently_ignored(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", f'"{TOKEN}"')                  # quotes are tolerated
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "https://t.me/+AbCdEf123")       # the invite link by mistake
+    assert "numeric id" in telegram.config_problem() and not telegram.enabled()
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001234567890")
+    assert telegram.config_problem() == "" and telegram.enabled()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot" + TOKEN)
+    assert "not a bot token" in telegram.config_problem()
