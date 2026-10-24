@@ -83,7 +83,30 @@
             <div class="phone">
                 <span class="phone-island" aria-hidden="true"></span>
                 <div class="phone-screen">
-                    <figure class="phone-slide is-active" aria-roledescription="slide" aria-label="1 of 3"><img src="/static/img/slides/oi-tracker.jpg" alt="OI Tracker in the demo: NIFTY spot, put-call ratio, max pain and OI bias" width="390" height="844" fetchpriority="high"></figure>
+                    <figure class="phone-slide is-active oi-live" aria-roledescription="slide" aria-label="1 of 3" data-oi-live>
+                        <!-- a live preview of the OI Tracker: tiles flow in, values move (simulated data) -->
+                        <div class="oi-l-head"><b>OI TRACKER</b><span>NIFTY · <i data-oi="clock">10:42</i></span></div>
+                        <div class="oi-l-tag"><i></i> Live preview · simulated data</div>
+                        <div class="oi-l-grid">
+                            <div class="oi-l-tile" style="--i:0"><span>Spot / ATM</span><b data-oi="spot">22,612.40</b><small>ATM <i data-oi="atm">22,600</i></small></div>
+                            <div class="oi-l-tile" style="--i:1"><span>PCR (OI)</span><b data-oi="pcr">1.08</b><div class="oi-l-gauge"><i data-oi="pcrbar" style="width:54%"></i></div></div>
+                            <div class="oi-l-tile" style="--i:2"><span>Max pain</span><b data-oi="maxpain">22,600</b><small>straddle ₹<i data-oi="straddle">212</i></small></div>
+                            <div class="oi-l-tile" style="--i:3"><span>OI bias</span><b data-oi="bias" class="up">MILDLY BULLISH</b><small data-oi="why">PCR above 1</small></div>
+                            <div class="oi-l-tile" style="--i:4"><span>PE wall · support</span><b data-oi="pewall" class="up">22,500</b><small>OI <i data-oi="peoi">86.6 L</i></small></div>
+                            <div class="oi-l-tile" style="--i:5"><span>CE wall · resistance</span><b data-oi="cewall" class="dn">22,800</b><small>OI <i data-oi="ceoi">83.4 L</i></small></div>
+                        </div>
+                        <div class="oi-l-chain" style="--i:6">
+                            <div class="oi-l-chain-h"><span>CE OI</span><span>Strike</span><span>PE OI</span></div>
+                            <div data-oi="chain"></div>
+                        </div>
+                        <div class="oi-l-trend" style="--i:7">
+                            <div class="oi-l-chain-h"><span>PCR trend</span><span></span><span data-oi="pcrnow">1.08</span></div>
+                            <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+                                <line x1="0" x2="100" y1="20" y2="20" class="mid"/>
+                                <polyline data-oi="trend" points=""/>
+                            </svg>
+                        </div>
+                    </figure>
                     <figure class="phone-slide" aria-roledescription="slide" aria-label="2 of 3"><img src="/static/img/slides/backtest.jpg" alt="A backtest in the demo: equity curve and drawdown" width="390" height="844" loading="lazy"></figure>
                     <figure class="phone-slide" aria-roledescription="slide" aria-label="3 of 3"><img src="/static/img/slides/agents.jpg" alt="AI agents in the demo: agents online, workload and health" width="390" height="844" loading="lazy"></figure>
                 </div>
