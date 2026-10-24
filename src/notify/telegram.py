@@ -9,8 +9,10 @@ How it is wired (``.env``):
   can reply, and the bot reads nothing from Telegram (no webhook, no getUpdates).
 
 Every message is sent with ``protect_content`` (no forwarding or saving) and without link
-previews. Only the market-data account posts, so each signal goes out once; posted ids
-are kept per day (``data/telegram/sent-<day>.json``) so a restart never repeats one.
+previews. Only the market-data account posts, so each signal goes out once. Each posted
+signal is then followed to its close - entry filled, T1, and the exit with its result - as
+replies to its post. What was posted and how far each signal got is kept in
+``data/telegram/posted.json`` so a restart never repeats a message.
 Messages are queued and spaced (Telegram allows ~20 a minute in a channel).
 """
 from __future__ import annotations
@@ -146,61 +148,129 @@ def format_signal(board: str, s: dict[str, Any], flow: dict[str, Any]) -> str:
     return "\n".join(lines)[:4000]         # Telegram's limit is 4096 characters
 
 
+# A posted signal is followed to its close: each stage it reaches is posted once, as a
+# reply to the signal's own post, so the whole cycle reads as one thread.
+STAGE = {"PENDING": 0, "ACTIVE": 1, "T1 HIT": 2, "TARGET 2": 3, "STOPPED": 3, "BREAKEVEN": 3, "TIME EXIT": 3}
+KEEP_DAYS = 30                      # swing trades can stay open for days
+
+
+def _r(v: Any) -> str:
+    try:
+        return f"{float(v):+.2f}R"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def format_update(board: str, s: dict[str, Any], was: str) -> str:
+    """The stage a posted signal has reached (and any it passed since the last post)."""
+    e = html.escape
+    title = "DAY TRADE" if board == "day" else "SWING"
+    status = s.get("status", "")
+    head = f"<b>{title} · {e(str(s.get('side', '')))} {e(str(s.get('symbol', '')))} · "
+    filled = (f"Entry filled {_num(s.get('entry'))}" + (f" at {e(str(s['entry_time']))}" if s.get("entry_time") else ""))
+    lines: list[str] = []
+    if status == "ACTIVE":
+        lines = [head + "ENTRY FILLED</b>", filled,
+                 f"Stop {_num(s.get('stop'))} · T1 {_num(s.get('target1'))} · T2 {_num(s.get('target2'))}"]
+    elif status == "T1 HIT":
+        lines = [head + "T1 HIT</b>"] + ([filled] if STAGE.get(was, 0) < 1 else []) + [
+            f"Half booked at T1 {_num(s.get('target1'))}; stop moved to entry {_num(s.get('entry'))}. "
+            f"Rest aims for T2 {_num(s.get('target2'))}"]
+    else:
+        passed_t1 = status in ("TARGET 2", "BREAKEVEN") or (status == "TIME EXIT" and STAGE.get(was, 0) >= 2)
+        outcome = {
+            "TARGET 2": f"Target 2 hit at {_num(s.get('target2'))}",
+            "STOPPED": f"Stopped out at {_num(s.get('exit_price') or s.get('stop'))}",
+            "BREAKEVEN": f"Rest stopped at entry {_num(s.get('entry'))} after T1",
+            "TIME EXIT": (f"Closed at the time limit" + (f" at {_num(s['exit_price'])}" if s.get("exit_price") else "")
+                          + (" (half was booked at T1)" if passed_t1 else "")),
+        }.get(status, e(status.title()))
+        lines = [head + f"CLOSED · {e(status)}</b>"]
+        if STAGE.get(was, 0) < 1:
+            lines.append(filled)
+        if status in ("TARGET 2", "BREAKEVEN") and STAGE.get(was, 0) < 2:
+            lines.append(f"T1 {_num(s.get('target1'))} hit on the way - half booked there")
+        lines.append(outcome + (f" · {e(str(s['exit_time']))}" if s.get("exit_time") else ""))
+        result = f"Result {_r(s.get('result_r'))} after costs"
+        if s.get("cost_r") is not None:
+            result += f" (costs {_num(s['cost_r'])}R)"
+        lines += [result, "Cycle closed. R = multiples of the planned risk (entry to stop)."]
+    return "\n".join(lines)[:4000]
+
+
 class TelegramPublisher:
-    """Queues and posts new signals; one per id, ever."""
+    """Posts each new signal once, then each later stage of it once, until it closes."""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=200)
+        self._queue: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue(maxsize=200)
         self._task: Optional[asyncio.Task] = None
-        self._day = ""
-        self._sent: set[str] = set()
+        self._loaded = False
+        self._posted: dict[str, dict[str, Any]] = {}      # key -> {status, msg (Telegram id), at (day)}
         self._last_post = 0.0
 
-    # ── what was already posted today (survives restarts) ──
-    def _path(self, day: str) -> str:
-        return os.path.join(SENT_DIR, f"sent-{day}.json")
+    # ── what was posted, and how far each signal got (survives restarts) ──
+    @staticmethod
+    def _path() -> str:
+        return os.path.join(SENT_DIR, "posted.json")
 
     def _load(self) -> None:
-        day = date.today().isoformat()
-        if day == self._day:
+        if self._loaded:
             return
-        self._day = day
+        self._loaded = True
         try:
-            with open(self._path(day), encoding="utf-8") as f:
-                self._sent = set(json.load(f))
-        except (OSError, ValueError):
-            self._sent = set()
+            with open(self._path(), encoding="utf-8") as f:
+                self._posted = {k: v for k, v in json.load(f).items() if isinstance(v, dict)}
+        except (OSError, ValueError, AttributeError):
+            self._posted = {}
+        today = date.today().isoformat()
+        try:                                   # posted before this file existed: today's ids
+            with open(os.path.join(SENT_DIR, f"sent-{today}.json"), encoding="utf-8") as f:
+                for key in json.load(f):
+                    self._posted.setdefault(key, {"status": "PENDING", "msg": 0, "at": today})
+        except (OSError, ValueError, TypeError):
+            pass
+        cutoff = date.fromordinal(date.today().toordinal() - KEEP_DAYS).isoformat()
+        self._posted = {k: v for k, v in self._posted.items() if str(v.get("at", "")) >= cutoff}
 
     def _save(self) -> None:
         try:
             os.makedirs(SENT_DIR, exist_ok=True)
-            tmp = self._path(self._day) + ".tmp"
+            tmp = self._path() + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(sorted(self._sent), f)
-            os.replace(tmp, self._path(self._day))
+                json.dump(self._posted, f)
+            os.replace(tmp, self._path())
         except OSError as e:
             logger.warning("telegram_sent_save_failed", error=str(e))
 
     # ── public ──
     def publish_new(self, board: str, snap: dict[str, Any], flow: dict[str, Any]) -> int:
-        """Queue each signal that is new on its bar (not replayed, not skipped). Returns how many."""
+        """Queue each signal that is new on its bar (not replayed, not skipped), and each new
+        stage of a signal already posted. Returns how many messages were queued."""
         if not enabled():
             return 0
         self._load()
+        today = date.today().isoformat()
         queued = 0
         for s in snap.get("feed") or []:
-            if s.get("status") != "PENDING" or not s.get("is_latest_bar") or s.get("backfilled") or s.get("skipped"):
-                continue
             key = f"{board}:{s.get('symbol')}:{s.get('id')}"
-            if key in self._sent:
+            status = s.get("status")
+            record = self._posted.get(key)
+            if record is None:
+                if status != "PENDING" or not s.get("is_latest_bar") or s.get("backfilled") or s.get("skipped"):
+                    continue
+                item, record = (key, format_signal(board, s, flow), False), {"status": "PENDING", "msg": 0, "at": today}
+            elif STAGE.get(status, -1) > STAGE.get(record.get("status"), 0):
+                item = (key, format_update(board, s, record.get("status", "PENDING")), True)
+                record = {**record, "status": status, "at": today}
+            else:
                 continue
-            self._sent.add(key)
             try:
-                self._queue.put_nowait(format_signal(board, s, flow))
-                queued += 1
+                self._queue.put_nowait(item)
             except asyncio.QueueFull:
                 logger.warning("telegram_queue_full")
                 break
+            self._posted[key] = record
+            queued += 1
         if queued:
             self._save()
             self._ensure_worker()
@@ -212,21 +282,28 @@ class TelegramPublisher:
 
     async def _worker(self) -> None:
         while not self._queue.empty():
-            text = await self._queue.get()
+            key, text, is_update = await self._queue.get()
             wait = MIN_GAP_S - (time.monotonic() - self._last_post)
             if wait > 0:
                 await asyncio.sleep(wait)
-            await send(text)
+            record = self._posted.get(key, {})
+            message_id = await send(text, reply_to=int(record.get("msg") or 0) if is_update else 0)
             self._last_post = time.monotonic()
+            if message_id and not is_update and key in self._posted:
+                self._posted[key]["msg"] = message_id        # later stages reply to this post
+                self._save()
 
 
-async def send(text: str) -> bool:
-    """Post one message to the channel. The token is never logged or returned."""
+async def send(text: str, reply_to: int = 0) -> int:
+    """Post one message to the channel (a reply when ``reply_to`` is a message id).
+    Returns the new message's id, 0 on failure. The token is never logged or returned."""
     token, chat = _config()
     if not token:
-        return False
-    payload = {"chat_id": chat, "text": text, "parse_mode": "HTML",
-               "disable_web_page_preview": True, "protect_content": True}
+        return 0
+    payload: dict[str, Any] = {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                               "disable_web_page_preview": True, "protect_content": True}
+    if reply_to:
+        payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(f"{API}/bot{token}/sendMessage", json=payload)
@@ -238,11 +315,11 @@ async def send(text: str) -> bool:
         if r.status_code != 200:
             logger.warning("telegram_send_failed", status=r.status_code,
                            description=str((r.json() if r.content else {}).get("description", ""))[:120])
-            return False
-        return True
+            return 0
+        return int((r.json().get("result") or {}).get("message_id") or 0) or 1
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("telegram_send_failed", error=type(e).__name__)   # no URL: it holds the token
-        return False
+        return 0
 
 
 publisher = TelegramPublisher()
@@ -259,12 +336,15 @@ WELCOME = (
     "triggers - with why it triggered and its plan (entry, stop, two targets)\n"
     "• With every setup, <b>Money Flow</b>'s top 5 long and top 5 short stocks, each with its futures "
     "open-interest change and build-up\n"
+    "• Each setup is then followed to its close, as replies to its post: entry filled, T1 hit, "
+    "and the exit (Target 2, stop, or time limit) with its result after costs\n"
     "\n"
     "How to read a post:\n"
     "• <i>Why</i> - the condition that triggered it, on a closed bar\n"
     "• <i>quality</i> - 0-100 score of the setup; <i>volume</i> - versus the recent average\n"
     "• <i>NIFTY options-OI</i> - the index options' bias and how it adjusted the score\n"
     "• <i>Plan (est.)</i> - levels at the time of the signal; prices move on\n"
+    "• <i>Result</i> - in R, multiples of the planned risk (entry to stop), after costs\n"
     "\n"
     "Posts come during market hours (9:15-15:30 IST) on trading days. The channel is private and "
     "read-only, and posts cannot be forwarded or saved.\n"

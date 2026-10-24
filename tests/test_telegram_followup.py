@@ -45,9 +45,9 @@ def test_each_signal_is_posted_once_and_only_when_new(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001234567890")
     posted = []
 
-    async def fake_send(text):
+    async def fake_send(text, reply_to=0):
         posted.append(text)
-        return True
+        return len(posted)
     monkeypatch.setattr(telegram, "send", fake_send)
     monkeypatch.setattr(telegram, "MIN_GAP_S", 0)
     replayed = {**SIGNAL, "id": "x-old", "backfilled": True}
@@ -261,3 +261,76 @@ def test_one_invitation_per_email_address_however_many_requests(tmp_path, monkey
     later = store.add_contact(name="A later", email="a@b.co", phone="9876543210", trading_id="", message="",
                               source="landing", visitor_id="", user_id="", ip="")
     assert later not in [r["id"] for r in store.due_followups(days=0, limit=100, skip_statuses=("rejected",))]
+
+
+def _cycle_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(telegram, "SENT_DIR", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001234567890")
+    monkeypatch.setattr(telegram, "MIN_GAP_S", 0)
+    posted = []
+
+    async def fake_send(text, reply_to=0):
+        posted.append((text, reply_to))
+        return 100 + len(posted)                       # Telegram's message id
+    monkeypatch.setattr(telegram, "send", fake_send)
+    return posted
+
+
+def _run(pub, board, *signals):
+    async def go():
+        n = pub.publish_new(board, {"feed": list(signals)}, FLOW)
+        while pub._task and not pub._task.done():
+            await asyncio.sleep(0.01)
+        return n
+    return asyncio.run(go())
+
+
+def test_a_signal_is_followed_to_its_close_as_replies_to_its_post(tmp_path, monkeypatch):
+    posted = _cycle_env(tmp_path, monkeypatch)
+    pub = telegram.TelegramPublisher()
+    assert _run(pub, "day", SIGNAL) == 1 and posted[0][1] == 0                       # the signal itself
+    active = {**SIGNAL, "status": "ACTIVE", "entry": 1453.1, "entry_time": "10:30", "is_latest_bar": False}
+    assert _run(pub, "day", active) == 1
+    assert "ENTRY FILLED" in posted[1][0] and "1,453.10 at 10:30" in posted[1][0] and posted[1][1] == 101
+    assert _run(pub, "day", active) == 0                                            # same stage: nothing
+    t1 = {**active, "status": "T1 HIT"}
+    assert _run(pub, "day", t1) == 1 and "T1 HIT" in posted[2][0] and "stop moved to entry 1,453.10" in posted[2][0]
+    done = {**t1, "status": "TARGET 2", "result_r": 1.62, "cost_r": 0.08, "exit_time": "11:40"}
+    assert _run(pub, "day", done) == 1
+    assert "CLOSED · TARGET 2" in posted[3][0] and "+1.62R after costs" in posted[3][0] and "Cycle closed" in posted[3][0]
+    assert all(reply == 101 for _, reply in posted[1:])                             # one thread
+    assert _run(pub, "day", done) == 0
+    # after a restart nothing repeats
+    assert _run(telegram.TelegramPublisher(), "day", done) == 0 and len(posted) == 4
+
+
+def test_stages_missed_while_down_are_summed_up_in_one_post(tmp_path, monkeypatch):
+    posted = _cycle_env(tmp_path, monkeypatch)
+    _run(telegram.TelegramPublisher(), "day", SIGNAL)
+    stopped = {**SIGNAL, "status": "STOPPED", "entry": 1453.1, "entry_time": "10:30", "result_r": -1.07,
+               "cost_r": 0.07, "exit_time": "10:45", "is_latest_bar": False}
+    assert _run(telegram.TelegramPublisher(), "day", stopped) == 1                  # restarted meanwhile
+    text, reply = posted[1]
+    assert "CLOSED · STOPPED" in text and "Entry filled 1,453.10" in text and "Stopped out at 1,441.20" in text
+    assert "-1.07R" in text and reply == 101
+    be = {**SIGNAL, "id": "b", "status": "BREAKEVEN", "entry": 1453.1, "result_r": 0.45}
+    pub = telegram.TelegramPublisher()
+    _run(pub, "day", {**SIGNAL, "id": "b"})
+    _run(pub, "day", be)
+    assert "T1 1,470.00 hit on the way" in posted[-1][0] and "after T1" in posted[-1][0]
+
+
+def test_unposted_signals_get_no_updates_and_swing_spans_days(tmp_path, monkeypatch):
+    posted = _cycle_env(tmp_path, monkeypatch)
+    pub = telegram.TelegramPublisher()
+    replayed = {**SIGNAL, "id": "old", "status": "ACTIVE", "backfilled": True}
+    assert _run(pub, "day", replayed) == 0 and not posted                            # never posted: not followed
+    swing = {**SIGNAL, "id": "2026-10-20 14:15-PB-L"}
+    _run(pub, "swing", swing)
+    record = pub._posted["swing:INFY:2026-10-20 14:15-PB-L"]
+    record["at"] = (datetime.now() - timedelta(days=3)).date().isoformat()           # posted days ago
+    pub._save()
+    later = telegram.TelegramPublisher()
+    assert _run(later, "swing", {**swing, "status": "ACTIVE", "entry": 1450}) == 1 and posted[-1][1] == 101
+    assert "SWING · LONG INFY · ENTRY FILLED" in posted[-1][0]

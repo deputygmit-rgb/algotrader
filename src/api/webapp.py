@@ -684,6 +684,8 @@ CHANNEL_CONTENTS = (
     "    triggers, with the reason it triggered and its plan (entry, stop, two targets)",
     "With every setup: Money Flow's top 5 long and top 5 short stocks, each with its\n"
     "    futures open-interest change and build-up",
+    "Each setup followed to its close: entry filled, T1 hit, and the exit (target, stop\n"
+    "    or time limit) with its result after costs",
 )
 
 
