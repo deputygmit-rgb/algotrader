@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import sys
 from typing import Any
@@ -9,6 +10,10 @@ import structlog
 
 from src.utils.config import get_settings
 from src.utils.event_log import SQLiteLogHandler
+
+
+LOG_MAX_BYTES = 20 * 1024 * 1024
+LOG_BACKUPS = 5
 
 
 def setup_logging() -> None:
@@ -32,7 +37,9 @@ def setup_logging() -> None:
     )
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(formatter)
-    file_handler = logging.FileHandler(settings.log_file, mode="a")
+    # rotated: 20 MB per file, the last five kept (logs/trading.log.1 ... .5)
+    file_handler = logging.handlers.RotatingFileHandler(settings.log_file, mode="a", maxBytes=LOG_MAX_BYTES,
+                                                        backupCount=LOG_BACKUPS)
     file_handler.setFormatter(formatter)
     event_db_handler = SQLiteLogHandler()
     event_db_handler.setFormatter(formatter)

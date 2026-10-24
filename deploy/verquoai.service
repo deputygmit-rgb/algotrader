@@ -21,6 +21,8 @@ ExecStart=/opt/verquoai/venv/bin/uvicorn src.api.webapp:app \
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
+# New files (data/, logs/) readable by the service account and its group only.
+UMask=0027
 PrivateTmp=true
 
 [Install]

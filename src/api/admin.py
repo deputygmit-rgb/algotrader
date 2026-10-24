@@ -20,9 +20,10 @@ Security model
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
-from datetime import datetime, time as dtime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -205,6 +206,18 @@ async def admin_page(request: Request) -> HTMLResponse:
 
 
 # ── read ────────────────────────────────────────────────────────────────────
+ACTIVITY_DAYS = 30
+METRICS_WINDOWS = (1, 7, 30, 90)
+
+
+def _account_status(last_day: str, sessions: int) -> str:
+    """Active today / this week / this month, else idle (no use in 30 days); "session open"
+    when an idle account still has a sign-in that has not expired."""
+    if last_day:
+        age = (datetime.now(IST).date() - date.fromisoformat(last_day)).days
+        return "active today" if age == 0 else "active this week" if age < 7 else "active this month"
+    return "session open" if sessions else "idle"
+
 
 @router.get("/api/admin/overview")
 async def admin_overview(request: Request) -> dict[str, Any]:
@@ -212,9 +225,12 @@ async def admin_overview(request: Request) -> dict[str, Any]:
     store = _users()
     admins = admin_ids()
     users = []
+    activity = await asyncio.to_thread(metrics.account_activity, ACTIVITY_DAYS)
     for row in store.list_users():
         uc = store.get_user(row["zerodha_id"])
         has_key = bool(uc and uc.api_key and uc.api_secret)
+        seen = activity.get(metrics.user_ref(row["zerodha_id"]), {})
+        sessions = otp_auth.count_sessions(row["zerodha_id"])
         users.append({
             "zerodha_id": row["zerodha_id"],
             "email": row["email"],
@@ -224,7 +240,11 @@ async def admin_overview(request: Request) -> dict[str, Any]:
             "has_api_key": has_key,
             "api_key_hint": f"…{uc.api_key[-4:]}" if has_key else "",
             "kite_session": _kite_session_state(row["zerodha_id"]),
-            "active_sessions": otp_auth.count_sessions(row["zerodha_id"]),
+            "active_sessions": sessions,
+            "last_active": seen.get("last_day", ""),
+            "days_active": seen.get("days_active", 0),
+            "requests": seen.get("requests", 0),
+            "status": _account_status(seen.get("last_day", ""), sessions),
         })
     hub = SharedMarketHub.get_instance()
     return {
@@ -463,7 +483,36 @@ async def admin_test_backup_quotes(request: Request) -> dict[str, Any]:
     }
 
 
+# ── site metrics ────────────────────────────────────────────────────────────
+
+@router.get("/api/admin/metrics")
+async def admin_metrics(request: Request, days: int = 7) -> dict[str, Any]:
+    """Visitors, funnel, features and clicks; accounts appear by Trading ID (the
+    usage data holds only keyed hashes, mapped back here for known accounts)."""
+    require_admin(request)
+    if days not in METRICS_WINDOWS:
+        raise HTTPException(400, f"days must be one of {', '.join(map(str, METRICS_WINDOWS))}")
+    report = await asyncio.to_thread(metrics.site_metrics, days)
+    names = {metrics.user_ref(row["zerodha_id"]): row["zerodha_id"] for row in _users().list_users()}
+    activity = await asyncio.to_thread(metrics.account_activity, days)
+    report["accounts"] = sorted(
+        ({"zerodha_id": names.get(ref, "account not on this server"), **a} for ref, a in activity.items()),
+        key=lambda a: (a["last_day"], a["requests"]), reverse=True)
+    report["windows"] = list(METRICS_WINDOWS)
+    return report
+
+
 # ── access requests ─────────────────────────────────────────────────────────
+
+@router.delete("/api/admin/contacts/{contact_id}")
+async def admin_contact_delete(contact_id: int, request: Request) -> Any:
+    """Erase a request and the personal details in it (e.g. when the person asks)."""
+    admin = _require_write(request)
+    if not metrics.delete_contact(contact_id):
+        return JSONResponse({"detail": "No such request."}, status_code=404)
+    _audit(request, admin, "contact_deleted", str(contact_id))
+    return {"success": True}
+
 
 @router.post("/api/admin/contacts/{contact_id}/status")
 async def admin_contact_status(contact_id: int, request: Request) -> Any:

@@ -100,6 +100,12 @@ import pandas as pd
 
 logger = get_logger(__name__)
 
+# OI-bias recorder: one account records for the whole server (single process)
+STALE_FIELDS = ("spot_price", "pcr_oi", "total_ce_oi", "total_pe_oi")
+STALE_WARN_AFTER = 5            # unchanged minutes before the agents are told the readings paused
+RECORDER_TAKEOVER_S = 150.0     # another account records when none has succeeded for this long
+_BIAS_RECORDER: dict[str, Any] = {"owner": None, "at": 0.0}
+
 
 # Demo sessions share one scanner and its recent full-universe reports.
 DEMO_SCAN_REUSE_SECONDS = 170.0          # just under the scanner agent's 180 s cycle
@@ -322,6 +328,7 @@ class TradingService:
         self._oi_bias_analyzer = OptionsOIAnalyzer()
         self._oi_bias_task: Optional[asyncio.Task] = None
         self.last_oi_bias: dict[str, dict[str, Any]] = {}
+        self._bias_stale: dict[str, int] = {}        # unchanged readings in a row, per index
         try:
             self._day_trade.load_state(self._board.load(datetime.now()), datetime.now())
         except Exception as e:
@@ -3586,25 +3593,63 @@ class TradingService:
             "bullish_signals": sentiments.count("BULLISH"), "bearish_signals": sentiments.count("BEARISH"),
             "reasons": report.bias_reasons,
         }
+        last = self.last_oi_bias.get(underlying) or {}
+        if last and all(last.get(k) == row[k] for k in STALE_FIELDS):
+            # the chain did not move since the last minute: frozen quotes (a feed or quote
+            # source stuck, a closed market) are not recorded as a new live reading
+            stale = self.__dict__.setdefault("_bias_stale", {})
+            streak = stale.get(underlying, 0) + 1
+            stale[underlying] = streak
+            if streak == STALE_WARN_AFTER:
+                logger.warning("oi_bias_stale", underlying=underlying, minutes=streak, spot=row["spot_price"])
+                self._emit("oi.bias_error", underlying=underlying,
+                           error=f"option-chain data unchanged for {streak} minutes - readings paused")
+            return {**row, "stale": True}
+        self.__dict__.setdefault("_bias_stale", {})[underlying] = 0
         self._market_store.store_oi_bias(row)
-        previous = self.last_oi_bias.get(underlying, {}).get("bias")
+        previous = last.get("bias")
         self.last_oi_bias[underlying] = row
         self._emit("oi.bias", **row, previous=previous)
         return row
+
+    def _may_record_bias(self) -> bool:
+        """One recorder for everyone: the market-data account; another linked account
+        takes over only while no reading has succeeded for ``RECORDER_TAKEOVER_S``.
+        Every linked trading / agentic account used to analyse both chains each minute
+        and overwrite the same rows (last writer won)."""
+        from src.api.shared_market import SharedMarketHub
+
+        me = (self._zerodha_id or "").upper()
+        owner, at = _BIAS_RECORDER["owner"], _BIAS_RECORDER["at"]
+        fresh = owner is not None and time.monotonic() - at < RECORDER_TAKEOVER_S
+        market_account = (SharedMarketHub.get_instance().account_id or "").upper()
+        if owner == me or not fresh or (me == market_account and not self.__dict__.get("_bias_failing")):
+            if owner != me:
+                logger.info("oi_bias_recorder_owner", account=me, previous=owner)
+                _BIAS_RECORDER.update(owner=me, at=time.monotonic())
+            return True
+        return False
 
     async def _oi_bias_loop(self) -> None:
         """While the market is open: one bias reading per underlying per minute."""
         from src.agent.market_hours import is_market_open
 
         while True:
-            if self.is_authenticated and is_market_open():
+            if self.is_authenticated and is_market_open() and self._may_record_bias():
+                ok = False
                 for underlying in self.OI_BIAS_UNDERLYINGS:
                     try:
                         await self.record_oi_bias(underlying)
+                        ok = True
                     except Exception as e:
                         logger.warning("oi_bias_record_failed", underlying=underlying, error=str(e))
                         self._emit("oi.bias_error", underlying=underlying, error=str(e))
+                self._bias_failing = not ok
+                if ok:
+                    _BIAS_RECORDER["at"] = time.monotonic()      # still the recorder
                 await asyncio.sleep(60 - datetime.now().second + 1)   # next minute boundary
+            elif self.is_authenticated and is_market_open():
+                await asyncio.sleep(60 - datetime.now().second + 1)   # another account records; check again next minute
             else:
                 await asyncio.sleep(30)
 

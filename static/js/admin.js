@@ -85,9 +85,13 @@
                     act('POST', `/api/admin/users/${encodeURIComponent(u.zerodha_id)}/email`, { email: next.trim() }, `${u.zerodha_id} email updated.`);
                 }
             } }, u.email || '—');
+            const statusClass = u.status === 'idle' ? 'adm-muted' : u.status === 'active today' ? 'positive' : '';
             return el('tr', {},
                 el('td', {}, el('b', {}, u.zerodha_id), u.is_admin ? el('span', { class: 'adm-badge' }, 'ADMIN') : '',
                    data.market_data.account === u.zerodha_id ? el('span', { class: 'adm-badge adm-badge-feed' }, 'MARKET DATA') : ''),
+                el('td', { class: statusClass }, u.status),
+                el('td', { title: u.days_active ? `${u.days_active} day(s) active, ${u.requests} requests in the last 30 days` : '' },
+                   u.last_active || el('span', { class: 'adm-muted' }, 'not in 30 days')),
                 el('td', {}, email),
                 el('td', {}, access),
                 el('td', {}, u.has_api_key ? u.api_key_hint : el('span', { class: 'adm-muted' }, 'none')),
@@ -146,11 +150,16 @@
                 form.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 (c.trading_id ? form.api_key : form.zerodha_id).focus();
             } }, 'Add user');
+            const erase = el('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: () => {
+                if (confirm(`Delete request #${c.id} from ${c.name}? Their name, email, phone and message are erased for good.`)) {
+                    act('DELETE', `/api/admin/contacts/${c.id}`, null, `Request #${c.id} deleted.`);
+                }
+            } }, 'Delete');
             return el('tr', {},
                 el('td', {}, String(c.id)), el('td', {}, (c.ts || '').replace('T', ' ').slice(0, 16)),
                 el('td', {}, c.name), el('td', {}, c.email), el('td', {}, c.phone || '—'), el('td', {}, c.trading_id || '—'),
                 el('td', {}, c.access_level || '—'), el('td', {}, c.platform || '—'),
-                el('td', { class: 'adm-message' }, c.message || '—'), el('td', {}, status), el('td', {}, add));
+                el('td', { class: 'adm-message' }, c.message || '—'), el('td', {}, status), el('td', { class: 'adm-actions' }, add, erase));
         }));
         const open = data.contacts.filter(c => c.status === 'new').length;
         $('adm-contact-count').textContent = `${open} new`;
@@ -162,6 +171,47 @@
             el('td', {}, a.target),
             el('td', { class: 'adm-muted' }, Object.entries(a.detail || {}).filter(([, v]) => v !== null && v !== '').map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(' · ')))));
     }
+
+    // ── site metrics ───────────────────────────────────────────────────
+    const FUNNEL_COLS = ['demo_start', 'otp_sent', 'login_success', 'login_failed', 'account_linked', 'contact_submitted'];
+    let metricDays = 7;
+
+    async function loadMetrics() {
+        let m;
+        try {
+            m = await call('GET', `/api/admin/metrics?days=${metricDays}`);
+        } catch (e) {
+            $('met-kpis').replaceChildren(el('p', { class: 'adm-muted' }, e.message));
+            return;
+        }
+        $('met-days').replaceChildren(...m.windows.map(d => el('option', { value: d, selected: d === m.days }, d === 1 ? 'Today' : `${d} days`)));
+        const t = m.totals;
+        const devices = Object.entries(m.devices || {}).map(([d, n]) => `${n} ${d}`).join(' · ');
+        const kpi = (label, value, hint) => el('div', { class: 'adm-kpi' }, el('b', {}, Number(value || 0).toLocaleString('en-IN')),
+            el('span', {}, label), hint ? el('small', {}, hint) : '');
+        $('met-kpis').replaceChildren(
+            kpi('visitors', t.visitors, devices),
+            kpi('page views', t.page_views),
+            kpi('demo starts', t.demo_start),
+            kpi('sign-ins', t.login_success, t.login_failed ? `${t.login_failed} failed` : ''),
+            kpi('active accounts', t.active_accounts),
+            kpi('access requests', t.contact_submitted),
+            kpi('server errors', t.server_errors));
+        const num = v => el('td', {}, Number(v || 0).toLocaleString('en-IN'));
+        $('met-daily').replaceChildren(...(m.daily.length ? m.daily.map(d => el('tr', {}, el('td', {}, d.day),
+            num(d.visitors), num(d.page_views), ...FUNNEL_COLS.map(k => num(d[k])), num(d.active_accounts), num(d.demo_sessions),
+            el('td', { class: d.server_errors ? 'negative' : '' }, String(d.server_errors || 0))))
+            : [el('tr', {}, el('td', { colspan: 12, class: 'adm-muted' }, 'No activity in this window.'))]));
+        $('met-accounts').replaceChildren(...(m.accounts.length ? m.accounts.map(a => el('tr', {},
+            el('td', {}, el('b', {}, a.zerodha_id)), el('td', {}, a.last_day), num(a.days_active), num(a.requests)))
+            : [el('tr', {}, el('td', { colspan: 4, class: 'adm-muted' }, 'No signed-in accounts in this window.'))]));
+        $('met-features').replaceChildren(...m.features.map(f => el('tr', {},
+            el('td', {}, `${f.method} ${f.route}`), num(f.people), num(f.calls), el('td', {}, String(f.avg_ms ?? '')),
+            el('td', { class: f.errors ? 'negative' : '' }, String(f.errors || 0)))));
+        $('met-clicks').replaceChildren(...m.clicks.map(c => el('tr', {},
+            el('td', {}, c.page), el('td', {}, c.target), num(c.people), num(c.count))));
+    }
+    $('met-days').addEventListener('change', e => { metricDays = Number(e.target.value); loadMetrics(); });
 
     async function load() {
         try {
@@ -175,6 +225,7 @@
         renderBackup();
         renderContacts();
         renderAudit();
+        loadMetrics();
     }
 
     $('adm-add').addEventListener('submit', async e => {

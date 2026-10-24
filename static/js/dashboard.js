@@ -1579,32 +1579,51 @@ function fmtPct(v) {
     return (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%';
 }
 
-/* The server answers OI scans at once with the last stored report (``refreshing``)
- * while one refresh runs: check back until the report's time changes, then show it. */
-function awaitRefreshedReport(url, shownTs, statusEl, onData, tries = 18) {
-    if (tries <= 0) return;
+/* Last data + Sync. Wherever a stored report is shown, the line beside it says when
+ * that data is from, and a Sync button (or a background sync) fetches a new one. */
+function syncStatus(statusEl, ts, state, onSync, note) {
+    if (!statusEl) return;
+    let btn = document.getElementById(statusEl.id + '-sync');
+    if (!btn && onSync) {
+        btn = document.createElement('button');
+        btn.id = statusEl.id + '-sync';
+        btn.type = 'button';
+        btn.className = 'btn btn-outline btn-sm vq-sync-btn';
+        statusEl.after(btn);
+    }
+    if (btn && onSync) btn.onclick = () => onSync();
+    const when = ts ? new Date(ts) : null;
+    const at = when && !isNaN(when) ? when.toLocaleTimeString() : '';
+    const mins = when && !isNaN(when) ? Math.floor((Date.now() - when) / 60000) : null;
+    const ago = mins == null ? '' : mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ago`;
+    const last = at ? `Last data ${at} (${ago})` : 'No data yet';
+    const text = {
+        syncing: `${last} · syncing in the background…`,
+        fresh: at ? `Updated ${at}` : 'Updated',
+        idle: last,
+        warn: `${last} · ${note || 'sync failed'}`,
+        error: note || 'Sync failed',
+    }[state] || last;
+    statusEl.textContent = text;
+    statusEl.style.color = state === 'fresh' ? 'var(--accent-green)' : state === 'syncing' ? 'var(--accent-blue)'
+        : state === 'warn' ? 'var(--accent-orange)' : state === 'error' ? 'var(--accent-red)' : 'var(--text-muted)';
+    if (btn) {
+        btn.disabled = state === 'syncing';
+        btn.textContent = state === 'syncing' ? 'Syncing…' : '↻ Sync';
+    }
+}
+
+/* The server answers a scan at once with the last stored report (``refreshing``) while one
+ * refresh runs: check back until the report's time changes; give up after ~90 s. */
+function awaitRefreshedReport(url, shownTs, onData, onGiveUp, tries = 18) {
+    if (tries <= 0) { onGiveUp?.(); return; }
     setTimeout(async () => {
         try {
             const d = await API.get(url);
-            if (!d.error && d.timestamp && d.timestamp !== shownTs) {
-                onData(d);
-                if (statusEl) {
-                    statusEl.textContent = 'Updated at ' + new Date(d.timestamp).toLocaleTimeString();
-                    statusEl.style.color = 'var(--accent-green)';
-                }
-                return;
-            }
+            if (!d.error && d.timestamp && d.timestamp !== shownTs) { onData(d); return; }
         } catch (e) { /* keep showing the stored report */ }
-        awaitRefreshedReport(url, shownTs, statusEl, onData, tries - 1);
+        awaitRefreshedReport(url, shownTs, onData, onGiveUp, tries - 1);
     }, 5000);
-}
-
-function showRefreshing(statusEl, data) {
-    if (!statusEl || !data.refreshing) return false;
-    const at = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : 'earlier';
-    statusEl.textContent = `Showing report from ${at} - refreshing...`;
-    statusEl.style.color = 'var(--accent-blue)';
-    return true;
 }
 
 /* ════════════════════════════════════════════
@@ -1613,36 +1632,29 @@ function showRefreshing(statusEl, data) {
 async function runOptionsOIScan() {
     const sel = document.getElementById('oi-underlying-select').value;
     const statusEl = document.getElementById('opt-oi-status');
-    statusEl.textContent = 'Scanning ' + sel + '...';
-    statusEl.style.color = 'var(--accent-blue)';
+    const sync = () => runOptionsOIScan();
+    const show = d => { cachedOptReport[sel] = d; if (document.getElementById('oi-underlying-select').value === sel) renderOptionsOI(d); };
+    syncStatus(statusEl, cachedOptReport[sel]?.timestamp, 'syncing', sync);
     try {
         const data = await API.post('/api/oi/options/scan', { underlying: sel });
         if (data.error) throw new Error(data.error);
-        cachedOptReport[sel] = data;
-        if (showRefreshing(statusEl, data)) {
-            renderOptionsOI(data);
-            awaitRefreshedReport(`/api/oi/options/report?underlying=${sel}`, data.timestamp, statusEl,
-                d => { cachedOptReport[sel] = d; if (document.getElementById('oi-underlying-select').value === sel) renderOptionsOI(d); });
+        show(data);
+        if (data.refreshing) {
+            syncStatus(statusEl, data.timestamp, 'syncing', sync);
+            awaitRefreshedReport(`/api/oi/options/report?underlying=${sel}`, data.timestamp,
+                d => { show(d); syncStatus(statusEl, d.timestamp, 'fresh', sync); },
+                () => syncStatus(statusEl, data.timestamp, 'idle', sync));
             return;
         }
-        if (data.refresh_warning) {
-            const cachedAt = data.timestamp ? ` from ${new Date(data.timestamp).toLocaleString()}` : '';
-            statusEl.textContent = `${data.refresh_warning} Showing cached report${cachedAt}.`;
-            statusEl.style.color = 'var(--accent-orange)';
-            renderOptionsOI(data);
-            return;
-        }
-        statusEl.textContent = data.timestamp
-            ? 'Scanned at ' + new Date(data.timestamp).toLocaleTimeString()
-            : 'Scan complete';
-        statusEl.style.color = 'var(--accent-green)';
-        renderOptionsOI(data);
+        if (data.refresh_warning) { syncStatus(statusEl, data.timestamp, 'warn', sync, data.refresh_warning); return; }
+        syncStatus(statusEl, data.timestamp, 'fresh', sync);
     } catch (e) {
-        statusEl.textContent = 'Error: ' + e.message;
-        statusEl.style.color = 'var(--accent-red)';
+        const last = cachedOptReport[sel]?.timestamp;
+        syncStatus(statusEl, last, last ? 'warn' : 'error', sync, 'Sync failed: ' + e.message);
     }
 }
 
+// opening the view: the last report at once, a fresh one fetched in the background
 async function loadCachedOptionsOI() {
     const sel = document.getElementById('oi-underlying-select').value;
     const statusEl = document.getElementById('opt-oi-status');
@@ -1651,20 +1663,13 @@ async function loadCachedOptionsOI() {
         if (!data.error) {
             cachedOptReport[sel] = data;
             renderOptionsOI(data);
-            if (statusEl) {
-                statusEl.textContent = data.timestamp ? `Loaded cached report from ${new Date(data.timestamp).toLocaleTimeString()}` : 'Loaded cached report';
-                statusEl.style.color = 'var(--accent-green)';
-            }
-            return;
+        } else if (!/no data yet/i.test(data.error)) {
+            throw new Error(data.error);
         }
-        if (!/no data yet/i.test(data.error)) throw new Error(data.error);
-        await runOptionsOIScan();
     } catch (e) {
-        if (statusEl) {
-            statusEl.textContent = 'Error: ' + e.message;
-            statusEl.style.color = 'var(--accent-red)';
-        }
+        syncStatus(statusEl, null, 'error', () => runOptionsOIScan(), 'Error: ' + e.message);
     }
+    await runOptionsOIScan();
 }
 
 function loadOptionsOI() {
@@ -1801,57 +1806,43 @@ function renderOptBuildupSignals(signals) {
    ════════════════════════════════════════════ */
 async function runFuturesOIScan() {
     const statusEl = document.getElementById('fut-oi-status');
-    statusEl.textContent = 'Scanning all futures OI...';
-    statusEl.style.color = 'var(--accent-blue)';
+    const sync = () => runFuturesOIScan();
+    const show = d => { cachedFutReport = d; renderFuturesOI(d); };
+    syncStatus(statusEl, cachedFutReport?.timestamp, 'syncing', sync);
     try {
         const data = await API.post('/api/oi/futures/scan', {});
         if (data.error) throw new Error(data.error);
-        cachedFutReport = data;
-        if (showRefreshing(statusEl, data)) {
-            renderFuturesOI(data);
-            awaitRefreshedReport('/api/oi/futures/report', data.timestamp, statusEl,
-                d => { cachedFutReport = d; renderFuturesOI(d); });
+        show(data);
+        if (data.refreshing) {
+            syncStatus(statusEl, data.timestamp, 'syncing', sync);
+            awaitRefreshedReport('/api/oi/futures/report', data.timestamp,
+                d => { show(d); syncStatus(statusEl, d.timestamp, 'fresh', sync); },
+                () => syncStatus(statusEl, data.timestamp, 'idle', sync));
             return;
         }
-        if (data.refresh_warning) {
-            const cachedAt = data.timestamp ? ` from ${new Date(data.timestamp).toLocaleString()}` : '';
-            statusEl.textContent = `${data.refresh_warning} Showing cached report${cachedAt}.`;
-            statusEl.style.color = 'var(--accent-orange)';
-            renderFuturesOI(data);
-            return;
-        }
-        statusEl.textContent = data.timestamp
-            ? 'Scanned at ' + new Date(data.timestamp).toLocaleTimeString()
-            : 'Scan complete';
-        statusEl.style.color = 'var(--accent-green)';
-        renderFuturesOI(data);
+        if (data.refresh_warning) { syncStatus(statusEl, data.timestamp, 'warn', sync, data.refresh_warning); return; }
+        syncStatus(statusEl, data.timestamp, 'fresh', sync);
     } catch (e) {
-        statusEl.textContent = 'Error: ' + e.message;
-        statusEl.style.color = 'var(--accent-red)';
+        const last = cachedFutReport?.timestamp;
+        syncStatus(statusEl, last, last ? 'warn' : 'error', sync, 'Sync failed: ' + e.message);
     }
 }
 
+// opening the view: the last report at once, a fresh one fetched in the background
 async function loadFuturesOI() {
     const statusEl = document.getElementById('fut-oi-status');
-    statusEl.textContent = 'Loading futures OI report...';
-    statusEl.style.color = 'var(--accent-blue)';
     try {
         const data = await API.get('/api/oi/futures/report');
         if (!data.error) {
             cachedFutReport = data;
             renderFuturesOI(data);
-            statusEl.textContent = data.timestamp
-                ? 'Loaded cached report from ' + new Date(data.timestamp).toLocaleTimeString()
-                : 'Loaded cached report';
-            statusEl.style.color = 'var(--accent-green)';
-            return;
+        } else if (!/no data yet/i.test(data.error)) {
+            throw new Error(data.error);
         }
-        if (!/no data yet/i.test(data.error)) throw new Error(data.error);
-        await runFuturesOIScan();
     } catch (e) {
-        statusEl.textContent = 'Error: ' + e.message;
-        statusEl.style.color = 'var(--accent-red)';
+        syncStatus(statusEl, null, 'error', () => runFuturesOIScan(), 'Error: ' + e.message);
     }
+    await runFuturesOIScan();
 }
 
 function openFuturesOIDetail(symbol) {
@@ -2188,11 +2179,16 @@ async function loadAnalysis() {
             analysisData = data;
             renderAnalysis(data);
             if (status && !_scanInProgress) {
-                const label = universe === 'nifty500' ? 'NIFTY 500' : 'NIFTY 50';
                 const n = data.analyzed_stocks ?? (data.all_stocks || []).length;
-                const scanTime = data.scan_time ? ` · ${new Date(data.scan_time).toLocaleString()}` : '';
-                status.textContent = `Showing cached ${label} scan · ${n} stocks${scanTime}`;
-                status.style.color = 'var(--text-muted)';
+                syncStatus(status, data.scan_time, 'idle', () => runAnalysisScan());
+                status.textContent += ` · ${n} stocks`;
+                // a scan older than 30 minutes is refreshed in the background (NIFTY 50 only:
+                // the NIFTY 500 scan takes minutes and is started from Sync)
+                const age = data.scan_time ? Date.now() - new Date(data.scan_time) : Infinity;
+                if (universe === 'nifty50' && age > 30 * 60000 && Date.now() - _analysisAutoSyncAt > 10 * 60000) {
+                    _analysisAutoSyncAt = Date.now();
+                    runAnalysisScan();
+                }
             }
         } else if (status) {
             const label = universe === 'nifty500' ? 'NIFTY 500' : 'NIFTY 50';
@@ -2249,6 +2245,7 @@ async function runAnalysisScan() {
 }
 
 let _scanInProgress = false;
+let _analysisAutoSyncAt = 0;          // background re-scan at most every 10 minutes
 
 // Live progress pushed over the websocket while a full scan runs (see scan_progress in ws.onmessage).
 function updateScanProgress(data) {
@@ -3508,6 +3505,7 @@ async function runPaperTrade() {
     loading.style.display = 'block';
     loading.style.color = 'var(--accent-green)';
     loading.textContent = 'Fetching historical data & running simulation...';
+    paperSampleRun = false;
     const strategy = document.getElementById('paper-strategy').value;
     const isFnO = isFnOStrategy(strategy);
 
@@ -3573,6 +3571,7 @@ async function runPaperTrade() {
         loading.style.color = '#ff5252';
     } finally {
         btn.disabled = false;
+        if (loading.style.display === 'none') revealResult('paper-summary');
     }
 }
 
@@ -3583,6 +3582,7 @@ async function runPaperTradeSample() {
     loading.style.display = 'block';
     loading.style.color = 'var(--accent-green)';
     loading.textContent = 'Running quick test with sample data...';
+    paperSampleRun = true;
     const strategy = document.getElementById('paper-strategy').value;
     const isFnO = isFnOStrategy(strategy);
 
@@ -3637,6 +3637,7 @@ async function runPaperTradeSample() {
         loading.style.color = '#ff5252';
     } finally {
         btn.disabled = false;
+        if (loading.style.display === 'none') revealResult('paper-summary');
     }
 }
 
@@ -3772,7 +3773,7 @@ function displayPaperResult(r) {
             <div class="summary-item"><span class="summary-label">Avg Win</span><span class="summary-value positive">₹${fmtNum(r.avg_win)}</span></div>
             <div class="summary-item"><span class="summary-label">Avg Loss</span><span class="summary-value negative">₹${fmtNum(r.avg_loss)}</span></div>
             <div class="summary-item"><span class="summary-label">Timeframe</span><span class="summary-value">${r.timeframe}</span></div>
-        </div>`;
+        </div>${!r.total_trades ? noTradesNote(r.strategy || document.getElementById('paper-strategy').value, paperSampleRun) : ''}`;
 
     // Equity curve chart
     const section = document.getElementById('paper-results-section');
@@ -3919,6 +3920,19 @@ function updateReplayTick(data) {
     }
     replayEquityData.push(data.portfolio_value);
     if (replayEquityData.length > 1) drawReplayEquityCurve(replayEquityData);
+    const summary = document.getElementById('replay-summary');
+    if (summary) {
+        const pct = data.total ? Math.round(data.progress / data.total * 100) : 0;
+        const pnl = data.portfolio_value - (replayEquityData[0] || data.portfolio_value);
+        summary.innerHTML = `
+            <div class="progress-bar" style="margin-bottom:10px"><div class="progress-fill" style="width:${pct}%"></div></div>
+            <div class="summary-grid">
+                <div class="summary-item"><span class="summary-label">Progress</span><span class="summary-value">${data.progress} / ${data.total} bars (${pct}%)</span></div>
+                <div class="summary-item"><span class="summary-label">${data.tradingsymbol}</span><span class="summary-value">₹${formatNum(data.price)}</span></div>
+                <div class="summary-item"><span class="summary-label">Portfolio</span><span class="summary-value">₹${formatNum(data.portfolio_value)}</span></div>
+                <div class="summary-item"><span class="summary-label">P&amp;L so far</span><span class="summary-value ${pnlClass(pnl)}">₹${formatNum(pnl)}</span></div>
+            </div>`;
+    }
 }
 
 function finishReplay(data) {
@@ -4935,14 +4949,30 @@ function toggleBTSource() {
     const src = document.getElementById('bt-source').value;
     const strategy = document.getElementById('bt-strategy').value;
     const isFnO = isFnOStrategy(strategy);
+    btSampleRun = src === 'sample';
     // In F&O mode live fields stay hidden
     document.getElementById('bt-live-fields').style.display = (src === 'live' && !isFnO) ? '' : 'none';
     document.getElementById('bt-sample-fields').style.display = src === 'sample' ? '' : 'none';
 }
 
+// phones: a result renders below the form, off screen - bring it into view
+function revealResult(id) {
+    if (!window.matchMedia('(max-width: 767.98px)').matches) return;
+    document.getElementById(id)?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// a run with no trades looks broken unless it says why
+let btSampleRun = false, paperSampleRun = false;      // which kind of run the result on screen came from
+function noTradesNote(strategy, sample) {
+    const intraday = strategy === 'day_trade_setups';
+    return `<p class="vq-note">No trades in this run. ${intraday && sample
+        ? 'Day-Trade Setups need real 5-minute market data with volume surges, which the sample data does not have: run it on market data, or pick EMA Crossover for a quick sample test.'
+        : 'Try a longer period, another symbol or interval, or a different strategy.'}</p>`;
+}
+
 async function runBacktest() {
     const btn = document.getElementById('btn-run-bt');
-    btn.disabled = true; btn.textContent = 'Running...';
+    btn.disabled = true; btn.textContent = 'Running... (up to 30 s)';
     const src = document.getElementById('bt-source').value;
     const strategy = document.getElementById('bt-strategy').value;
     const isFnO = isFnOStrategy(strategy);
@@ -4986,12 +5016,14 @@ async function runBacktest() {
         document.getElementById('bt-summary').innerHTML = '<span style="color:#ff5252">Error: ' + e.message + '</span>';
     } finally {
         btn.disabled = false; btn.textContent = 'Run Backtest';
+        revealResult('bt-summary');
     }
 }
 
 async function runBacktestSample() {
     const btn = document.getElementById('btn-run-bt');
     btn.disabled = true; btn.textContent = 'Running Sample...';
+    btSampleRun = true;
     const strategy = document.getElementById('bt-strategy').value;
     const isFnO = isFnOStrategy(strategy);
     try {
@@ -5014,6 +5046,7 @@ async function runBacktestSample() {
         document.getElementById('bt-summary').innerHTML = '<span style="color:#ff5252">Error: ' + e.message + '</span>';
     } finally {
         btn.disabled = false; btn.textContent = 'Run Backtest';
+        revealResult('bt-summary');
     }
 }
 
@@ -5085,6 +5118,7 @@ function displayBacktestResult(data) {
         metricCard('Recovery Factor', (m.recovery_factor||0).toFixed(2)) +
         metricCard('Payoff Ratio', (m.payoff_ratio||0).toFixed(2)) +
         '</div>' +
+        (!m.total_trades ? noTradesNote(m.strategy || document.getElementById('bt-strategy').value, btSampleRun) : '') +
         (bench.alpha !== undefined ? '<div class="grid grid-3" style="margin-bottom:0">' +
             metricCard('Alpha', (bench.alpha||0).toFixed(4)) +
             metricCard('Beta', (bench.beta||0).toFixed(4)) +

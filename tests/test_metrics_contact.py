@@ -184,3 +184,36 @@ def test_follow_up_for_a_supported_broker_gives_setup_steps(store, monkeypatch):
     assert "Please do NOT send the API\n     secret by email" in text
     assert "Every order is checked against risk limits" in text      # trading access follow-up
     assert "evil.example" not in text
+
+
+def test_trading_ids_recorded_before_hashing_are_converted_once(tmp_path):
+    db = tmp_path / "analytics.db"
+    old = MetricsStore(str(db))
+    with old._connect() as conn:                                  # a database from the previous release
+        conn.execute("INSERT INTO events (ts, day, user_id, kind, event) VALUES ('t', '2026-10-01', 'AB1234', 'user', 'login_success')")
+        conn.execute("INSERT INTO request_counts VALUES ('2026-10-01', 'AB1234', 'user', '/x', 'GET', '2xx', 3, 1.0)")
+        conn.execute("PRAGMA user_version = 0")
+    fresh = MetricsStore(str(db))
+    ref = fresh.user_ref("AB1234")
+    with fresh._connect() as conn:
+        assert conn.execute("SELECT user_id FROM events").fetchone()[0] == ref
+        assert conn.execute("SELECT user_key FROM request_counts").fetchone()[0] == ref
+    assert ref.startswith("u_") and fresh.user_ref(ref) == ref    # never hashed twice
+
+
+def test_the_database_is_readable_by_the_service_account_only(tmp_path):
+    import os
+    s = MetricsStore(str(tmp_path / "analytics.db"))
+    s.record_event("page_view", visitor_id="v1", page="/")
+    s.flush()
+    for name in os.listdir(tmp_path):
+        assert os.stat(tmp_path / name).st_mode & 0o077 == 0, name
+
+
+def test_mail_errors_are_logged_without_the_address():
+    import smtplib
+    from src.utils.mailer import mail_error
+    refused = smtplib.SMTPRecipientsRefused({"person@example.com": (550, b"no such user person@example.com")})
+    assert "example.com" not in mail_error(refused)
+    assert mail_error(smtplib.SMTPDataError(554, b"rejected for person@example.com")) == "SMTPDataError 554"
+    assert mail_error(TimeoutError("timed out")) == "TimeoutError"

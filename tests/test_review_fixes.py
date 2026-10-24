@@ -197,3 +197,37 @@ def test_view_only_accounts_see_no_broker_link_but_admins_and_traders_do(_isolat
     assert 'id="btn-login"' in trade and "request_token" in trade
     admin_view = _signed_in(monkeypatch, "view", admin=True)
     assert 'id="btn-login"' in admin_view
+
+
+def test_backtest_ratios_are_per_bar_and_keep_the_sign_of_the_return():
+    """5-minute bars: annualised per bar (not per day), no risk-free deduction on idle
+    cash, and a losing run cannot show a positive Calmar."""
+    import numpy as np
+    import pandas as pd
+    from src.data.backtest import BacktestEngine, _bars_per_day
+
+    stamps = [d + pd.Timedelta(minutes=5 * i) for d in pd.date_range("2026-01-05 09:15", periods=20, freq="B") for i in range(75)]
+    data = pd.DataFrame({"timestamp": stamps})
+    assert _bars_per_day(data) == 75
+    assert _bars_per_day(pd.DataFrame({"timestamp": pd.date_range("2026-01-01", periods=30, freq="B")})) == 1
+
+    engine = BacktestEngine.__new__(BacktestEngine)
+    rng = np.random.default_rng(1)
+    up = 100000 * np.cumprod(1 + rng.normal(2e-5, 1e-4, len(data)))
+    m = engine._calculate_metrics(up, [], data)
+    assert m["sharpe_ratio"] > 0 and m["cagr"] > 0
+    down = 100000 * np.cumprod(1 + rng.normal(-2e-5, 1e-4, len(data)))
+    m = engine._calculate_metrics(down, [], data)
+    assert m["sharpe_ratio"] < 0 and m["calmar_ratio"] < 0
+
+
+def test_minified_scripts_keep_template_text_exactly():
+    """rjsmin read templates nested in ${...} as code and dropped their spaces."""
+    from src.api.static_files import minify_js
+
+    src = ('const a = `<p>${rows.map(o => `<i class="c" data-x="${o.id}">${o.time} ${o.setup}</i>`).join("")}</p>`; // note\n'
+           'const r = s.replace(/`/g, "x"); /* block */ return`t ${a}`;')
+    out = minify_js(src)
+    assert '`<i class="c" data-x="${o.id}">${o.time} ${o.setup}</i>`' in out
+    assert "note" not in out and "block" not in out
+    assert "/`/g" in out

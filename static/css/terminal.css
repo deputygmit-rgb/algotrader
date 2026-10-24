@@ -609,6 +609,13 @@ body[data-access="trade"] [data-requires="agentic"] { opacity: .45; cursor: not-
 .adm-form input, .adm-form select { padding: 8px 10px; border: 1px solid var(--t-line-2); background: var(--t-bg); color: var(--t-txt); font-family: var(--t-font); font-size: 12px; }
 .adm-form input:focus, .adm-form select:focus { outline: none; border-color: var(--t-c); }
 .adm-hint { margin: 0; color: var(--t-mute); font-size: 11px; }
+.adm-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 4px 0 14px; }
+.adm-kpi { display: grid; gap: 2px; padding: 12px 14px; border: 1px solid var(--t-line); border-radius: 6px; background: var(--t-bg); }
+.adm-kpi b { font-size: 22px; color: var(--t-c); }
+.adm-kpi span { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--t-dim); }
+.adm-kpi small { font-size: 10px; color: var(--t-mute); }
+.adm-sub { margin: 14px 0 6px; font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--t-dim); }
+.adm-grid-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 @media (max-width: 640px) { .adm { padding: 14px 16px 32px; } }
 
 /* ── phones / small tablets (audited at 360 and 390 px wide) ─────── */
@@ -784,6 +791,7 @@ body.has-bnav .vq-bnav {
 body.has-bnav .tabs { display: none; }                      /* the bottom bar and "More" replace it */
 body.has-bnav .main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 body.has-bnav .pwa-offline { bottom: calc(60px + env(safe-area-inset-bottom)); }
+body.has-bnav .toast { bottom: calc(76px + env(safe-area-inset-bottom)); left: 12px; right: 12px; }   /* above the bottom bar */
 @media (max-width: 340px) { .vq-bnav span { font-size: 8.5px; letter-spacing: .2px; } }
 
 /* ── phones: compact single-row header, pop-ups as bottom sheets, lighter effects ── */
@@ -901,3 +909,34 @@ body.has-bnav .pwa-offline { bottom: calc(60px + env(safe-area-inset-bottom)); }
 /* admin: long option text must not stretch a card past the screen */
 .adm-grid > * { min-width: 0; }
 .adm-form select, .adm-form input, .adm-form textarea { max-width: 100%; min-width: 0; }
+
+/* ── phone polish (mobile audit) ─────────────────────────────────── */
+.vq-note { margin: 10px 0 0; padding: 10px 12px; border: 1px solid rgba(255,209,102,.35); border-radius: 4px;
+           background: rgba(255,209,102,.06); color: var(--t-a); font-size: 12px; line-height: 1.5; }
+#replay-summary .summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+#replay-summary .summary-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; background: var(--t-panel-2); border-radius: 3px; min-width: 0; }
+#replay-summary .summary-label { color: var(--t-dim); }
+@media (max-width: 767.98px) {
+    #replay-summary .summary-grid { grid-template-columns: minmax(0, 1fr); }
+    /* result tiles two to a row (one each made a 12-screen scroll) */
+    #bt-summary .grid, #bt-monte-carlo .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    /* OI chain: numbers stay on one line, the table scrolls sideways inside its card */
+    #tab-oi-tracker .table-wrap td, #tab-oi-tracker .table-wrap th { white-space: nowrap; }
+    /* agent topology: drawn for a wide screen - scroll it at a readable size */
+    .ag-topo-card { overflow-x: auto; }
+    #ag-topo { min-width: 640px; height: 170px; }
+    /* controls a thumb can hit */
+    #tab-strategy-builder select, #tab-agents input, #tab-agents select { min-height: 36px; }
+    .dt-chip { min-height: 32px; padding: 4px 10px; }
+    /* long explanations fold into "How it works" (app_shell.js) */
+    details.vq-howto { margin-top: 12px; border: 1px solid var(--t-line); border-radius: 4px; background: var(--t-panel); }
+    details.vq-howto > summary { padding: 12px 14px; cursor: pointer; color: var(--t-c); font-size: 11px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; list-style: none; }
+    details.vq-howto > summary::after { content: ' ▾'; }
+    details.vq-howto[open] > summary::after { content: ' ▴'; }
+    details.vq-howto > .mf-legend { margin: 0; border: 0; }
+}
+
+/* last data + Sync (syncStatus in dashboard.js) */
+.vq-sync-btn { margin-left: 8px; padding: 3px 10px; min-height: 26px; font-size: 10px; letter-spacing: 1px; white-space: nowrap; }
+.vq-sync-btn:disabled { opacity: .6; cursor: progress; }
+@media (pointer: coarse) { .vq-sync-btn { min-height: 34px; } }

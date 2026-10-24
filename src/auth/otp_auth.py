@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from src.utils.logger import get_logger
 from src.utils.exceptions import AuthenticationError
+from src.utils.mailer import mail_error
 
 # Load .env file explicitly before reading environment variables
 load_dotenv()
@@ -224,7 +225,7 @@ class OTPAuth:
             logger.info("otp_email_sent", zerodha_id=zerodha_id)
             return True
         except Exception as e:
-            logger.error("otp_email_failed", zerodha_id=zerodha_id, error=str(e))
+            logger.error("otp_email_failed", zerodha_id=zerodha_id, error=mail_error(e))
             return False
 
     def _consume_otp(self, otp: str, zerodha_id: str, purpose: str = "") -> Optional[dict]:

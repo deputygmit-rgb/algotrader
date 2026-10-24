@@ -340,7 +340,11 @@ class TestRunnerStrategiesTradeGeneration:
             assert "tradingsymbol" in t, f"Missing tradingsymbol: {t}"
             assert "transaction_type" in t, f"Missing transaction_type: {t}"
             assert "price" in t, f"Missing price: {t}"
-            assert t["price"] > 0, f"Zero/negative price: {t}"
+            # an option that expires worthless settles at 0; every real fill has a price
+            if t.get("reason") == "expiry":
+                assert t["price"] >= 0, f"Negative settlement price: {t}"
+            else:
+                assert t["price"] > 0, f"Zero/negative price: {t}"
 
     def test_trades_have_entry_and_exit_pairs(self, strategy_name):
         """At least some trades should have pnl (meaning they were closed)."""
@@ -917,14 +921,28 @@ class TestImports:
         assert OptionChainData is not None
 
     def test_strategy_classes_map_complete(self):
-        """All STRATEGY_CLASSES entries map to importable classes."""
-        for name, cls in FnOBacktestEngine.STRATEGY_CLASSES.items():
-            assert callable(cls), f"STRATEGY_CLASSES['{name}'] is not callable"
+        """Every self-managed runner (RUNNER_STRATEGIES) maps to an importable class."""
+        import importlib
+        for name, (module, class_name, _structure) in FnOBacktestEngine.RUNNER_STRATEGIES.items():
+            cls = getattr(importlib.import_module(module), class_name)
+            assert callable(cls), f"RUNNER_STRATEGIES['{name}'] is not callable"
             instance = cls({"underlying": "NIFTY", "lot_size": 50, "lots": 1, "exchange": "NFO"})
             assert hasattr(instance, "on_tick")
             assert hasattr(instance, "update_chain")
 
     def test_strategy_map_covers_all(self):
-        """STRATEGY_MAP covers all FNO_STRATEGIES listed in service.py."""
+        """Every strategy is backtested as itself: a structure in STRATEGY_MAP, or a
+        self-managed runner in RUNNER_STRATEGIES (runners used to fall through to an
+        iron condor)."""
         for strat in ALL_STRATEGIES:
-            assert strat in FnOBacktestEngine.STRATEGY_MAP, f"'{strat}' missing from STRATEGY_MAP"
+            assert strat in FnOBacktestEngine.STRATEGY_MAP or strat in FnOBacktestEngine.RUNNER_STRATEGIES, \
+                f"'{strat}' is neither a structure nor a runner"
+
+
+def test_fno_backtest_is_reproducible(nifty_data: pd.DataFrame):
+    """The realistic simulator draws rejections, partial fills and noise: seeded, the
+    same data and settings give the same result every run."""
+    a = _make_engine("iron_condor", slippage_model="realistic").run(nifty_data)
+    b = _make_engine("iron_condor", slippage_model="realistic").run(nifty_data)
+    assert a["final_capital"] == b["final_capital"] and a.get("total_costs") == b.get("total_costs")
+    assert a["trades"] == b["trades"]

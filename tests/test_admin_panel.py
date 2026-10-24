@@ -238,3 +238,42 @@ def test_backup_quote_token_is_stored_encrypted_and_never_returned(env):
     assert call("POST", "/api/admin/backup-quotes", user, {"token": "x"}).status_code == 404
     no_code = session("AD1234")
     assert call("POST", "/api/admin/backup-quotes", no_code, {"token": "x"}).status_code == 403
+
+
+# --- site metrics, account status, request deletion --------------------------------
+
+def test_usage_data_holds_no_trading_ids_but_the_admin_sees_them(env):
+    env.store.record_request("US5678", "user", "/api/status", "GET", 200, 12.0)
+    env.store.record_event("tab_view", user_id="US5678", kind="user", target="positions", device="desktop")
+    env.store.record_event("demo_start", user_id="DEMO-P-abc", kind="demo", device="desktop")
+    env.store.flush()
+    raw = env.tmp.joinpath("analytics.db").read_bytes()
+    assert b"US5678" not in raw                                  # only the keyed hash is stored
+    assert b"DEMO-P-abc" in raw                                  # anonymous demo ids stay as they are
+
+    admin = session("AD1234", step_up=True)
+    m = call("GET", "/api/admin/metrics?days=7", admin).json()
+    assert [a["zerodha_id"] for a in m["accounts"]] == ["US5678"]
+    assert m["totals"]["demo_start"] == 1 and m["daily"][0]["active_accounts"] == 1
+    assert call("GET", "/api/admin/metrics?days=5", admin).status_code == 400
+    assert call("GET", "/api/admin/metrics?days=7", session("US5678")).status_code in (302, 303, 403, 404)
+
+
+def test_every_account_shows_its_status_and_last_activity(env, monkeypatch):
+    env.store.record_request("US5678", "user", "/api/status", "GET", 200, 5.0)
+    admin = session("AD1234", step_up=True)
+    monkeypatch.setattr(webapp.otp_auth, "count_sessions", lambda zid: 1 if zid == "AD1234" else 0)
+    users = {u["zerodha_id"]: u for u in call("GET", "/api/admin/overview", admin).json()["users"]}
+    assert users["US5678"]["last_active"] and users["US5678"]["status"] == "active today"
+    assert users["AD1234"]["status"] == "session open"           # signed in, no usage recorded yet
+
+
+def test_access_requests_can_be_deleted_and_the_deletion_is_audited(env):
+    cid = env.store.add_contact(name="Asha", email="asha@example.com", phone="+919800000000", trading_id="",
+                                message="hi", source="landing", visitor_id="", user_id="", ip="1.2.3.4")
+    admin = session("AD1234", step_up=True)
+    assert call("DELETE", f"/api/admin/contacts/{cid}", admin).status_code == 200
+    assert env.store.list_contacts() == []
+    assert call("DELETE", f"/api/admin/contacts/{cid}", admin).status_code == 404
+    assert env.store.list_audit()[0]["action"] == "contact_deleted"
+    assert call("DELETE", f"/api/admin/contacts/{cid}", admin, csrf=False).status_code == 403

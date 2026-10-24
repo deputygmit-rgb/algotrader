@@ -121,7 +121,8 @@ class FnOBacktestEngine:
 
         # Sub-engines
         self._chain_builder = HistoricalChainBuilder(self.underlying)
-        self._simulator = FnOExecutionSimulator(slippage_model=slippage_model)
+        # seeded: the same data and settings give the same result on every run
+        self._simulator = FnOExecutionSimulator(slippage_model=slippage_model, seed=0)
         self._cost_model = IndianFnOCostModel()
         self._margin_engine = MarginEngine()
         self._greeks_engine = GreeksEngine()

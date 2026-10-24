@@ -166,7 +166,27 @@
     new MutationObserver(syncActive).observe(tabs, { subtree: true, attributes: true, attributeFilter: ['class'] });
     syncActive();
 
-    function layoutPhone() { document.body.classList.toggle('has-bnav', phone.matches); }
+    // the boards' long explanations fold into "How it works" on a phone (the same element, moved)
+    const legends = [...document.querySelectorAll('.mf-legend')].map(legend => {
+        const box = document.createElement('details');
+        box.className = 'vq-howto';
+        box.innerHTML = '<summary>How it works</summary>';
+        return [legend, box, document.createComment('vq-howto')];
+    });
+    function layoutLegends() {
+        legends.forEach(([legend, box, mark]) => {
+            if (phone.matches && legend.parentElement !== box) {
+                legend.replaceWith(mark);
+                mark.after(box);
+                box.append(legend);
+            } else if (!phone.matches && legend.parentElement === box) {
+                mark.replaceWith(legend);
+                box.remove();
+            }
+        });
+    }
+
+    function layoutPhone() { document.body.classList.toggle('has-bnav', phone.matches); layoutLegends(); }
     phone.addEventListener('change', layoutPhone);
     layoutPhone();
 })();

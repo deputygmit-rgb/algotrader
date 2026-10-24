@@ -40,7 +40,9 @@ def status() -> dict[str, Any]:
 
 
 def in_window(now: datetime) -> bool:
-    return now.weekday() < 5 and RECORD_FROM <= now.time() <= RECORD_UNTIL
+    from src.agent.market_hours import is_trading_day
+
+    return is_trading_day(now.date()) and RECORD_FROM <= now.time() <= RECORD_UNTIL
 
 
 def _account() -> str:

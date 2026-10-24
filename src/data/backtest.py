@@ -36,6 +36,16 @@ logger = get_logger(__name__)
 # Indian Equity Cost Model
 # ────────────────────────────────────────────────────────────────
 
+
+def _bars_per_day(data: pd.DataFrame) -> int:
+    """Bars per trading day in ``data`` (1 for daily bars)."""
+    try:
+        stamps = pd.to_datetime(data["timestamp"]) if "timestamp" in data else pd.to_datetime(data.index)
+        days = stamps.dt.date.nunique() if hasattr(stamps, "dt") else len(set(stamps.date))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return 1
+    return max(1, round(len(data) / days)) if days else 1
+
 class IndianCostModel:
     """Realistic Indian equity brokerage cost model (Zerodha-style)."""
 
@@ -507,16 +517,21 @@ class BacktestEngine:
         returns = np.diff(equity) / equity[:-1]
         returns = returns[np.isfinite(returns)]
 
-        rf_daily = 0.06 / 252
-        excess = returns - rf_daily
+        # returns are per bar: intraday bars need the annualising factor and the length
+        # in years per bar, not per day. No risk-free rate is deducted: the simulated
+        # account earns nothing on idle cash, so deducting 6% made every strategy that
+        # holds mostly cash read deeply negative (a profitable run showed Sharpe -145).
+        per_day = _bars_per_day(data)
+        periods = 252 * per_day
+        excess = returns
         sharpe = 0.0
         if len(excess) > 1 and np.std(excess) > 0:
-            sharpe = (np.mean(excess) / np.std(excess)) * np.sqrt(252)
+            sharpe = (np.mean(excess) / np.std(excess)) * np.sqrt(periods)
 
         downside = returns[returns < 0]
         sortino = 0.0
         if len(downside) > 1 and np.std(downside) > 0:
-            sortino = (np.mean(excess) / np.std(downside)) * np.sqrt(252)
+            sortino = (np.mean(excess) / np.std(downside)) * np.sqrt(periods)
 
         peak = np.maximum.accumulate(equity)
         drawdown = (peak - equity) / peak
@@ -524,13 +539,13 @@ class BacktestEngine:
         max_dd_abs = float(np.max(peak - equity)) if len(equity) > 0 else 0.0
 
         total_return = (equity[-1] / equity[0]) - 1 if equity[0] > 0 else 0.0
-        n_days = len(data)
-        years = n_days / 252 if n_days > 0 else 1.0
+        n_bars = len(data)
+        years = n_bars / periods if n_bars > 0 else 1.0
         cagr = 0.0
         if years > 0 and total_return > -1:
             cagr = ((1 + total_return) ** (1 / years) - 1) * 100
 
-        calmar = abs(cagr / max_dd_pct) if max_dd_pct > 0 else 0.0
+        calmar = cagr / max_dd_pct if max_dd_pct > 0 else 0.0      # negative when the run lost money
 
         threshold = 0.0
         gains = np.sum(returns[returns > threshold] - threshold)
@@ -554,7 +569,7 @@ class BacktestEngine:
             expectancy = (win_rate / 100 * avg_win) - ((1 - win_rate / 100) * abs(avg_loss))
         recovery_factor = abs(equity[-1] - equity[0]) / max_dd_abs if max_dd_abs > 0 else 0.0
         payoff_ratio = avg_win / abs(avg_loss) if avg_loss != 0 else 0.0
-        annual_volatility = float(np.std(returns) * np.sqrt(252) * 100) if len(returns) > 1 else 0.0
+        annual_volatility = float(np.std(returns) * np.sqrt(periods) * 100) if len(returns) > 1 else 0.0
 
         return {
             "cagr": round(cagr, 2), "sharpe_ratio": round(sharpe, 4),

@@ -80,11 +80,17 @@ def main() -> None:
         table(rows, ["event", "page", "target", "clicks", "people"])
 
     elif args.report == "users":
+        # usage data holds keyed hashes of Trading IDs: show the accounts this server knows
+        sys.path.insert(0, ROOT)
+        from src.auth.user_config import UserConfigService
+        from src.metrics.store import metrics
+        names = {metrics.user_ref(u["zerodha_id"]): u["zerodha_id"] for u in UserConfigService.get_instance().list_users()}
         rows = conn.execute("""
             SELECT user_key, kind, MIN(day) AS first_day, MAX(day) AS last_day, COUNT(DISTINCT day) AS days_active,
                    SUM(count) AS requests
             FROM request_counts WHERE day >= ? AND kind IN ('user', 'demo')
             GROUP BY user_key, kind ORDER BY last_day DESC, requests DESC LIMIT 100""", (since,)).fetchall()
+        rows = [(names.get(r[0], r[0]),) + tuple(r[1:]) for r in rows]
         table(rows, ["user", "kind", "first_day", "last_day", "days_active", "requests"])
 
     elif args.report == "contacts":

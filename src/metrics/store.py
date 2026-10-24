@@ -9,8 +9,11 @@
 * ``contact_requests`` - "get access" requests from the landing page and demo.
 
 Writes are buffered in memory and flushed by a background task, so recording
-never adds a database write to a request. IP addresses are stored only as a
-keyed hash; typed values (inputs) are never collected.
+never adds a database write to a request. IP addresses and the Trading IDs of
+signed-in accounts are stored only as keyed hashes (the admin panel maps a hash
+back to the account it knows); typed values (inputs) are never collected. Access
+requests hold the personal details people enter, so the database file is kept
+readable by the service account only.
 """
 from __future__ import annotations
 
@@ -97,6 +100,8 @@ CREATE TABLE IF NOT EXISTS contact_requests (
 """
 
 EVENT_NAME = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+USER_REF_PREFIX = "u_"
+SCHEMA_VERSION = 2          # 2: Trading IDs in events / request_counts stored as keyed hashes
 CONTACT_STATUSES = ("new", "contacted", "approved", "rejected")
 
 
@@ -128,14 +133,25 @@ class MetricsStore:
         self._events_today = 0
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=10)
         if not self._ready:
             os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+        conn = sqlite3.connect(self._db_path, timeout=10)
+        if not self._ready:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
             self._migrate(conn)
             self._ready = True
+        self._protect()
         return conn
+
+    def _protect(self) -> None:
+        """Owner-only file mode (0600) for the database and its WAL / shared-memory files."""
+        for path in (self._db_path, f"{self._db_path}-wal", f"{self._db_path}-shm"):
+            try:
+                if os.stat(path).st_mode & 0o077:
+                    os.chmod(path, 0o600)
+            except OSError:
+                pass
 
     # Columns added after the first release; existing databases get them on startup.
     _ADDED_COLUMNS = {
@@ -151,14 +167,33 @@ class MetricsStore:
             for column, ddl in columns.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 2:
+            # Trading IDs recorded before hashing: replace them with their keyed hash
+            conn.create_function("vq_ref", 1, self.user_ref, deterministic=True)
+            conn.execute(f"""UPDATE events SET user_id = vq_ref(user_id)
+                             WHERE kind = 'user' AND user_id != '' AND user_id NOT LIKE '{USER_REF_PREFIX}%'""")
+            conn.execute(f"""UPDATE request_counts SET user_key = vq_ref(user_key)
+                             WHERE kind = 'user' AND user_key NOT LIKE '{USER_REF_PREFIX}%'""")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
 
     def ip_hash(self, ip: str) -> str:
         return hmac.new(self._secret, (ip or "").encode(), hashlib.sha256).hexdigest()[:16] if ip else ""
 
+    def user_ref(self, user_id: str) -> str:
+        """Keyed hash that stands for a signed-in account's Trading ID in usage data."""
+        if not user_id or user_id.startswith(USER_REF_PREFIX):
+            return user_id or ""
+        digest = hmac.new(self._secret, f"user:{user_id.upper()}".encode(), hashlib.sha256).hexdigest()[:16]
+        return f"{USER_REF_PREFIX}{digest}"
+
+    def _who(self, user_id: str, kind: str) -> str:
+        return self.user_ref(user_id) if kind == "user" else user_id
+
     # ── recording (in memory, cheap) ─────────────────────────────────────
     def record_request(self, user_key: str, kind: str, route: str, method: str, status: int, ms: float) -> None:
-        key = (datetime.now(IST).date().isoformat(), _clip(user_key, 64), kind, _clip(route, 120), method,
+        key = (datetime.now(IST).date().isoformat(), _clip(self._who(user_key, kind), 64), kind, _clip(route, 120), method,
                f"{status // 100}xx")
         with self._lock:
             slot = self._counts.setdefault(key, [0, 0.0])
@@ -174,7 +209,8 @@ class MetricsStore:
         for k, v in list((detail or {}).items())[:10]:
             if isinstance(k, str) and re.match(r"^[a-z_][a-z0-9_]{0,31}$", k):
                 clean[k] = v if isinstance(v, (int, float, bool)) else _clip(v, 100)
-        row = (now.isoformat(timespec="seconds"), now.date().isoformat(), _clip(visitor_id, 40), _clip(user_id, 40),
+        row = (now.isoformat(timespec="seconds"), now.date().isoformat(), _clip(visitor_id, 40),
+               _clip(self._who(user_id, kind), 40),
                _clip(kind, 16), event, _clip(page, 120), _clip(target, 80), json.dumps(clean), self.ip_hash(ip),
                _clip(device, 10))
         with self._lock:
@@ -290,6 +326,86 @@ class MetricsStore:
                                     (status, contact_id)).rowcount == 1
         finally:
             conn.close()
+
+    def delete_contact(self, contact_id: int) -> bool:
+        """Erase an access request and the personal details in it."""
+        conn = self._connect()
+        try:
+            with conn:
+                return conn.execute("DELETE FROM contact_requests WHERE id = ?", (contact_id,)).rowcount == 1
+        finally:
+            conn.close()
+
+    # ── admin panel: site metrics ───────────────────────────────────────
+    FUNNEL = ("demo_start", "otp_sent", "login_success", "login_failed", "account_linked", "contact_submitted",
+              "demo_exit", "logout")
+
+    def account_activity(self, days: int = 30) -> dict[str, dict[str, Any]]:
+        """{user ref: first / last day, days active, requests} for signed-in accounts."""
+        self.flush()
+        since = (datetime.now(IST).date() - timedelta(days=days - 1)).isoformat()
+        conn = self._connect()
+        try:
+            rows = conn.execute("""
+                SELECT user_key, MIN(day), MAX(day), COUNT(DISTINCT day), SUM(count) FROM request_counts
+                WHERE day >= ? AND kind = 'user' GROUP BY user_key""", (since,)).fetchall()
+        finally:
+            conn.close()
+        return {r[0]: {"first_day": r[1], "last_day": r[2], "days_active": r[3], "requests": r[4]} for r in rows}
+
+    def site_metrics(self, days: int = 7) -> dict[str, Any]:
+        """Visitors, the sign-up funnel, active accounts, most used features and clicks."""
+        self.flush()
+        since = (datetime.now(IST).date() - timedelta(days=days - 1)).isoformat()
+        funnel = ", ".join(f"SUM(event = '{e}')" for e in self.FUNNEL)
+        conn = self._connect()
+        try:
+            daily = conn.execute(f"""
+                SELECT day, COUNT(DISTINCT CASE WHEN event = 'page_view' THEN visitor_id END),
+                       SUM(event = 'page_view'), {funnel}
+                FROM events WHERE day >= ? AND device != 'bot' GROUP BY day ORDER BY day DESC""", (since,)).fetchall()
+            usage = {r[0]: r[1:] for r in conn.execute("""
+                SELECT day, COUNT(DISTINCT CASE WHEN kind = 'user' THEN user_key END),
+                       COUNT(DISTINCT CASE WHEN kind = 'demo' THEN user_key END),
+                       SUM(count), SUM(CASE WHEN status = '5xx' THEN count ELSE 0 END)
+                FROM request_counts WHERE day >= ? AND kind != 'bot' GROUP BY day""", (since,))}
+            totals = conn.execute("""
+                SELECT COUNT(DISTINCT CASE WHEN event = 'page_view' THEN visitor_id END),
+                       COUNT(DISTINCT CASE WHEN kind = 'user' THEN user_id END)
+                FROM events WHERE day >= ? AND device != 'bot'""", (since,)).fetchone()
+            features = conn.execute("""
+                SELECT route, method, SUM(count), COUNT(DISTINCT user_key), ROUND(SUM(total_ms) / SUM(count), 1),
+                       SUM(CASE WHEN status IN ('4xx', '5xx') THEN count ELSE 0 END)
+                FROM request_counts WHERE day >= ? AND kind IN ('user', 'demo')
+                GROUP BY route, method ORDER BY 4 DESC, 3 DESC LIMIT 20""", (since,)).fetchall()
+            clicks = conn.execute("""
+                SELECT event, page, target, COUNT(*), COUNT(DISTINCT visitor_id) FROM events
+                WHERE day >= ? AND event IN ('click', 'tab_view') AND device != 'bot' AND target != ''
+                GROUP BY event, page, target ORDER BY 5 DESC, 4 DESC LIMIT 20""", (since,)).fetchall()
+            devices = conn.execute("""
+                SELECT device, COUNT(DISTINCT visitor_id) FROM events
+                WHERE day >= ? AND event = 'page_view' AND device NOT IN ('bot', '') GROUP BY device""",
+                                   (since,)).fetchall()
+        finally:
+            conn.close()
+        days_out = []
+        for r in daily:
+            u = usage.get(r[0], (0, 0, 0, 0))
+            days_out.append({"day": r[0], "visitors": r[1], "page_views": r[2],
+                             **{e: r[3 + i] or 0 for i, e in enumerate(self.FUNNEL)},
+                             "active_accounts": u[0], "demo_sessions": u[1], "requests": u[2], "server_errors": u[3]})
+        return {
+            "days": days,
+            "daily": days_out,
+            "totals": {"visitors": totals[0] or 0, "active_accounts": totals[1] or 0,
+                       **{e: sum(d[e] for d in days_out) for e in self.FUNNEL},
+                       "page_views": sum(d["page_views"] or 0 for d in days_out),
+                       "server_errors": sum(d["server_errors"] or 0 for d in days_out)},
+            "devices": {d: n for d, n in devices},
+            "features": [{"route": r[0], "method": r[1], "calls": r[2], "people": r[3], "avg_ms": r[4], "errors": r[5]}
+                         for r in features],
+            "clicks": [{"event": r[0], "page": r[1], "target": r[2], "count": r[3], "people": r[4]} for r in clicks],
+        }
 
 
 metrics = MetricsStore()

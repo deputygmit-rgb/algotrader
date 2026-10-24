@@ -33,9 +33,32 @@
             <div class="adm-head"><h2>Users</h2><span id="adm-user-count"></span></div>
             <div class="adm-table-wrap">
                 <table class="adm-table">
-                    <thead><tr><th>Trading ID</th><th>Email</th><th>Access</th><th>API key</th><th>Broker session today</th><th>Signed in</th><th></th></tr></thead>
+                    <thead><tr><th>Trading ID</th><th>Status</th><th>Last active</th><th>Email</th><th>Access</th><th>API key</th><th>Broker session today</th><th>Signed in</th><th></th></tr></thead>
                     <tbody id="adm-users"></tbody>
                 </table>
+            </div>
+        </section>
+
+        <section class="card adm-card" id="adm-metrics">
+            <div class="adm-head"><h2>Site metrics</h2>
+                <label class="perf-field">Window<select id="met-days"></select></label></div>
+            <div class="adm-kpis" id="met-kpis"></div>
+            <div class="adm-table-wrap">
+                <table class="adm-table">
+                    <thead><tr><th>Day</th><th>Visitors</th><th>Page views</th><th>Demo starts</th><th>Sign-in codes</th><th>Sign-ins</th><th>Failed sign-ins</th><th>Accounts linked</th><th>Access requests</th><th>Active accounts</th><th>Demo sessions</th><th>Server errors</th></tr></thead>
+                    <tbody id="met-daily"></tbody>
+                </table>
+            </div>
+            <div class="adm-grid adm-grid-3">
+                <div><h3 class="adm-sub">Accounts</h3><div class="adm-table-wrap"><table class="adm-table">
+                    <thead><tr><th>Trading ID</th><th>Last active</th><th>Days active</th><th>Requests</th></tr></thead>
+                    <tbody id="met-accounts"></tbody></table></div></div>
+                <div><h3 class="adm-sub">Most used features</h3><div class="adm-table-wrap"><table class="adm-table">
+                    <thead><tr><th>Route</th><th>People</th><th>Calls</th><th>Avg ms</th><th>Errors</th></tr></thead>
+                    <tbody id="met-features"></tbody></table></div></div>
+                <div><h3 class="adm-sub">Most clicked</h3><div class="adm-table-wrap"><table class="adm-table">
+                    <thead><tr><th>Page</th><th>What</th><th>People</th><th>Clicks</th></tr></thead>
+                    <tbody id="met-clicks"></tbody></table></div></div>
             </div>
         </section>
 

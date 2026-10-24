@@ -95,10 +95,14 @@ class FnOExecutionSimulator:
         slippage_model: str = "realistic",  # "zero", "fixed", "realistic"
         fixed_slippage_pct: float = 0.1,
         rejection_probability: float = 0.005,  # 0.5% random rejection
+        seed: int | None = None,
     ) -> None:
         self.slippage_model = slippage_model
         self.fixed_slippage_pct = fixed_slippage_pct
         self.rejection_probability = rejection_probability
+        # its own generator: a seeded simulator (backtests) gives the same fills for the
+        # same inputs every run; unseeded (paper trading) it stays random
+        self._rng = random.Random(seed)
 
     def _next_order_id(self) -> str:
         FnOExecutionSimulator._order_counter += 1
@@ -133,7 +137,7 @@ class FnOExecutionSimulator:
             return result
 
         # 2. Random rejection (simulates exchange/broker glitches)
-        if random.random() < self.rejection_probability:
+        if self._rng.random() < self.rejection_probability:
             result.status = FnOOrderStatus.REJECTED
             result.reject_reason = "Order rejected by exchange (simulated)"
             return result
@@ -157,12 +161,12 @@ class FnOExecutionSimulator:
             participation_rate = (lots * contract.lot_size) / max(volume, 1)
             if participation_rate > 0.5:
                 # Fill only 60-90% for very large orders
-                fill_rate = random.uniform(0.6, 0.9)
+                fill_rate = self._rng.uniform(0.6, 0.9)
                 result.filled_lots = max(1, int(lots * fill_rate))
                 result.status = FnOOrderStatus.PARTIAL
             elif participation_rate > 0.2:
                 # Fill 85-100%
-                fill_rate = random.uniform(0.85, 1.0)
+                fill_rate = self._rng.uniform(0.85, 1.0)
                 result.filled_lots = max(1, min(lots, int(lots * fill_rate)))
                 result.status = (
                     FnOOrderStatus.COMPLETE
@@ -238,7 +242,7 @@ class FnOExecutionSimulator:
                 base_price -= impact
 
         # Component 3: Random noise (±0.1% uniform)
-        noise = base_price * random.uniform(-0.001, 0.001)
+        noise = base_price * self._rng.uniform(-0.001, 0.001)
         base_price += noise
 
         # Ensure price is non-negative and tick-aligned
@@ -269,11 +273,11 @@ class FnOExecutionSimulator:
     def _simulate_latency(self, child_orders: int) -> float:
         """Simulate order execution latency in milliseconds."""
         # Base latency: 50-200ms per order
-        base = random.uniform(50, 200)
+        base = self._rng.uniform(50, 200)
         # Additional latency for freeze splits
         total = base * child_orders
         # Network jitter
-        total += random.uniform(0, 50)
+        total += self._rng.uniform(0, 50)
         return total
 
     def execute_multi_leg(

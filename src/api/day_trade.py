@@ -45,7 +45,9 @@ BarFetcher = Callable[[str], Awaitable[list[dict[str, Any]]]]
 
 
 def market_open(now: datetime) -> bool:
-    return now.weekday() < 5 and SESSION_OPEN <= now.time() < SESSION_CLOSE
+    from src.agent.market_hours import is_trading_day
+
+    return is_trading_day(now.date()) and SESSION_OPEN <= now.time() < SESSION_CLOSE
 
 
 def bar_bucket(now: datetime) -> datetime:

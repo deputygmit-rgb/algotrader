@@ -279,6 +279,7 @@ class TestPutCreditSpreadRunner:
     # on_tick integration
     # ──────────────────────────────────────────────────
 
+    @pytest.mark.asyncio
     async def test_on_tick_generates_entry(self):
         strat = self._make_strategy()
         chain = _build_chain(spot=25000.0)
@@ -291,6 +292,7 @@ class TestPutCreditSpreadRunner:
         _simulate_entry_fills(strat, signals)
         assert strat.state == PutSpreadState.SPREAD_OPEN
 
+    @pytest.mark.asyncio
     async def test_on_tick_no_entry_without_chain(self):
         strat = self._make_strategy()
         signals = await strat.on_tick([])
@@ -300,6 +302,7 @@ class TestPutCreditSpreadRunner:
     # Scenario 1: Short SL hit → Runner
     # ──────────────────────────────────────────────────
 
+    @pytest.mark.asyncio
     async def test_short_sl_hit_transitions_to_runner(self):
         """When short put premium rises above SL trigger → close short, keep long."""
         strat = self._make_strategy()
@@ -323,6 +326,7 @@ class TestPutCreditSpreadRunner:
         assert exit_signals[0].metadata["reason"] == "sl_hit"
         assert strat.state == PutSpreadState.RUNNER_LONG_ONLY
 
+    @pytest.mark.asyncio
     async def test_runner_be_exit(self):
         """In RUNNER state, if long put drops to entry premium → exit."""
         strat = self._make_strategy()
@@ -356,6 +360,7 @@ class TestPutCreditSpreadRunner:
     # Scenario 2: Market moves in favour → Spread BE
     # ──────────────────────────────────────────────────
 
+    @pytest.mark.asyncio
     async def test_be_trigger_transitions_to_spread_be(self):
         """When spot rises 60+ pts (favourable for put credit spread) → SPREAD_BE."""
         strat = self._make_strategy(be_trigger_points=60)
@@ -374,6 +379,7 @@ class TestPutCreditSpreadRunner:
         assert exit_signals == []
         assert strat.state == PutSpreadState.SPREAD_BE
 
+    @pytest.mark.asyncio
     async def test_spread_be_exit_when_credit_lost(self):
         """In SPREAD_BE state, if spread cost >= entry credit → close."""
         strat = self._make_strategy(be_trigger_points=60)
@@ -407,6 +413,7 @@ class TestPutCreditSpreadRunner:
     # Profit target
     # ──────────────────────────────────────────────────
 
+    @pytest.mark.asyncio
     async def test_profit_target_closes_spread(self):
         strat = self._make_strategy(profit_target_pct=80.0)
         chain = _build_chain(spot=25000.0)
@@ -506,6 +513,7 @@ class TestPutCreditSpreadRunner:
     # Re-entry
     # ──────────────────────────────────────────────────
 
+    @pytest.mark.asyncio
     async def test_can_reenter_after_exit(self):
         strat = self._make_strategy()
         chain = _build_chain(spot=25000.0)

@@ -16,6 +16,16 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def mail_error(e: BaseException) -> str:
+    """What went wrong sending mail, for the logs - without the text of the server's
+    reply, which can name the recipient's address."""
+    if isinstance(e, smtplib.SMTPRecipientsRefused):
+        return "recipient_refused"
+    if isinstance(e, smtplib.SMTPResponseException):
+        return f"{type(e).__name__} {e.smtp_code}"
+    return type(e).__name__
+
+
 def send_mail(to: str, subject: str, text: str, reply_to: Optional[str] = None, html: Optional[str] = None,
               attachments: Optional[list[tuple[str, str, str]]] = None) -> bool:
     """``attachments``: (filename, text content, MIME subtype under text/, e.g. "markdown")."""
@@ -43,7 +53,7 @@ def send_mail(to: str, subject: str, text: str, reply_to: Optional[str] = None, 
             server.send_message(msg)
         return True
     except Exception as e:
-        logger.error("mail_send_failed", error=str(e))
+        logger.error("mail_send_failed", error=mail_error(e))
         return False
 
 
