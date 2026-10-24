@@ -22,6 +22,25 @@ const DayTrade = (() => {
     const qs = () => demo() ? '?demo=1' : '';
     const isActive = () => $('tab-day-trade')?.classList.contains('active') && !document.hidden;
 
+    // the last board is shown at once while the server builds a new one: say so, poll
+    // again soon, and offer Sync
+    function syncNote(json) {
+        const meta = $('dt-meta');
+        if (!meta) return;
+        let btn = $('dt-meta-sync');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.id = 'dt-meta-sync';
+            btn.type = 'button';
+            btn.className = 'btn btn-outline btn-sm vq-sync-btn';
+            btn.addEventListener('click', () => { btn.disabled = true; btn.textContent = 'Syncing…'; poll(); });
+            meta.after(btn);
+        }
+        btn.disabled = !!json.refreshing;
+        btn.textContent = json.refreshing ? 'Syncing…' : '↻ Sync';
+        if (json.refreshing) meta.textContent += ' · showing the last board, syncing in the background…';
+    }
+
     // ── data ────────────────────────────────────────────────────────
     async function poll() {
         clearTimeout(timer);
@@ -41,13 +60,14 @@ const DayTrade = (() => {
                 alertChanges(json);
                 data = json;
                 render();
+                syncNote(json);
             } catch (e) {
                 $('dt-meta').textContent = `Unavailable: ${e.message}`;
             } finally {
                 inFlight = false;
             }
         }
-        timer = setTimeout(poll, POLL_MS);
+        timer = setTimeout(poll, data && data.refreshing ? 3000 : POLL_MS);
     }
 
     // New signals and outcome changes since the last poll become toasts (and a

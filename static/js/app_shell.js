@@ -73,6 +73,40 @@
     phone.addEventListener('change', layoutHeader);
     layoutHeader();
 
+    // ── pop-ups: a pinned title row with a ×, a pinned button row ──────
+    // Long pop-ups scrolled their header (and its ×) off the top of the screen, and several
+    // had no × at all - only a Cancel at the very bottom.
+    const CLOSE_TEXT = /^(×|✕|close|cancel)$/i;
+    function fitModal(overlay) {
+        const modal = overlay.querySelector(':scope > .modal');
+        if (!modal || modal.dataset.vqFitted) return;
+        modal.dataset.vqFitted = '1';
+        const kids = [...modal.children].filter(el => !el.classList.contains('vq-sheet-grip'));
+        const head = kids[0];
+        if (head && (head.matches('.modal-title, .pwa-modal-head, .vq-sheet-head') || head.querySelector('h2, h3'))) {
+            head.classList.add('vq-modal-head');
+            if (head === modal.firstElementChild) head.classList.add('vq-modal-head-edge');
+            const hasClose = [...head.querySelectorAll('button')].some(b => CLOSE_TEXT.test(b.textContent.trim()) || /close/i.test(b.getAttribute('aria-label') || ''));
+            if (!hasClose && overlay.id) {
+                const x = document.createElement('button');
+                x.type = 'button';
+                x.className = 'pwa-close vq-x';
+                x.setAttribute('aria-label', 'Close');
+                x.textContent = '×';
+                x.addEventListener('click', () => window.hideModal(overlay.id));
+                head.append(x);
+            }
+        }
+        const last = kids[kids.length - 1];
+        if (last && last !== head && [...last.querySelectorAll(':scope > button')].some(b => CLOSE_TEXT.test(b.textContent.trim()))) {
+            last.classList.add('vq-modal-actions');
+        }
+    }
+    document.querySelectorAll('.modal-overlay').forEach(fitModal);
+    new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => {
+        if (n.nodeType === 1 && n.classList.contains('modal-overlay')) fitModal(n);
+    }))).observe(document.body, { childList: true });
+
     // ── bottom navigation (phones) ─────────────────────────────────────
     const ICONS = {
         overview: '<path d="M4 13h6V4H4zm10 7h6v-9h-6zM4 20h6v-4H4zm10-13h6V4h-6z"/>',

@@ -38,20 +38,29 @@
         return true;
     }
 
+    // one code per confirmation (valid 2 minutes, 2 attempts); on the admin pages every
+    // change asks for its own
     async function confirmWithEmailCode() {
         const sent = await post('/auth/step-up/send');
         if (!sent.success) {
             alert(sent.message || 'Could not send a confirmation code.');
             return false;
         }
-        const code = window.prompt('This action can trade real money. Enter the confirmation code sent to your email:');
-        if (!code) return false;
-        const verified = await post('/auth/step-up/verify', { otp: code.trim() });
-        if (!verified.success) {
-            alert(verified.message || 'Invalid or expired code.');
-            return false;
+        const admin = document.body.classList.contains('t-admin');
+        let ask = admin
+            ? 'Admin: enter the confirmation code sent to your email (valid 2 minutes).'
+            : 'This action can trade real money. Enter the confirmation code sent to your email (valid 2 minutes):';
+        for (;;) {
+            const code = window.prompt(ask);
+            if (!code) return false;
+            const verified = await post('/auth/step-up/verify', { otp: code.trim() });
+            if (verified.success) return true;
+            if (!verified.attempts_left) {
+                alert((verified.message || 'Invalid or expired code.') + ' Try the action again for a new code.');
+                return false;
+            }
+            ask = `${verified.message} Enter the code again:`;
         }
-        return true;
     }
 
     function withToken(init) {
@@ -66,10 +75,10 @@
         init = init || {};
         const method = withToken(init);
         let res = await originalFetch(input, init);
-        if (res.status !== 403 || method === 'GET' || method === 'HEAD') return res;
+        if (res.status !== 403) return res;
         let reply = await res.clone().json().catch(() => null);
 
-        if (reply && reply.error === 'CSRF validation failed') {
+        if (reply && reply.error === 'CSRF validation failed' && method !== 'GET' && method !== 'HEAD') {
             pendingRefresh = pendingRefresh || refreshToken().finally(() => { pendingRefresh = null; });
             if (!(await pendingRefresh)) return res;
             withToken(init);

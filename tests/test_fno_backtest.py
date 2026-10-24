@@ -327,5 +327,7 @@ class TestBacktestEdgeCases:
         # Both should run without error
         assert "error" not in r_zero
         assert "error" not in r_real
-        # Realistic should have higher costs
-        assert r_real.get("total_costs", 0) >= r_zero.get("total_costs", 0)
+        # Realistic fills cost slippage; zero-slippage fills cost none. (Brokerage and charges
+        # depend on how many trades each run made, so they are not the comparison.)
+        assert r_zero["total_slippage"] == 0
+        assert r_real["total_slippage"] > 0

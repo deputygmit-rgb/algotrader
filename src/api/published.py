@@ -52,7 +52,7 @@ OI_STALE_S = 6 * 3600.0
 OVERVIEW_TTL_S = 5.0
 STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                          "data", "published")
-STORED_KEYS = ("oi_options_NIFTY", "oi_options_SENSEX", "oi_futures")
+STORED_KEYS = ("oi_options_NIFTY", "oi_options_SENSEX", "oi_futures", "board", "swing")
 
 # ── allowlists ─────────────────────────────────────────────────────────
 SCAN_REPORT_KEYS = {
@@ -71,7 +71,7 @@ SCAN_STOCK_KEYS = {
     "vcp_detected", "vcp_pivot", "vcp_tightness", "triggers",
 }
 FLOW_KEYS = {"as_of", "total", "quoted", "oi_count", "bull", "bear", "flat", "nifty", "rows", "picks", "data_source",
-             "sectors", "breadth", "baseline_loading"}
+             "sectors", "breadth", "baseline_loading", "market_closed", "session_of"}
 FLOW_ROW_KEYS = {
     "symbol", "sector", "universes", "side", "ltp", "prev_close", "change_pct", "open", "day_high", "day_low",
     "vwap", "vwap_source", "vwap_dev_pct", "atr_pct", "fut_ltp", "oi", "oi_change_pct", "buildup", "vol_ratio",
@@ -99,6 +99,9 @@ def _efficacy_skips(feed: list[dict[str, Any]]) -> None:
         if skip:
             s["skipped"] = skip
 SWING_TTL_S = 30.0
+# a board past its refresh is still shown (marked refreshing) while one rebuild runs: building it
+# takes the whole money flow plus a setup replay per stock, seconds after a restart
+BOARD_STALE_S = 120.0
 BOARD_TRACKED_KEYS = {
     "symbol", "since", "loading", "insufficient_history", "sector", "ltp", "change_pct", "flow_score", "bias",
     "trade_direction", "score", "vol_ratio", "prev_high", "prev_low", "bars", "indicators", "orh", "orl",
@@ -432,7 +435,7 @@ class Publisher:
             except Exception as e:
                 logger.warning("published_board_failed", error=str(e))
                 return {"error": UNAVAILABLE}
-        return await self._once("board", BOARD_TTL_S, build)
+        return self._age_note("board", BOARD_TTL_S, await self._once("board", BOARD_TTL_S, build, stale_s=BOARD_STALE_S))
 
     async def swing(self) -> dict[str, Any]:
         async def build() -> dict[str, Any]:
@@ -447,7 +450,7 @@ class Publisher:
             except Exception as e:
                 logger.warning("published_swing_failed", error=str(e))
                 return {"error": UNAVAILABLE}
-        return await self._once("swing", SWING_TTL_S, build)
+        return self._age_note("swing", SWING_TTL_S, await self._once("swing", SWING_TTL_S, build, stale_s=BOARD_STALE_S))
 
     def scan(self, universe: str) -> dict[str, Any]:
         svc = self._svc()

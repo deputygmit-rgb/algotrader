@@ -1593,7 +1593,10 @@ function syncStatus(statusEl, ts, state, onSync, note) {
     }
     if (btn && onSync) btn.onclick = () => onSync();
     const when = ts ? new Date(ts) : null;
-    const at = when && !isNaN(when) ? when.toLocaleTimeString() : '';
+    const today = when && !isNaN(when) && when.toDateString() === new Date().toDateString();
+    const at = when && !isNaN(when)
+        ? (today ? when.toLocaleTimeString() : `${when.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} ${when.toLocaleTimeString()}`)
+        : '';
     const mins = when && !isNaN(when) ? Math.floor((Date.now() - when) / 60000) : null;
     const ago = mins == null ? '' : mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ago`;
     const last = at ? `Last data ${at} (${ago})` : 'No data yet';

@@ -179,6 +179,16 @@ const MarketFlow = (() => {
                 snap = json;
                 rebuild();
                 renderPanels();
+                if (json.market_closed) {
+                    // weekend, holiday or outside 09:15-15:30: the last session as it ended
+                    setLive('off', 'CLOSED');
+                    const day = json.session_of ? new Date(json.session_of + 'T00:00:00') : null;
+                    const label = day && !isNaN(day)
+                        ? ` (${day.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}${json.as_of ? ', ' + String(json.as_of).slice(0, 5) : ''})`
+                        : '';
+                    banner(`Market closed — showing the last session${label}. Live flow resumes at 09:15 on the next trading day.`);
+                    return;
+                }
                 setLive(demo ? 'demo' : 'on', demo ? 'DEMO' : 'LIVE');
                 banner(json.data_source === 'backup'
                     ? 'Prices are coming from the backup data source while the primary feed is unavailable — volume, open interest and VWAP-based factors may be missing until it recovers.'

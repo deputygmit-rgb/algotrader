@@ -288,3 +288,13 @@ def _isolated_strategy_state(tmp_path, monkeypatch):
     working directory): each test gets its own folder instead."""
     for name in _STATEFUL_RUNNERS:
         monkeypatch.setattr(importlib.import_module(name), "_STATE_DIR", str(tmp_path / "strategy_state"))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_saved_market_data(tmp_path, monkeypatch):
+    """Saved boards, OI reports and the last session's flow go to a temp folder: tests
+    must never write into data/ (a viewer would be shown them) or read what is there."""
+    from src.api import published, service
+    monkeypatch.setattr(published, "STORE_DIR", str(tmp_path / "published"))
+    monkeypatch.setattr(service, "LAST_SESSION_DIR", str(tmp_path / "last_session"))
+    monkeypatch.setattr(service, "_LAST_SESSION_CACHE", {})

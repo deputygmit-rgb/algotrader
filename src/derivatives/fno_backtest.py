@@ -43,6 +43,8 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+REGIME_WARMUP_BARS = 30      # RegimeEngine.classify needs 30 closes; earlier bars have no HV
+
 
 class FnOBacktestEngine:
     """Event-driven F&O backtesting engine.
@@ -99,6 +101,7 @@ class FnOBacktestEngine:
         slippage_model: str = "realistic",
         use_regime_filter: bool = True,
         strategy_params: dict[str, Any] | None = None,   # a runner's own settings (min_credit, deltas, width)
+        max_drawdown_halt_pct: float = 50.0,   # no new entries once equity is this far below its peak
     ) -> None:
         self.strategy_name = strategy_name
         self.underlying = underlying.upper()
@@ -112,6 +115,7 @@ class FnOBacktestEngine:
         self.slippage_model = slippage_model
         self.use_regime_filter = use_regime_filter
         self.strategy_params = dict(strategy_params or {})
+        self.max_drawdown_halt_pct = max_drawdown_halt_pct
 
         runner = self.RUNNER_STRATEGIES.get(strategy_name.lower())
         self.is_runner = runner is not None
@@ -188,6 +192,9 @@ class FnOBacktestEngine:
         bar_dates: list[str] = [str(self._parse_bar_date(df, 0))]
         greeks_history: list[dict] = []
         margin_history: list[dict] = []
+        margin_rejections = 0                  # entries refused: not enough free margin
+        halted_on: str | None = None           # the drawdown circuit breaker tripped (no new entries)
+        self._simulator.slippage_value = 0.0
         regime_history: list[dict] = []
         trades: list[dict] = []
         total_costs = 0.0
@@ -209,7 +216,9 @@ class FnOBacktestEngine:
             capital=capital,
         )
 
-        for i in range(max(21, 1), len(df)):
+        # no entry before the regime engine has its 30 bars: earlier chains were priced on an
+        # assumed 20% volatility (its HV is 0 until then)
+        for i in range(REGIME_WARMUP_BARS, len(df)):
             bar = df.iloc[i]
             spot = float(bar["close"])
             bar_date = self._parse_bar_date(df, i)
@@ -317,7 +326,13 @@ class FnOBacktestEngine:
 
             # ── 6. Entry logic — open new position if conditions met ───
             open_count = len([p for p in positions if not p.is_closed])
-            if open_count < self.max_positions and chain.dte >= self.entry_dte_min:
+            # circuit breaker, as the live kill switch: past the drawdown limit no new entries
+            # (open positions still run to their exits)
+            if halted_on is None and self.max_drawdown_halt_pct and equity_curve:
+                peak = max(equity_curve)
+                if peak > 0 and (peak - equity_curve[-1]) / peak * 100 >= self.max_drawdown_halt_pct:
+                    halted_on = str(bar_date)
+            if halted_on is None and open_count < self.max_positions and chain.dte >= self.entry_dte_min:
                 # Regime filter
                 should_enter = True
                 if self.use_regime_filter:
@@ -327,16 +342,20 @@ class FnOBacktestEngine:
                     new_pos, entry_costs = self._open_position(
                         chain, spot, capital, i, bar_date, position_counter
                     )
+                    margin_result = self._margin_engine.calculate_margin(new_pos, spot, as_of=bar_date) if new_pos else None
+                    # the margin must fit in what is free: equity less the margin the open
+                    # positions already block (it was computed after entry and never checked -
+                    # a short strangle kept selling down to a 96% drawdown)
+                    equity_now = equity_curve[-1] if equity_curve else capital
+                    blocked = sum(p.margin_required or 0 for p in positions if not p.is_closed)
+                    if new_pos is not None and margin_result.total_margin > equity_now - blocked:
+                        margin_rejections += 1
+                        new_pos = None
                     if new_pos is not None:
                         positions.append(new_pos)
                         position_counter += 1
                         capital -= entry_costs
                         total_costs += entry_costs
-
-                        # Margin check
-                        margin_result = self._margin_engine.calculate_margin(
-                            new_pos, spot
-                        )
                         new_pos.margin_required = margin_result.total_margin
                         margin_history.append({
                             "bar": i, "date": str(bar_date),
@@ -420,6 +439,9 @@ class FnOBacktestEngine:
             "bar_dates": bar_dates[:len(equity_curve)],
             "greeks_history": greeks_history[-200:],
             "margin_history": margin_history[-200:],
+            "margin_rejections": margin_rejections,
+            "halted_on": halted_on,
+            "total_slippage": round(self._simulator.slippage_value, 2),
             "regime_history": self._regime_engine.get_regime_history()[-200:],
             "settings": {
                 "max_positions": self.max_positions,
@@ -430,6 +452,7 @@ class FnOBacktestEngine:
                 "delta_target": self.delta_target,
                 "slippage_model": self.slippage_model,
                 "use_regime_filter": self.use_regime_filter,
+                "max_drawdown_halt_pct": self.max_drawdown_halt_pct,
             },
         })
 

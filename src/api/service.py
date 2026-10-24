@@ -101,10 +101,53 @@ import pandas as pd
 logger = get_logger(__name__)
 
 # OI-bias recorder: one account records for the whole server (single process)
-STALE_FIELDS = ("spot_price", "pcr_oi", "total_ce_oi", "total_pe_oi")
+# a reading equal to the last in every figure is a frozen chain, not a quiet minute
+STALE_FIELDS = ("spot_price", "bias", "pcr_oi", "pcr_volume", "total_ce_oi", "total_pe_oi", "max_pain",
+                "max_ce_oi_strike", "max_pe_oi_strike", "iv_skew", "straddle_premium",
+                "bullish_signals", "bearish_signals")
 STALE_WARN_AFTER = 5            # unchanged minutes before the agents are told the readings paused
 RECORDER_TAKEOVER_S = 150.0     # another account records when none has succeeded for this long
 _BIAS_RECORDER: dict[str, Any] = {"owner": None, "at": 0.0}
+
+# The last session's market products (flow, OI reports), kept on disk so a closed market,
+# a restart or a refresh with no usable quotes shows the last real data, labelled, instead
+# of an error or a page of zeros. Market data only: the same for every account.
+LAST_SESSION_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                "data", "last_session")
+
+
+def save_last_session(name: str, value: dict[str, Any]) -> None:
+    try:
+        os.makedirs(LAST_SESSION_DIR, exist_ok=True)
+        tmp = os.path.join(LAST_SESSION_DIR, f".{name}.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(value, f, default=str)
+        os.replace(tmp, os.path.join(LAST_SESSION_DIR, f"{name}.json"))
+    except (OSError, TypeError, ValueError) as e:
+        logger.warning("last_session_save_failed", name=name, error=str(e))
+
+
+_LAST_SESSION_CACHE: dict[str, tuple[float, Optional[dict[str, Any]]]] = {}
+
+
+def load_last_session(name: str) -> Optional[dict[str, Any]]:
+    """Read once per change: a closed Market Flow page asks for it every 2 seconds."""
+    path = os.path.join(LAST_SESSION_DIR, f"{name}.json")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _LAST_SESSION_CACHE.get(name)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with open(path, encoding="utf-8") as f:
+            value = json.load(f)
+    except (OSError, ValueError):
+        return None
+    value = value if isinstance(value, dict) else None
+    _LAST_SESSION_CACHE[name] = (mtime, value)
+    return value
 
 
 # Demo sessions share one scanner and its recent full-universe reports.
@@ -329,6 +372,7 @@ class TradingService:
         self._oi_bias_task: Optional[asyncio.Task] = None
         self.last_oi_bias: dict[str, dict[str, Any]] = {}
         self._bias_stale: dict[str, int] = {}        # unchanged readings in a row, per index
+        self._serve_last_session = True              # closed market: last session's flow / OI (tests build without it)
         try:
             self._day_trade.load_state(self._board.load(datetime.now()), datetime.now())
         except Exception as e:
@@ -702,11 +746,28 @@ class TradingService:
         pub = self._published()
         if pub is not None:
             return await pub.oi_futures()
+        if self._market_closed():
+            saved = self._last_session_report("oi_futures", "Market closed - showing the last session's report.")
+            if saved:
+                return {**saved, "market_closed": True}
         last = self._futures_oi.get_last_report()
         if last is not None:
             self._refresh_soon("futures_oi", self._refresh_futures_oi)
             return {**last.model_dump(), "cache_state": "cached", "refreshing": True}
         return await self._refresh_futures_oi()
+
+    def _last_session_report(self, name: str, note: str) -> Optional[dict[str, Any]]:
+        """The last good report from disk, labelled - or None (tests, nothing saved yet)."""
+        if not self.__dict__.get("_serve_last_session"):
+            return None
+        last = load_last_session(name)
+        return {**last, "cache_state": "last_session", "refresh_warning": note} if last else None
+
+    @staticmethod
+    def _market_closed() -> bool:
+        from src.agent.market_hours import is_market_open
+
+        return not is_market_open()
 
     def _refresh_soon(self, name: str, refresh: Any) -> None:
         """Run ``refresh()`` in the background unless one is already running."""
@@ -737,7 +798,10 @@ class TradingService:
                             "cache_state": "stale",
                             "refresh_warning": warning,
                         }
-                    return {"error": warning + " No previous report is cached."}
+                    return self._last_session_report("oi_futures", "No live data right now - showing the last session's report.") or \
+                        {"error": warning + " No previous report is cached."}
+                if self.__dict__.get("_serve_last_session"):
+                    save_last_session("oi_futures", report.model_dump())
                 return {**report.model_dump(), "cache_state": "updated"}
             except Exception as e:
                 logger.error("futures_oi_analysis_error", error=str(e))
@@ -747,7 +811,7 @@ class TradingService:
                         "cache_state": "stale",
                         "refresh_warning": f"Refresh failed: {e}",
                     }
-                return {"error": str(e)}
+                return self._last_session_report("oi_futures", "No live data right now - showing the last session's report.") or {"error": str(e)}
 
     def get_futures_oi_cached(self) -> dict[str, Any]:
         """Return last computed futures OI report."""
@@ -756,7 +820,9 @@ class TradingService:
             hit = pub._cache.get("oi_futures") or pub._restore("oi_futures", 0.0)
             return hit[1] if hit else {"error": "No data yet. Run scan first."}
         report = self._futures_oi.get_last_report()
-        return {**report.model_dump(), "cache_state": "cached"} if report else {"error": "No data yet. Run scan first."}
+        if report:
+            return {**report.model_dump(), "cache_state": "cached"}
+        return self._last_session_report("oi_futures", "No live data right now - showing the last session's report.") or {"error": "No data yet. Run scan first."}
 
     async def get_options_oi_report(self, underlying: str = "NIFTY", expiry: Optional[str] = None) -> dict[str, Any]:
         """Options OI: the last report at once (flagged ``refreshing``) while one refresh runs.
@@ -764,6 +830,10 @@ class TradingService:
         pub = self._published()
         if pub is not None and not expiry:
             return await pub.oi_options(underlying)
+        if not expiry and self._market_closed():
+            saved = self._last_session_report(f"oi_options_{underlying.upper()}", "Market closed - showing the last session's report.")
+            if saved:
+                return {**saved, "market_closed": True}
         last = self._options_oi.get_last_report(underlying)
         if last is not None and not expiry:
             self._refresh_soon(f"options_oi_{underlying.upper()}",
@@ -785,7 +855,10 @@ class TradingService:
                         "cache_state": "stale",
                         "refresh_warning": warning,
                     }
-                return {"error": warning + " No previous report is cached."}
+                return self._last_session_report(f"oi_options_{underlying.upper()}", "No live data right now - showing the last session's report.") or \
+                    {"error": warning + " No previous report is cached."}
+            if not expiry and self.__dict__.get("_serve_last_session"):
+                save_last_session(f"oi_options_{underlying.upper()}", report.model_dump())
             return {**report.model_dump(), "cache_state": "updated"}
         except Exception as e:
             logger.error("options_oi_analysis_error", underlying=underlying, error=str(e))
@@ -795,7 +868,7 @@ class TradingService:
                     "cache_state": "stale",
                     "refresh_warning": f"Refresh failed: {e}",
                 }
-            return {"error": str(e)}
+            return self._last_session_report(f"oi_options_{underlying.upper()}", "No live data right now - showing the last session's report.") or {"error": str(e)}
 
     def get_options_oi_cached(self, underlying: str = "NIFTY") -> dict[str, Any]:
         """Return last computed options OI report."""
@@ -805,7 +878,10 @@ class TradingService:
             hit = pub._cache.get(key) or pub._restore(key, 0.0)
             return hit[1] if hit else {"error": "No data yet. Run scan first."}
         report = self._options_oi.get_last_report(underlying)
-        return {**report.model_dump(), "cache_state": "cached"} if report else {"error": "No data yet. Run scan first."}
+        if report:
+            return {**report.model_dump(), "cache_state": "cached"}
+        return self._last_session_report(f"oi_options_{underlying.upper()}", "No live data right now - showing the last session's report.") or \
+            {"error": "No data yet. Run scan first."}
 
     async def get_options_oi_comparison(self, underlying: str = "NIFTY") -> dict[str, Any]:
         """Compare current vs next expiry options OI."""
@@ -3368,6 +3444,20 @@ class TradingService:
             return await pub.flow()          # computed once by the source account, market fields only
         if self.is_demo and self._zerodha_id != DEMO_FLOW_ID:
             return await self._shared_demo_flow(max_age_s)
+        if not self.is_demo and self.__dict__.get("_serve_last_session"):
+            from src.agent.market_hours import is_market_open
+
+            if not is_market_open():
+                # closed (weekend, holiday, outside hours): the last session as it ended. Quotes
+                # now carry no change (the backup source's close is today's close), so a fresh
+                # computation showed every stock and NIFTY at 0.00%.
+                last = load_last_session("flow")
+                if last:
+                    try:
+                        await self._ensure_fno_universe()   # Day Trade looks contracts up in it
+                    except Exception as e:
+                        logger.warning("fno_universe_load_failed", error=str(e))
+                    return {**last, "market_closed": True}
         async with self._fno_lock:
             cached = self._fno_cache
             if cached and time.monotonic() - cached[0] < max_age_s:
@@ -3427,6 +3517,8 @@ class TradingService:
         if stamp == self._flow_snapshot_at:
             return
         self._flow_snapshot_at = stamp
+        if flow.get("data_source") != "backup" and self.__dict__.get("_serve_last_session"):
+            save_last_session("flow", {**flow, "session_of": now.strftime("%Y-%m-%d")})
         try:
             self._market_store.store_flow_snapshot(stamp, flow["rows"], flow.get("picks"))
         except Exception as e:
@@ -3516,9 +3608,34 @@ class TradingService:
                     snap = await asyncio.to_thread(self._day_trade.snapshot, flow, now)
                     await self._board.process(snap, now, send=self._send_board_signal)
                     self._board.save(self._day_trade.to_state(), now)
+                    if self._posts_signals():
+                        await self._post_new_signals(snap, flow)
             except Exception as e:
                 logger.warning("day_trade_refresh_failed", error=str(e))
             await asyncio.sleep(self.DAY_TRADE_POLL_S)
+
+    SWING_POST_CHECK_S = 120.0
+
+    def _posts_signals(self) -> bool:
+        """Only the market-data account posts to Telegram (each signal once), never a demo
+        or a viewer. Its board is the one viewers see: the money-flow picks."""
+        from src.api.shared_market import SharedMarketHub
+        from src.notify import telegram
+
+        if self.is_demo or self.__dict__.get("is_shared_market") or not telegram.enabled():
+            return False
+        return (SharedMarketHub.get_instance().account_id or "").upper() == (self._zerodha_id or "").upper()
+
+    async def _post_new_signals(self, day_snap: dict[str, Any], flow: dict[str, Any]) -> None:
+        """New Day Trade signals now; Swing (1-hour bars) checked every couple of minutes."""
+        from src.notify.telegram import publisher
+
+        publisher.publish_new("day", day_snap, flow)
+        if time.monotonic() - self.__dict__.get("_swing_post_at", 0.0) >= self.SWING_POST_CHECK_S:
+            self._swing_post_at = time.monotonic()
+            swing = await self.get_swing()
+            if not swing.get("error"):
+                publisher.publish_new("swing", swing, flow)
 
     def ensure_session_recording(self) -> None:
         """During market hours keep the board loop running for a real account even
@@ -3536,12 +3653,63 @@ class TradingService:
             self._day_trade_task = asyncio.create_task(self._day_trade_loop(), name="day_trade")
             self._day_trade_task.add_done_callback(self._task_exception_handler)
 
+    DAY_TRADE_FRESH_S = 5.0
+
     async def get_day_trade(self) -> dict[str, Any]:
-        """Tracked symbols with 5-minute bars, setups, open trades and the signal feed."""
+        """Tracked symbols with 5-minute bars, setups, open trades and the signal feed.
+
+        The last board is answered at once (marked ``refreshing``) while one rebuild runs in
+        the background: a build is the whole money flow plus a setup replay per stock - many
+        seconds on the first open after a restart, when the page used to wait for it."""
         pub = self._published()
         if pub is not None:
             return await pub.day_trade()     # the source's board: money-flow picks, market fields only
         self._ensure_day_trade_loop()
+        if self.__dict__.pop("_dt_changed", False):
+            return await self._build_day_trade()
+        cached = self.__dict__.get("_dt_cache")
+        if cached is None and self.__dict__.get("_serve_last_session"):
+            saved = self._load_board_copy("day_trade")
+            if saved:
+                cached = self._dt_cache = (0.0, saved)          # due for a refresh, shown until then
+        if cached is not None:
+            if time.monotonic() - cached[0] < self.DAY_TRADE_FRESH_S:
+                return cached[1]
+            self._refresh_soon("day_trade_board", self._build_day_trade)
+            return {**cached[1], "refreshing": True}
+        return await self._build_day_trade()
+
+    def _board_copy_path(self, name: str) -> str:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return os.path.join(base, "data", "day_trade", self._zerodha_id or "default", f"last_{name}.json")
+
+    def _load_board_copy(self, name: str) -> Optional[dict[str, Any]]:
+        try:
+            with open(self._board_copy_path(name), encoding="utf-8") as f:
+                value = json.load(f)
+            return value if isinstance(value, dict) and not value.get("error") else None
+        except (OSError, ValueError):
+            return None
+
+    def _save_board_copy(self, name: str, snap: dict[str, Any]) -> None:
+        """At most once a minute: the board shown at once after a restart."""
+        stamps = self.__dict__.setdefault("_board_copy_at", {})
+        if not self.__dict__.get("_serve_last_session") or time.monotonic() - stamps.get(name, -1e9) < 60:
+            return
+        stamps[name] = time.monotonic()
+        path = self._board_copy_path(name)
+
+        def write() -> None:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(snap, f, default=str)
+                os.replace(path + ".tmp", path)
+            except (OSError, TypeError, ValueError) as e:
+                logger.warning("board_copy_save_failed", name=name, error=str(e))
+        asyncio.get_running_loop().run_in_executor(None, write)
+
+    async def _build_day_trade(self) -> dict[str, Any]:
         flow = await self.get_fno_flow(max_age_s=5.0)
         if flow.get("error"):
             return {"error": flow["error"]}
@@ -3557,6 +3725,8 @@ class TradingService:
             # a logged-in user whose Zerodha session is not connected (it expires every
             # morning) is served this simulated board: say so on screen
             snap["demo"] = True
+        self._dt_cache = (time.monotonic(), snap)
+        self._save_board_copy("day_trade", snap)
         return snap
 
     # ── OI-bias history ────────────────────────────────────────────────
@@ -3788,9 +3958,23 @@ class TradingService:
             return await pub.swing()        # the source account's board, market fields only
         if self.is_demo and self._zerodha_id != DEMO_FLOW_ID:
             return await _demo_flow_source().get_swing()      # one simulated market: one board
+        if self.__dict__.pop("_swing_changed", False):
+            return await self._build_swing()
         cached = self._swing_cache
+        if cached is None and self.__dict__.get("_serve_last_session"):
+            saved = self._load_board_copy("swing")
+            if saved:
+                cached = self._swing_cache = (0.0, saved)
         if cached and time.monotonic() - cached[0] < self.SWING_CACHE_S:
             return cached[1]
+        if cached:
+            # the last board at once; the money flow and the replay run in the background
+            self._refresh_soon("swing_board", self._build_swing)
+            return {**cached[1], "refreshing": True}
+        return await self._build_swing()
+
+    async def _build_swing(self) -> dict[str, Any]:
+        cached = self._swing_cache
         flow = await self.get_fno_flow(max_age_s=10.0)
         if flow.get("error"):
             return {"error": flow["error"]}
@@ -3810,6 +3994,7 @@ class TradingService:
         if self.is_demo:
             snap["demo"] = True
         self._swing_cache = (time.monotonic(), snap)
+        self._save_board_copy("swing", snap)
         return snap
 
     async def track_swing_symbol(self, symbol: str, action: str = "add") -> dict[str, Any]:
@@ -3831,6 +4016,7 @@ class TradingService:
             except ValueError as e:
                 return {"error": str(e)}
         self._swing_cache = None
+        self._swing_changed = True       # the next board is built now, with the new list
         return {"success": True, "tracked": self._swing.symbols}
 
     async def track_day_trade_symbol(self, symbol: str, action: str = "add") -> dict[str, Any]:
@@ -3839,6 +4025,7 @@ class TradingService:
         symbol = symbol.upper().strip()
         if action == "remove":
             self._day_trade.remove(symbol)
+            self._dt_changed = True
             return {"success": True, "tracked": self._day_trade.symbols}
         flow = await self.get_fno_flow(max_age_s=5.0)
         if flow.get("error"):
@@ -3851,6 +4038,7 @@ class TradingService:
         except ValueError as e:
             return {"error": str(e)}
         self._ensure_day_trade_loop()
+        self._dt_changed = True          # the next board is built now, with the new list
         return {"success": True, "tracked": self._day_trade.symbols}
 
     async def get_nifty_contribution(self, max_age_s: float = 1.5) -> dict[str, Any]:

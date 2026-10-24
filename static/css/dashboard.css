@@ -677,6 +677,7 @@ tr:hover td { background: var(--bg-hover); }
 .mf-live.on { color: var(--mf-g); } .mf-live.on i { background: var(--mf-g); animation: mf-blink 1.2s infinite; }
 .mf-live.demo { color: var(--mf-o); } .mf-live.demo i { background: var(--mf-o); animation: mf-blink 1.2s infinite; }
 .mf-live.err { color: var(--mf-r); } .mf-live.err i { background: var(--mf-r); }
+.mf-live.off { color: var(--mf-dim); } .mf-live.off i { background: var(--mf-dim); }
 @keyframes mf-blink { 50% { opacity: .25; } }
 .mf-banner { background: rgba(255,159,67,.08); border: 1px solid rgba(255,159,67,.3); border-top: 0; color: var(--mf-o); font-size: 11px; padding: 6px 14px; }
 .mf-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; background: var(--mf-bg);

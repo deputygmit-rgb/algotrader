@@ -206,7 +206,8 @@ class FnOPaperTradingEngine:
 
         # Sub-engines
         self._chain_builder = HistoricalChainBuilder(self.underlying)
-        self._simulator = FnOExecutionSimulator(slippage_model=slippage_model)
+        # seeded: a run replays the given bars, so the same data gives the same result
+        self._simulator = FnOExecutionSimulator(slippage_model=slippage_model, seed=0)
         self._cost_model = IndianFnOCostModel()
         self._margin_engine = MarginEngine()
         self._greeks_engine = GreeksEngine()
@@ -230,6 +231,7 @@ class FnOPaperTradingEngine:
         self._greeks_history.clear()
         self._margin_history.clear()
         self._position_counter = 0
+        self._simulator._rng.seed(0)          # the same draws again: a re-run gives the same result
 
     @property
     def open_positions(self) -> list[MultiLegPosition]:
@@ -366,13 +368,19 @@ class FnOPaperTradingEngine:
             # 6. Entry
             if len(self.open_positions) < self.max_positions and chain.dte >= self.entry_dte_min:
                 new_pos, entry_costs = self._open_position(chain, spot, bar_time, bar_date)
+                margin = self._margin_engine.calculate_margin(new_pos, spot, as_of=bar_date) if new_pos else None
+                # the margin must fit in what is free (equity less the open positions' margin)
+                if new_pos is not None:
+                    equity_now = self._equity_curve[-1] if self._equity_curve else self._capital
+                    if isinstance(equity_now, dict):
+                        equity_now = equity_now.get("equity", self._capital)
+                    blocked = sum(p.margin_required or 0 for p in self.open_positions)
+                    if margin.total_margin > float(equity_now) - blocked:
+                        new_pos = None
                 if new_pos is not None:
                     self._positions.append(new_pos)
                     self._capital -= entry_costs
                     total_costs += entry_costs
-
-                    # Margin check
-                    margin = self._margin_engine.calculate_margin(new_pos, spot)
                     new_pos.margin_required = margin.total_margin
                     self._margin_history.append({
                         "bar": i, "date": str(bar_date),

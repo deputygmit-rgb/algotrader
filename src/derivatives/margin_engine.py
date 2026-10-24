@@ -13,6 +13,7 @@ Uses scenario-based approach:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -77,10 +78,21 @@ class MarginEngine:
         position: MultiLegPosition,
         spot: float,
         risk_free_rate: float = 0.065,
+        as_of: date | None = None,
     ) -> MarginResult:
-        """Calculate SPAN-like margin for a multi-leg position."""
+        """Calculate SPAN-like margin for a multi-leg position.
+
+        Leg quantities are in lots (as the execution simulator builds them and the futures
+        branch below always assumed): options are scaled by the lot size too - they were
+        not, so a ₹40,000 long strangle needed ₹308 and a backtest kept buying past zero.
+        ``as_of`` is the bar's date in a backtest (time to expiry used to count from today)."""
         if not position.legs:
             return MarginResult()
+
+        def tte(contract: Any) -> float:
+            if as_of is not None and contract.expiry:
+                return max((contract.expiry - as_of).days / 365.0, 1 / 365)
+            return max(contract.tte, 1 / 365)
 
         # Separate long options (premium only) and short/futures (SPAN)
         long_option_legs = [l for l in position.legs if l.is_long and l.contract.is_option]
@@ -88,7 +100,7 @@ class MarginEngine:
 
         # Premium margin for long options
         premium_margin = sum(
-            abs(l.entry_price * l.quantity) for l in long_option_legs
+            abs(l.entry_price * l.quantity) * l.contract.lot_size for l in long_option_legs
         )
 
         if not margin_legs and not long_option_legs:
@@ -108,20 +120,20 @@ class MarginEngine:
             for leg in position.legs:
                 contract = leg.contract
                 if contract.is_option and contract.strike is not None:
-                    tte = max(contract.tte, 1 / 365)
+                    years = tte(contract)
                     iv = (leg.iv_current or leg.iv_at_entry or 0.20) * iv_mult
 
                     if contract.is_call:
                         new_price = BlackScholes.call_price(
-                            scenario_spot, contract.strike, risk_free_rate, tte, iv
+                            scenario_spot, contract.strike, risk_free_rate, years, iv
                         )
                     else:
                         new_price = BlackScholes.put_price(
-                            scenario_spot, contract.strike, risk_free_rate, tte, iv
+                            scenario_spot, contract.strike, risk_free_rate, years, iv
                         )
 
-                    # PnL = (new − current) × quantity (signed)
-                    leg_pnl = (new_price - leg.current_price) * leg.quantity
+                    # PnL = (new − current) × lots (signed) × lot size
+                    leg_pnl = (new_price - leg.current_price) * leg.quantity * contract.lot_size
                     scenario_pnl += leg_pnl
 
                 elif contract.is_future:
@@ -150,7 +162,7 @@ class MarginEngine:
         exposure_margin = notional * exposure_rate
 
         # Minimum margin
-        total_lots = position.total_lots
+        total_lots = sum(abs(l.quantity) for l in position.legs)      # quantities are lots
         min_margin = total_lots * self.MIN_MARGIN_PER_LOT
         total_margin = max(span_margin + exposure_margin + premium_margin, min_margin)
 

@@ -808,6 +808,11 @@ body.has-bnav .toast { bottom: calc(76px + env(safe-area-inset-bottom)); left: 1
     .modal-overlay { align-items: flex-end; }
     .modal-overlay > .modal { width: 100% !important; max-width: 100% !important; max-height: 88vh; border-radius: 16px 16px 0 0;
                               padding: 22px 16px calc(18px + env(safe-area-inset-bottom)); }
+    /* iPhone Safari: vh is the screen without its toolbars, so an 88vh sheet ran under the
+       status bar / notch (its × out of reach). dvh is the area actually visible. */
+    @supports (height: 100dvh) {
+        .modal-overlay > .modal { max-height: min(88dvh, calc(100dvh - env(safe-area-inset-top) - 16px)) !important; }
+    }
     .vq-sheet-grip { display: block; }
     /* smoother scrolling: no blur behind the header, no endless decorative animations */
     .header { backdrop-filter: none; -webkit-backdrop-filter: none; background: #05080c; }
@@ -940,3 +945,18 @@ body.has-bnav .toast { bottom: calc(76px + env(safe-area-inset-bottom)); left: 1
 .vq-sync-btn { margin-left: 8px; padding: 3px 10px; min-height: 26px; font-size: 10px; letter-spacing: 1px; white-space: nowrap; }
 .vq-sync-btn:disabled { opacity: .6; cursor: progress; }
 @media (pointer: coarse) { .vq-sync-btn { min-height: 34px; } }
+
+/* pop-ups: the title row (with its ×) and the button row stay in view while the content scrolls */
+.vq-modal-head { position: sticky; top: 0; z-index: 3; background: var(--t-panel); }
+.vq-modal-head.vq-modal-head-edge { top: -24px; margin: -24px -24px 14px; padding: 24px 24px 10px; border-bottom: 1px solid var(--t-line); }
+.modal-title.vq-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.modal-title.vq-modal-head > button[style*="float"] { float: none !important; }
+.vq-x { margin-left: auto; min-width: 36px; min-height: 36px; }
+.vq-modal-actions { position: sticky; bottom: -24px; z-index: 3; background: var(--t-panel);
+                    margin: 14px -24px -24px; padding: 12px 24px 24px; border-top: 1px solid var(--t-line); }
+@media (max-width: 767.98px) {
+    .vq-modal-head.vq-modal-head-edge { top: -22px; margin: -22px -16px 12px; padding: 22px 16px 10px; }
+    .vq-modal-actions { bottom: calc(-18px - env(safe-area-inset-bottom)); margin: 12px -16px calc(-18px - env(safe-area-inset-bottom));
+                        padding: 10px 16px calc(18px + env(safe-area-inset-bottom)); }
+    .vq-x { min-width: 44px; min-height: 44px; font-size: 28px; }
+}

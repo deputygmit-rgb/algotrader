@@ -26,10 +26,11 @@ load_dotenv()
 logger = get_logger(__name__)
 
 # Security constants
-OTP_EXPIRY_SECONDS = 300  # 5 minutes
+OTP_EXPIRY_SECONDS = 120  # 2 minutes
 SESSION_EXPIRY_SECONDS = 86400  # 24 hours - Kite access tokens expire daily anyway
 STEP_UP_SECONDS = 900  # A fresh OTP unlocks risky actions for 15 minutes
-MAX_OTP_ATTEMPTS = 3  # Max incorrect OTP attempts
+ACTION_CODE_SECONDS = 120  # an admin change needs its own code, used within 2 minutes and only once
+MAX_OTP_ATTEMPTS = 2  # attempts per code; after that (or expiry) a new code is needed
 # Per-account cap on OTP emails (all IPs together). The tighter per-(account, IP)
 # limit lives in the web layer, so one IP cannot use up the account's allowance.
 MAX_OTP_REQUESTS_PER_HOUR = 10
@@ -257,6 +258,13 @@ class OTPAuth:
         del self._pending_otps[key]
         return pending
 
+    def otp_attempts_left(self, zerodha_id: str, purpose: str = "") -> int:
+        """Attempts left on the pending code (0: none pending - expired, used up or never sent)."""
+        pending = self._pending_otps.get(self._otp_key(zerodha_id, purpose))
+        if not pending or time.time() - pending["created_at"] > OTP_EXPIRY_SECONDS:
+            return 0
+        return max(0, MAX_OTP_ATTEMPTS - pending["attempts"])
+
     def verify_otp(self, otp: str, zerodha_id: str = "") -> Optional[str]:
         """Verify a login OTP; returns a new session token if valid, None otherwise."""
         pending = self._consume_otp(otp, zerodha_id)
@@ -328,9 +336,26 @@ class OTPAuth:
         if not self._consume_otp(otp, session.get("zerodha_id", ""), STEP_UP_PURPOSE):
             return False
         session["step_up_until"] = time.time() + STEP_UP_SECONDS
+        session["action_code_until"] = time.time() + ACTION_CODE_SECONDS     # one admin change
         self._save_sessions()
         logger.info("step_up_verified", zerodha_id=session.get("zerodha_id", ""))
         return True
+
+    def consume_action_code(self, token: str) -> bool:
+        """An admin change: needs a code confirmed in the last 2 minutes, and uses it up."""
+        session = self._get_session(token)
+        if not session or session.get("action_code_until", 0) <= time.time():
+            return False
+        session["action_code_until"] = 0
+        self._save_sessions()
+        return True
+
+    def clear_step_up(self, token: str) -> None:
+        """Opening the admin panel asks for a code again (any earlier confirmation ends)."""
+        session = self._get_session(token)
+        if session and (session.get("step_up_until") or session.get("action_code_until")):
+            session["step_up_until"] = session["action_code_until"] = 0
+            self._save_sessions()
 
     def has_recent_step_up(self, token: str) -> bool:
         session = self._get_session(token)

@@ -949,14 +949,20 @@
         }
     });
     const startTimer = () => {
-        let seconds = 300;
+        let seconds = 120;                      // matches OTP_EXPIRY_SECONDS
         clearInterval(timer);
         timer = setInterval(() => {
             seconds--;
             $('otp-timer').textContent = seconds > 0
                 ? `Code expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
                 : 'Code expired. Request a new one.';
-            if (seconds <= 0) clearInterval(timer);
+            if (seconds <= 0) {
+                clearInterval(timer);
+                // the code is dead: this sign-in ends, back to the start for a new one
+                $('otp-input').value = '';
+                showStep('email');
+                message('msg-email', 'error', 'The code expired. Request a new one.');
+            }
         }, 1000);
     };
     async function sendOTP() {
@@ -1006,7 +1012,15 @@
                 setTimeout(() => { window.location.href = '/app'; }, 400);
                 return;
             }
-            message('msg-otp', 'error', data.message || 'Invalid code');
+            if (data.restart) {
+                // expired, or the last attempt used: this sign-in ends - back to the start
+                $('otp-input').value = '';
+                showStep('email');
+                message('msg-email', 'error', data.message);
+            } else {
+                $('otp-input').value = '';
+                message('msg-otp', 'error', data.message || 'Invalid code');
+            }
         } catch (e) {
             message('msg-otp', 'error', 'Connection error. Please try again.');
         }

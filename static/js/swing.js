@@ -34,6 +34,25 @@ const Swing = (() => {
     const dayOf = t => String(t).slice(0, 10);
     const hhmm = t => String(t).slice(11, 16);
 
+    // the last board is shown at once while the server builds a new one: say so, poll
+    // again soon, and offer Sync
+    function syncNote(json) {
+        const meta = $('sw-meta');
+        if (!meta) return;
+        let btn = $('sw-meta-sync');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.id = 'sw-meta-sync';
+            btn.type = 'button';
+            btn.className = 'btn btn-outline btn-sm vq-sync-btn';
+            btn.addEventListener('click', () => { btn.disabled = true; btn.textContent = 'Syncing…'; poll(); });
+            meta.after(btn);
+        }
+        btn.disabled = !!json.refreshing;
+        btn.textContent = json.refreshing ? 'Syncing…' : '↻ Sync';
+        if (json.refreshing) meta.textContent += ' · showing the last board, syncing in the background…';
+    }
+
     // ── data ────────────────────────────────────────────────────────
     async function poll() {
         clearTimeout(timer);
@@ -46,6 +65,7 @@ const Swing = (() => {
                 alertChanges(json);
                 data = json;
                 render();
+                syncNote(json);
             } catch (e) {
                 $('sw-meta').textContent = `Unavailable: ${e.message}`;
             } finally {
@@ -53,7 +73,7 @@ const Swing = (() => {
             }
         }
         // bars load in the background on the first visit: check back sooner until they have
-        timer = setTimeout(poll, data && !data.pending ? POLL_MS : 5000);
+        timer = setTimeout(poll, data && data.refreshing ? 3000 : data && !data.pending ? POLL_MS : 5000);
     }
 
     function alertChanges(next) {

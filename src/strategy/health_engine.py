@@ -371,7 +371,7 @@ def _compute_trade_quality(result: dict, th: dict) -> PillarResult:
 
     if max_win_streak == 0 and max_lose_streak == 0 and trades:
         # Compute from trade list
-        pnls = [t.get("pnl", 0) for t in trades if "pnl" in t]
+        pnls = _extract_exit_pnls(result)
         if pnls:
             max_win_streak, max_lose_streak = _compute_streaks(pnls)
 
@@ -397,6 +397,33 @@ def _compute_trade_quality(result: dict, th: dict) -> PillarResult:
         p.verdict = "WARN"
 
     return p
+
+
+def _extract_exit_pnls(result: dict) -> list[float]:
+    """Closed-trade P&L: the exits of a trade list (an F&O backtest's ENTRY rows carry no
+    result), or - for a paper run, which keeps its results there - the closed positions."""
+    pnls = [t["pnl"] for t in result.get("trades") or []
+            if isinstance(t, dict) and t.get("type") != "ENTRY" and t.get("pnl") is not None]
+    if not pnls:
+        pnls = [p["pnl"] for p in result.get("positions") or []
+                if isinstance(p, dict) and p.get("pnl") is not None]
+    return pnls
+
+
+def _normalize_result(result: dict) -> dict:
+    """One shape for every engine: paper runs name the margin ``margin_required`` and may
+    lack a Sortino ratio (it is then computed from the equity curve)."""
+    for m in result.get("margin_history") or []:
+        if isinstance(m, dict) and "margin" not in m and "margin_required" in m:
+            m["margin"] = m["margin_required"]
+    if not result.get("sortino_ratio"):
+        eq = np.array(result.get("equity_curve") or [], dtype=float)
+        if len(eq) > 2 and np.all(eq[:-1] > 0):
+            returns = np.diff(eq) / eq[:-1]
+            downside = returns[returns < 0]
+            if len(downside) > 1 and np.std(downside) > 0:
+                result["sortino_ratio"] = float(np.mean(returns) / np.std(downside) * np.sqrt(252))
+    return result
 
 
 def _compute_streaks(pnls: list[float]) -> tuple[int, int]:
@@ -688,7 +715,7 @@ def _compute_psychological(result: dict, th: dict) -> PillarResult:
     trades = result.get("trades", [])
 
     if max_lose == 0 and trades:
-        pnls = [t.get("pnl", 0) for t in trades if "pnl" in t]
+        pnls = _extract_exit_pnls(result)
         if pnls:
             _, max_lose = _compute_streaks(pnls)
 
@@ -726,7 +753,7 @@ def _compute_psychological(result: dict, th: dict) -> PillarResult:
     worst_trade = analytics.get("worst_trade", 0)
     best_trade = analytics.get("best_trade", 0)
     if worst_trade == 0 and trades:
-        pnls = [t.get("pnl", 0) for t in trades if "pnl" in t]
+        pnls = _extract_exit_pnls(result)
         if pnls:
             worst_trade = min(pnls)
             best_trade = max(pnls)
@@ -785,6 +812,7 @@ def compute_health_report(
             blockers=["No valid backtest result to evaluate"],
         )
 
+    _normalize_result(result)
     th = _get_thresholds(strategy_type)
     name = strategy_name or result.get("strategy_name", "unknown")
 

@@ -195,3 +195,20 @@ def test_stock_detail_page_renders_for_authenticated_user(monkeypatch):
         assert invalid.status_code == 400
 
     asyncio.run(check_route())
+
+
+
+def test_codes_allow_two_attempts_and_expire_in_two_minutes(monkeypatch):
+    import time as _time
+    from src.auth import otp_auth as mod
+    auth = mod.OTPAuth.__new__(mod.OTPAuth)
+    auth._pending_otps = {}
+    auth._pending_otps[auth._otp_key("AB1234", "")] = {"otp": "123456", "created_at": _time.time(), "attempts": 0}
+    assert auth.otp_attempts_left("AB1234") == 2
+    assert auth._consume_otp("000000", "AB1234") is None
+    assert auth.otp_attempts_left("AB1234") == 1
+    assert auth._consume_otp("000000", "AB1234") is None
+    assert auth.otp_attempts_left("AB1234") == 0                  # sign-in must start again
+    assert auth._consume_otp("123456", "AB1234") is None          # even the right code is refused now
+    auth._pending_otps[auth._otp_key("AB1234", "")] = {"otp": "123456", "created_at": _time.time() - 121, "attempts": 0}
+    assert auth._consume_otp("123456", "AB1234") is None          # expired after 2 minutes

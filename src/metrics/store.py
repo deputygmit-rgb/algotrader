@@ -158,6 +158,7 @@ class MetricsStore:
         "contact_requests": {
             "access_level": "TEXT NOT NULL DEFAULT ''",
             "platform": "TEXT NOT NULL DEFAULT ''",
+            "followup_at": "TEXT NOT NULL DEFAULT ''",     # the 7-day update email, when sent
         },
     }
 
@@ -324,6 +325,29 @@ class MetricsStore:
             with conn:
                 return conn.execute("UPDATE contact_requests SET status = ? WHERE id = ?",
                                     (status, contact_id)).rowcount == 1
+        finally:
+            conn.close()
+
+    def due_followups(self, days: int = 7, limit: int = 20) -> list[dict[str, Any]]:
+        """Requests at least ``days`` old with no update email yet (not approved / rejected)."""
+        cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat(timespec="seconds")
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """SELECT id, ts, email FROM contact_requests
+                   WHERE followup_at = '' AND ts <= ? AND status NOT IN ('approved', 'rejected')
+                   ORDER BY id LIMIT ?""", (cutoff, limit)).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def mark_followup(self, contact_id: int) -> None:
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("UPDATE contact_requests SET followup_at = ? WHERE id = ?",
+                             (datetime.now(IST).isoformat(timespec="seconds"), contact_id))
         finally:
             conn.close()
 

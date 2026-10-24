@@ -92,6 +92,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     efficacy = asyncio.create_task(run_rebuilder())     # setups' rolling track record, nightly
     resume = asyncio.create_task(_resume_accounts())    # trading picks up again after a restart
     recorder = asyncio.create_task(run_market_recorder())   # OI + flow history all session, visitor or not
+    followups = asyncio.create_task(_run_followups())         # the 7-day update to access requests
     watchdog = asyncio.create_task(run_watchdog())   # logs event-loop stalls (with stack), slow requests, health
     # scripts minified before the first visitor asks (in a thread: the loop keeps serving)
     warm_scripts = asyncio.create_task(asyncio.to_thread(_static_files.warm))
@@ -99,6 +100,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         recorder.cancel()
+        followups.cancel()
         watchdog.cancel()
         warm_scripts.cancel()
         resume.cancel()
@@ -639,6 +641,59 @@ _ACCESS_FOLLOW_UP: dict[str, str] = {
 }
 
 
+def telegram_channel_url() -> str:
+    """``TELEGRAM_CHANNEL_URL`` from .env (only a https://t.me/ link is used)."""
+    url = os.environ.get("TELEGRAM_CHANNEL_URL", "").strip()
+    return url if re.fullmatch(r"https://t\.me/[A-Za-z0-9_+/-]{3,80}", url) else ""
+
+
+FOLLOWUP_DAYS = 7
+
+
+def _access_followup(contact_id: int, channel: str) -> str:
+    """The update sent seven days after an access request (fixed text, no visitor input)."""
+    return (
+        "Hello,\n\n"
+        f"An update on your VerquoAI access request #{contact_id}.\n\n"
+        "We're completing broker compliance for account access. Until then, follow the\n"
+        "Money Flow tracker and the Day Trade and Swing setups on our Telegram channel:\n"
+        f"  {channel}\n\n"
+        "The channel is private and read-only. We will write again as soon as account\n"
+        "access is open for you.\n\n"
+        f"Please quote #{contact_id} in any reply.\n\n"
+        "Important: trading involves substantial risk, including possible loss of capital.\n"
+        "VerquoAI provides analytical and workflow tools, not investment advice.\n\n"
+        "- The VerquoAI team\n"
+    )
+
+
+async def send_due_followups(now_days: int = FOLLOWUP_DAYS) -> int:
+    """Email each request that is a week old (once). Waits while no channel link is set."""
+    channel = telegram_channel_url()
+    if not channel:
+        return 0
+    sent = 0
+    for row in await asyncio.to_thread(metrics.due_followups, now_days):
+        if await asyncio.to_thread(send_mail, row["email"], f"Your VerquoAI access request #{row['id']} - an update",
+                                   _access_followup(row["id"], channel)):
+            await asyncio.to_thread(metrics.mark_followup, row["id"])
+            sent += 1
+    if sent:
+        logger.info("access_followups_sent", count=sent)
+    return sent
+
+
+async def _run_followups() -> None:
+    """Hourly: the 7-day update emails."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await send_due_followups()
+        except Exception as e:
+            logger.warning("access_followups_failed", error=str(e))
+        await asyncio.sleep(3600)
+
+
 def _access_confirmation(contact_id: int, access_level: str, supported: bool) -> str:
     """Follow-up email to the requester: summary, next steps and what to prepare.
 
@@ -919,7 +974,13 @@ async def verify_otp(request: Request) -> Any:
         return response
     else:
         _track(request, "login_failed", user_id=zerodha_id, kind="user")
-        return {"success": False, "message": "Invalid or expired OTP"}
+        left = otp_auth.otp_attempts_left(zerodha_id)
+        if left:
+            return {"success": False, "attempts_left": left,
+                    "message": f"Wrong code - {left} attempt{'s' if left > 1 else ''} left."}
+        # expired or the last attempt used: this sign-in ends; the next needs a new code
+        return {"success": False, "restart": True,
+                "message": "That code has expired or was entered wrongly too often. Start again to get a new code."}
 
 
 DEMO_TOKEN_MIN_AGE = 1           # seconds between the page loading and the demo starting
@@ -1075,7 +1136,11 @@ async def step_up_verify(request: Request) -> dict[str, Any]:
     if otp and otp_auth.verify_step_up(request.cookies.get(SESSION_COOKIE, ""), otp):
         _track(request, "step_up_verified")
         return {"success": True}
-    return {"success": False, "message": "Invalid or expired code"}
+    left = otp_auth.otp_attempts_left(get_session_zerodha_id(request) or "", STEP_UP_PURPOSE)
+    if left:
+        return {"success": False, "attempts_left": left,
+                "message": f"Wrong code - {left} attempt{'s' if left > 1 else ''} left."}
+    return {"success": False, "restart": True, "message": "The code has expired or was entered wrongly too often."}
 
 
 def _static_version(rel_path: str) -> str:

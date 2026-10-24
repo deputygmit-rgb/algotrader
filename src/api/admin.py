@@ -86,7 +86,10 @@ def require_admin(request: Request) -> str:
 
 
 def _require_write(request: Request) -> str:
+    """Every admin change needs its own email code (2 minutes, used once)."""
     admin = require_admin(request)
+    if not otp_auth.consume_action_code(_session_token(request)):
+        raise HTTPException(403, "step_up_required")
     if not otp_auth.check_ip_rate_limit(f"admin-write:{admin}", _web()._client_ip(request), max_requests=120):
         raise HTTPException(429, "Too many changes in a short time. Please wait a little.")
     return admin
@@ -192,6 +195,7 @@ async def _retire(zerodha_id: str, forget_broker_session: bool) -> None:
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request) -> HTMLResponse:
     admin = _admin_id(request)
+    otp_auth.clear_step_up(_session_token(request))      # opening the panel always asks for a code
     web = _web()
     return web.templates.TemplateResponse(request, "admin.html", {
         "request": request,

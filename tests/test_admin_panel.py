@@ -71,7 +71,16 @@ def session(zid, step_up=False):
     return token
 
 
-def call(method, path, token=None, body=None, csrf=True):
+def confirm(token):
+    """What the browser's code prompt does before an admin change: a fresh email code."""
+    zid = webapp.otp_auth.get_session_user(token)
+    code = webapp.otp_auth.generate_otp(zid, purpose=STEP_UP_PURPOSE)
+    assert webapp.otp_auth.verify_step_up(token, code)
+
+
+def call(method, path, token=None, body=None, csrf=True, fresh_code=True):
+    if token and fresh_code and method != "GET" and webapp.otp_auth.has_recent_step_up(token):
+        confirm(token)                    # every admin change needs its own code
     headers = {"Content-Type": "application/json"}
     if token and csrf:
         headers["X-CSRF-Token"] = webapp.otp_auth.get_csrf_token(token)
@@ -277,3 +286,20 @@ def test_access_requests_can_be_deleted_and_the_deletion_is_audited(env):
     assert call("DELETE", f"/api/admin/contacts/{cid}", admin).status_code == 404
     assert env.store.list_audit()[0]["action"] == "contact_deleted"
     assert call("DELETE", f"/api/admin/contacts/{cid}", admin, csrf=False).status_code == 403
+
+
+
+def test_every_admin_change_needs_its_own_code(env):
+    admin = session("AD1234", step_up=True)
+    assert call("POST", "/api/admin/users/US5678/access", admin, {"access_level": "view"}).status_code == 200
+    again = call("POST", "/api/admin/users/US5678/access", admin, {"access_level": "trade"}, fresh_code=False)
+    assert again.status_code == 403 and again.json()["detail"] == "step_up_required"
+    assert call("GET", "/api/admin/overview", admin).status_code == 200      # reading stays open for 15 minutes
+
+
+def test_opening_the_panel_asks_for_a_code_again(env):
+    admin = session("AD1234", step_up=True)
+    assert call("GET", "/api/admin/overview", admin).status_code == 200
+    call("GET", "/admin", admin)
+    r = call("GET", "/api/admin/overview", admin)
+    assert r.status_code == 403 and r.json()["detail"] == "step_up_required"

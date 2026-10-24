@@ -103,6 +103,7 @@ class FnOExecutionSimulator:
         # its own generator: a seeded simulator (backtests) gives the same fills for the
         # same inputs every run; unseeded (paper trading) it stays random
         self._rng = random.Random(seed)
+        self.slippage_value = 0.0
 
     def _next_order_id(self) -> str:
         FnOExecutionSimulator._order_counter += 1
@@ -193,6 +194,8 @@ class FnOExecutionSimulator:
 
         # ── Simulated latency ───
         result.latency_ms = self._simulate_latency(child_orders)
+        # what slippage cost in rupees across every fill (reported by the backtest)
+        self.slippage_value += result.slippage * result.filled_lots * contract.lot_size
 
         return result
 
