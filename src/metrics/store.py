@@ -333,22 +333,33 @@ class MetricsStore:
 
     def due_followups(self, days: int = 7, limit: int = 20,
                       skip_statuses: tuple[str, ...] = ("approved", "rejected")) -> list[dict[str, Any]]:
-        """Requests at least ``days`` old with no update email yet, not in ``skip_statuses``."""
+        """Requests at least ``days`` old with no update email yet, not in ``skip_statuses`` -
+        one per email address (its first request), and none for an address already invited."""
         cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat(timespec="seconds")
         skip = [st for st in skip_statuses if st in CONTACT_STATUSES] or ["-"]
         conn = self._connect()
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
-                f"""SELECT id, ts, email FROM contact_requests
+                f"""SELECT MIN(id) AS id, MIN(ts) AS ts, email FROM contact_requests
                     WHERE followup_at = '' AND ts <= ? AND status NOT IN ({",".join("?" * len(skip))})
-                    ORDER BY id LIMIT ?""", (cutoff, *skip, limit)).fetchall()
+                      AND lower(email) NOT IN (SELECT lower(email) FROM contact_requests WHERE followup_at != '')
+                    GROUP BY lower(email) ORDER BY MIN(id) LIMIT ?""", (cutoff, *skip, limit)).fetchall()
         finally:
             conn.close()
         return [dict(r) for r in rows]
 
     def mark_followup(self, contact_id: int) -> None:
-        self._stamp(contact_id, "followup_at")
+        """Invited: this request and every other request from the same address (one email each)."""
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """UPDATE contact_requests SET followup_at = ? WHERE followup_at = ''
+                       AND lower(email) = (SELECT lower(email) FROM contact_requests WHERE id = ?)""",
+                    (datetime.now(IST).isoformat(timespec="seconds"), contact_id))
+        finally:
+            conn.close()
 
     def get_contact(self, contact_id: int) -> Optional[dict[str, Any]]:
         """The request's email and where it stands in the Telegram opt-in (None when erased)."""

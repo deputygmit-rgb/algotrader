@@ -247,3 +247,17 @@ def test_invite_everyone_now_skips_only_rejected_and_the_already_invited(tmp_pat
     ids = [r["id"] for r in store.due_followups(days=0, limit=1000, skip_statuses=("rejected",))]
     assert ids == [new, done]                                                     # any age, approved included
     assert [r["id"] for r in store.due_followups(days=7)] == []                   # the hourly job is unchanged
+
+
+def test_one_invitation_per_email_address_however_many_requests(tmp_path, monkeypatch):
+    store, (old, new, done), sent = _requests(tmp_path, monkeypatch)
+    repeats = [store.add_contact(name="A again", email=e, phone="9876543210", trading_id="", message="",
+                                 source="landing", visitor_id="", user_id="", ip="") for e in ("a@b.co", "A@B.co")]
+    due = store.due_followups(days=0, limit=100, skip_statuses=("rejected",))
+    assert [r["id"] for r in due] == [old, new, done]                     # a@b.co once, as its first request
+    store.mark_followup(old)
+    assert all(store.get_contact(i)["followup_at"] for i in repeats)      # its repeats count as invited
+    assert [r["id"] for r in store.due_followups(days=0, limit=100, skip_statuses=("rejected",))] == [new, done]
+    later = store.add_contact(name="A later", email="a@b.co", phone="9876543210", trading_id="", message="",
+                              source="landing", visitor_id="", user_id="", ip="")
+    assert later not in [r["id"] for r in store.due_followups(days=0, limit=100, skip_statuses=("rejected",))]
