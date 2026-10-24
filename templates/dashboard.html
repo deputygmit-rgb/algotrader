@@ -1523,7 +1523,7 @@
                     <table>
                         <thead><tr><th>Symbol</th><th>LTP</th><th>Change</th><th>%</th><th>Open</th><th>High</th><th>Low</th><th>Volume</th></tr></thead>
                         <tbody id="market-overview-body">
-                            <tr><td colspan="8" style="color:var(--text-muted);text-align:center">Click Refresh to load market data</td></tr>
+                            <tr><td colspan="8" style="color:var(--text-muted);text-align:center">Loading market data…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -2073,9 +2073,42 @@
             </div>
 
             <div id="replay-results-section" style="display:none">
-                <div class="card">
-                    <div class="card-title">Equity Curve (live)</div>
-                    <canvas id="replay-equity-chart" height="200"></canvas>
+                <!-- the replay as it plays: candles bar by bar, trades on the chart, live stats -->
+                <div class="card rp-live">
+                    <div class="rp-head">
+                        <div class="rp-sym"><b id="rp-symbol">—</b><span id="rp-time">—</span></div>
+                        <div class="rp-stats">
+                            <div><span>Price</span><b id="rp-price">—</b><small id="rp-chg"></small></div>
+                            <div><span>Position</span><b id="rp-pos">FLAT</b><small id="rp-avg"></small></div>
+                            <div><span>P&amp;L</span><b id="rp-pnl">₹0</b><small id="rp-value"></small></div>
+                            <div><span>Closed trades</span><b id="rp-trades">0</b></div>
+                        </div>
+                    </div>
+                    <div class="rp-progress">
+                        <div class="rp-bar"><i id="rp-fill"></i></div>
+                        <span id="rp-progress-text">0 / 0</span>
+                    </div>
+                    <div class="rp-controls">
+                        <button id="rp-pause" class="btn btn-outline btn-sm" type="button" onclick="toggleReplayPause()">❚❚ Pause</button>
+                        <label>Speed
+                            <select id="rp-speed" onchange="setReplaySpeed(this.value)">
+                                <option value="1">1×</option><option value="2">2×</option><option value="5">5×</option>
+                                <option value="10" selected>10×</option><option value="25">25×</option>
+                                <option value="50">50×</option><option value="100">100×</option>
+                            </select> bars / sec</label>
+                        <span class="rp-legend"><i class="rp-buy">▲</i> buy <i class="rp-sell">▼</i> sell <i class="rp-cost">┄</i> entry</span>
+                    </div>
+                    <div class="rp-chart-wrap"><canvas id="rp-candles"></canvas></div>
+                </div>
+                <div class="grid grid-2">
+                    <div class="card">
+                        <div class="card-title">Equity Curve (live)</div>
+                        <canvas id="replay-equity-chart" height="200"></canvas>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Trades</div>
+                        <div class="rp-log" id="rp-log"><p class="rp-empty">No trades yet - they appear here as the strategy acts.</p></div>
+                    </div>
                 </div>
             </div>
         </div>

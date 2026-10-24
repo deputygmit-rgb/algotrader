@@ -2363,6 +2363,17 @@ async def stop_market_replay(request: Request) -> dict[str, Any]:
     return get_user_service(request).stop_replay()
 
 
+@app.post("/api/replay/control")
+async def control_market_replay(request: Request) -> dict[str, Any]:
+    """Pause, resume or change the speed of a running replay."""
+    body = await _json_body(request)
+    try:
+        speed = float(body["speed"]) if body.get("speed") is not None else None
+    except (TypeError, ValueError):
+        speed = None
+    return get_user_service(request).control_replay(str(body.get("action") or ""), speed)
+
+
 @app.get("/api/replay/status")
 async def market_replay_status(request: Request) -> dict[str, Any]:
     return get_user_service(request).get_replay_status()

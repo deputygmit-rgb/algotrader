@@ -244,6 +244,7 @@ function switchTab(tabName) {
     if (tabName === 'analysis' && !analysisData) {
         loadAnalysis();
     }
+    if (tabName === 'charts') openCharts();
     // Auto-resolve token when switching to paper-trading tab
     if (tabName === 'paper-trading') {
         const tokenEl = document.getElementById('paper-token');
@@ -3873,9 +3874,10 @@ async function startReplay() {
     const startBtn = document.getElementById('btn-start-replay');
     const stopBtn = document.getElementById('btn-stop-replay');
     const statusLine = document.getElementById('replay-status-line');
-    replayEquityData = [];
     document.getElementById('replay-results-section').style.display = 'block';
-    document.getElementById('replay-summary').innerHTML = '<div class="empty-state"><p>Starting replay...</p></div>';
+    resetReplayView(symbol, parseFloat(document.getElementById('replay-speed').value) || 10);
+    document.getElementById('replay-summary').innerHTML = '<div class="empty-state"><p>Replay running - follow it live below.</p></div>';
+    revealResult('rp-candles');
     statusLine.style.display = 'block';
     statusLine.style.color = 'var(--accent-green)';
     statusLine.textContent = 'Starting...';
@@ -3914,33 +3916,180 @@ async function stopReplay() {
     document.getElementById('btn-start-replay').disabled = false;
 }
 
+// ── live replay view: candles bar by bar, the strategy's trades on them, live stats ──
+let rp = { bars: [], orders: [], startPrice: null, paused: false, frame: 0 };
+
+function resetReplayView(symbol, speed) {
+    rp = { bars: [], orders: [], startPrice: null, paused: false, frame: 0 };
+    replayEquityData = [];
+    document.getElementById('rp-symbol').textContent = symbol;
+    document.getElementById('rp-time').textContent = 'loading bars…';
+    ['rp-price', 'rp-chg', 'rp-avg', 'rp-value'].forEach(id => { document.getElementById(id).textContent = ''; });
+    document.getElementById('rp-pos').textContent = 'FLAT';
+    document.getElementById('rp-pnl').textContent = '₹0';
+    document.getElementById('rp-trades').textContent = '0';
+    document.getElementById('rp-fill').style.width = '0%';
+    document.getElementById('rp-progress-text').textContent = 'starting…';
+    document.getElementById('rp-log').innerHTML = '<p class="rp-empty">No trades yet - they appear here as the strategy acts.</p>';
+    const pause = document.getElementById('rp-pause');
+    pause.disabled = false; pause.textContent = '❚❚ Pause';
+    const sel = document.getElementById('rp-speed');
+    const near = [...sel.options].map(o => +o.value).reduce((a, b) => Math.abs(b - speed) < Math.abs(a - speed) ? b : a);
+    sel.value = String(near);
+    drawReplayCandles();
+}
+
 function updateReplayTick(data) {
     const statusLine = document.getElementById('replay-status-line');
     if (statusLine) {
         statusLine.style.display = 'block';
-        statusLine.textContent = `${data.tradingsymbol} @ ₹${formatNum(data.price)} · ` +
-            `Portfolio: ₹${formatNum(data.portfolio_value)} · Bar ${data.progress}/${data.total}`;
+        statusLine.textContent = `Replaying ${data.tradingsymbol} · bar ${data.progress} of ${data.total}`;
     }
+    rp.startPrice = rp.startPrice ?? data.o ?? data.price;
+    rp.bars.push({ t: data.timestamp, o: data.o ?? data.price, h: data.h ?? data.price, l: data.l ?? data.price, c: data.price, v: data.v || 0 });
+    if (data.order) {
+        rp.orders.push({ i: rp.bars.length - 1, ...data.order, t: data.timestamp });
+        const log = document.getElementById('rp-log');
+        if (rp.orders.length === 1) log.innerHTML = '';
+        log.insertAdjacentHTML('afterbegin', `<div class="rp-trade ${data.order.side === 'BUY' ? 'buy' : 'sell'}">
+            <b>${data.order.side === 'BUY' ? '▲ BUY' : '▼ SELL'}</b><span>${escHtml(String(data.order.qty))} @ ₹${formatNum(data.order.price)}</span>
+            <small>${escHtml(String(data.timestamp).slice(0, 16).replace('T', ' '))}</small></div>`);
+    }
+    // header strip
+    const chg = rp.startPrice ? (data.price - rp.startPrice) / rp.startPrice * 100 : 0;
+    document.getElementById('rp-time').textContent = String(data.timestamp).slice(0, 16).replace('T', ' ');
+    document.getElementById('rp-price').textContent = '₹' + formatNum(data.price);
+    const chgEl = document.getElementById('rp-chg');
+    chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% since start`;
+    chgEl.className = chg >= 0 ? 'positive' : 'negative';
+    const q = data.position || 0;
+    document.getElementById('rp-pos').textContent = q > 0 ? `LONG ${q}` : q < 0 ? `SHORT ${-q}` : 'FLAT';
+    document.getElementById('rp-pos').className = q > 0 ? 'positive' : q < 0 ? 'negative' : '';
+    document.getElementById('rp-avg').textContent = data.avg_cost ? `entry ₹${formatNum(data.avg_cost)}` : '';
+    const pnlEl = document.getElementById('rp-pnl');
+    pnlEl.textContent = '₹' + formatNum(data.pnl ?? 0);
+    pnlEl.className = (data.pnl ?? 0) >= 0 ? 'positive' : 'negative';
+    document.getElementById('rp-value').textContent = `portfolio ₹${formatNum(data.portfolio_value)}`;
+    document.getElementById('rp-trades').textContent = String(data.trades ?? 0);
+    rp.avgCost = data.avg_cost; rp.position = q;
+    // progress + time left at the current speed
+    const pct = data.total ? data.progress / (data.total - 1) * 100 : 0;
+    document.getElementById('rp-fill').style.width = `${Math.min(100, pct).toFixed(1)}%`;
+    const left = data.speed ? Math.max(0, (data.total - 1 - data.progress) / data.speed) : 0;
+    const eta = left >= 60 ? `${Math.floor(left / 60)}m ${Math.round(left % 60)}s` : `${Math.round(left)}s`;
+    document.getElementById('rp-progress-text').textContent = `bar ${data.progress} / ${data.total - 1} · ${pct.toFixed(0)}% · ${eta} left`;
     replayEquityData.push(data.portfolio_value);
-    if (replayEquityData.length > 1) drawReplayEquityCurve(replayEquityData);
-    const summary = document.getElementById('replay-summary');
-    if (summary) {
-        const pct = data.total ? Math.round(data.progress / data.total * 100) : 0;
-        const pnl = data.portfolio_value - (replayEquityData[0] || data.portfolio_value);
-        summary.innerHTML = `
-            <div class="progress-bar" style="margin-bottom:10px"><div class="progress-fill" style="width:${pct}%"></div></div>
-            <div class="summary-grid">
-                <div class="summary-item"><span class="summary-label">Progress</span><span class="summary-value">${data.progress} / ${data.total} bars (${pct}%)</span></div>
-                <div class="summary-item"><span class="summary-label">${data.tradingsymbol}</span><span class="summary-value">₹${formatNum(data.price)}</span></div>
-                <div class="summary-item"><span class="summary-label">Portfolio</span><span class="summary-value">₹${formatNum(data.portfolio_value)}</span></div>
-                <div class="summary-item"><span class="summary-label">P&amp;L so far</span><span class="summary-value ${pnlClass(pnl)}">₹${formatNum(pnl)}</span></div>
-            </div>`;
-    }
+    // draw at most once a frame (fast replays send many bars a second)
+    if (!rp.frame) rp.frame = requestAnimationFrame(() => {
+        rp.frame = 0;
+        drawReplayCandles();
+        if (replayEquityData.length > 1) drawReplayEquityCurve(replayEquityData);
+    });
 }
+
+function drawReplayCandles() {
+    const canvas = document.getElementById('rp-candles');
+    if (!canvas) return;
+    const wrap = canvas.parentElement;
+    const dpr = window.devicePixelRatio || 1;
+    const w = wrap.clientWidth, h = wrap.clientHeight || 320;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const padR = 64, padB = 18, padT = 10;
+    const slot = 8;                                       // px per bar
+    const n = Math.max(10, Math.floor((w - padR) / slot));
+    const first = Math.max(0, rp.bars.length - n);
+    const bars = rp.bars.slice(first);
+    if (!bars.length) {
+        ctx.fillStyle = '#5d717d'; ctx.font = '12px JetBrains Mono, monospace';
+        ctx.fillText('Bars appear here as the replay plays', 12, h / 2);
+        return;
+    }
+    let lo = Math.min(...bars.map(b => b.l)), hi = Math.max(...bars.map(b => b.h));
+    if (rp.avgCost && rp.position) { lo = Math.min(lo, rp.avgCost); hi = Math.max(hi, rp.avgCost); }
+    const span = (hi - lo) || hi * 0.01 || 1;
+    lo -= span * 0.08; hi += span * 0.08;
+    const y = v => padT + (hi - v) / (hi - lo) * (h - padT - padB);
+    const x = i => (i - first) * slot + slot / 2;
+    // grid + price scale
+    ctx.font = '10px JetBrains Mono, monospace';
+    for (let k = 0; k <= 4; k++) {
+        const v = lo + (hi - lo) * k / 4, yy = y(v);
+        ctx.strokeStyle = 'rgba(46,197,255,.07)'; ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
+        ctx.fillStyle = '#5d717d'; ctx.fillText(v.toFixed(v > 1000 ? 0 : 1), w - padR + 6, yy + 3);
+    }
+    // candles
+    bars.forEach((b, k) => {
+        const i = first + k, up = b.c >= b.o, cx = x(i);
+        ctx.strokeStyle = ctx.fillStyle = up ? '#19e6a1' : '#ff5a6e';
+        ctx.beginPath(); ctx.moveTo(cx, y(b.h)); ctx.lineTo(cx, y(b.l)); ctx.stroke();
+        const top = y(Math.max(b.o, b.c)), body = Math.max(1, Math.abs(y(b.o) - y(b.c)));
+        ctx.fillRect(cx - slot * 0.32, top, slot * 0.64, body);
+    });
+    // entry (average cost) of the open position
+    if (rp.avgCost && rp.position) {
+        ctx.setLineDash([4, 4]); ctx.strokeStyle = '#ffd166';
+        ctx.beginPath(); ctx.moveTo(0, y(rp.avgCost)); ctx.lineTo(w - padR, y(rp.avgCost)); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // the strategy's orders
+    rp.orders.filter(o => o.i >= first).forEach(o => {
+        const b = rp.bars[o.i], cx = x(o.i), buy = o.side === 'BUY';
+        ctx.fillStyle = buy ? '#19e6a1' : '#ff5a6e';
+        ctx.beginPath();
+        if (buy) { const yy = y(b.l) + 6; ctx.moveTo(cx, yy); ctx.lineTo(cx - 5, yy + 8); ctx.lineTo(cx + 5, yy + 8); }
+        else { const yy = y(b.h) - 6; ctx.moveTo(cx, yy); ctx.lineTo(cx - 5, yy - 8); ctx.lineTo(cx + 5, yy - 8); }
+        ctx.closePath(); ctx.fill();
+    });
+    // last price line + tag
+    const last = bars[bars.length - 1], ly = y(last.c);
+    ctx.setLineDash([2, 3]); ctx.strokeStyle = 'rgba(46,197,255,.7)';
+    ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w - padR, ly); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#2ec5ff'; ctx.fillRect(w - padR + 2, ly - 8, padR - 4, 16);
+    ctx.fillStyle = '#05080c'; ctx.font = 'bold 10px JetBrains Mono, monospace';
+    ctx.fillText(last.c.toFixed(last.c > 1000 ? 1 : 2), w - padR + 5, ly + 4);
+    // first / last time
+    ctx.fillStyle = '#5d717d'; ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText(String(bars[0].t).slice(5, 16).replace('T', ' '), 4, h - 4);
+    const tl = String(last.t).slice(5, 16).replace('T', ' ');
+    ctx.fillText(tl, Math.max(4, w - padR - ctx.measureText(tl).width - 4), h - 4);
+}
+
+async function toggleReplayPause() {
+    const btn = document.getElementById('rp-pause');
+    const action = rp.paused ? 'resume' : 'pause';
+    try {
+        const r = await API.post('/api/replay/control', { action });
+        if (r.error) { showToast(r.error, 'error'); return; }
+        rp.paused = !!r.paused;
+        btn.textContent = rp.paused ? '▶ Resume' : '❚❚ Pause';
+        const statusLine = document.getElementById('replay-status-line');
+        if (statusLine && rp.paused) statusLine.textContent = 'Paused';
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function setReplaySpeed(v) {
+    try {
+        const r = await API.post('/api/replay/control', { action: 'speed', speed: Number(v) });
+        if (r.error) showToast(r.error, 'error');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+window.addEventListener('resize', () => { if (rp.bars.length) drawReplayCandles(); }, { passive: true });
 
 function finishReplay(data) {
     document.getElementById('btn-stop-replay').disabled = true;
     document.getElementById('btn-start-replay').disabled = false;
+    const pause = document.getElementById('rp-pause');
+    if (pause) { pause.disabled = true; pause.textContent = '✓ Done'; }
+    const fill = document.getElementById('rp-fill');
+    if (fill && rp.bars.length) fill.style.width = '100%';
+    const left = document.getElementById('rp-progress-text');
+    if (left && rp.bars.length) left.textContent = `${rp.bars.length} bars replayed · complete`;
+    rp.position = 0;
+    drawReplayCandles();
     const statusLine = document.getElementById('replay-status-line');
     if (statusLine) {
         statusLine.style.color = data.total_pnl >= 0 ? 'var(--accent-green)' : '#ff5252';
@@ -4611,12 +4760,37 @@ document.addEventListener('change', function(e) {
     }
 });
 
+// Opening the Charts tab loads it: the last chart viewed (RELIANCE daily the first time)
+// and the market overview - they used to wait for "Load Chart" / "Refresh".
+const CHART_PREFS_KEY = 'vq-chart-prefs';
+let _chartsOpened = false, _overviewAt = 0;
+function openCharts() {
+    if (!_chartsOpened) {
+        _chartsOpened = true;
+        try {
+            const prefs = JSON.parse(localStorage.getItem(CHART_PREFS_KEY) || 'null');
+            if (prefs) {
+                for (const [id, v] of Object.entries(prefs)) {
+                    const el = document.getElementById(id);
+                    if (el && v != null && (el.tagName !== 'SELECT' || [...el.options].some(o => o.value === String(v)))) el.value = v;
+                }
+            }
+        } catch (e) { /* no stored preference */ }
+    }
+    if (!window._chartData) loadChart();
+    if (Date.now() - _overviewAt > 60000) { _overviewAt = Date.now(); loadMarketOverview(); }
+}
+
 async function loadChart() {
     const symbol = document.getElementById('chart-symbol').value.trim().toUpperCase();
     const exchange = document.getElementById('chart-exchange').value;
     const interval = document.getElementById('chart-interval').value;
     const days = parseInt(document.getElementById('chart-days').value) || 365;
     if (!symbol) return;
+    try {
+        localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({
+            'chart-symbol': symbol, 'chart-exchange': exchange, 'chart-interval': interval, 'chart-days': days }));
+    } catch (e) { /* private mode: not remembered */ }
     const status = document.getElementById('chart-status');
     status.textContent = 'Loading chart for ' + symbol + '...';
     status.style.color = '';

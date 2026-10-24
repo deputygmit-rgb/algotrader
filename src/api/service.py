@@ -4998,6 +4998,21 @@ class TradingService:
         self._replay_state["running"] = False
         return {"success": True}
 
+    def control_replay(self, action: str, speed: Optional[float] = None) -> dict[str, Any]:
+        """Pause / resume a running replay, or change its speed (bars a second) on the fly."""
+        if not self._replay_state.get("running"):
+            return {"error": "No replay is running"}
+        if action == "pause":
+            self._replay_state["paused"] = True
+        elif action == "resume":
+            self._replay_state["paused"] = False
+        elif action == "speed" and speed:
+            self._replay_state["speed"] = max(0.5, min(float(speed), 200.0))
+        else:
+            return {"error": "Unknown replay action"}
+        return {"success": True, "paused": bool(self._replay_state.get("paused")),
+                "speed": self._replay_state.get("speed")}
+
     async def _replay_loop(
         self,
         df: pd.DataFrame,
@@ -5014,14 +5029,17 @@ class TradingService:
             strategy.set_timeframe(timeframe)
         df = df.reset_index(drop=True)
         total = len(df)
-        delay = max(0.0, 1.0 / max(speed, 0.01))
-        self._replay_state["status"] = "running"
+        self._replay_state.update(status="running", speed=speed, paused=False)
+        has = {c: c in df.columns for c in ("open", "high", "low", "volume")}
 
         try:
             for i in range(1, total):
+                while self._replay_state.get("paused") and self._replay_state.get("running"):
+                    await asyncio.sleep(0.2)
                 if not self._replay_state.get("running"):
                     self._replay_state["status"] = "stopped"
                     break
+                delay = max(0.0, 1.0 / max(float(self._replay_state.get("speed") or speed), 0.01))
 
                 bar = df.iloc[i]
                 slice_df = df.iloc[: i + 1]
@@ -5031,17 +5049,25 @@ class TradingService:
                 price = float(bar["close"])
                 bar_ts = pd.Timestamp(bar["timestamp"]).to_pydatetime() if "timestamp" in df.columns else datetime.now()
 
+                order = None
                 if signal:
                     pos = engine._positions.get(tradingsymbol)
                     current_qty = pos.quantity if pos else 0
                     qty = max(1, int(getattr(signal, "quantity", 1) or 1))
+                    side = None
                     if signal.transaction_type == TransactionType.BUY and current_qty <= 0:
-                        engine.place_order(tradingsymbol, TransactionType.BUY, qty + abs(current_qty), price, timestamp=bar_ts)
+                        side = TransactionType.BUY
                     elif signal.transaction_type == TransactionType.SELL and current_qty >= 0:
-                        engine.place_order(tradingsymbol, TransactionType.SELL, qty + abs(current_qty), price, timestamp=bar_ts)
+                        side = TransactionType.SELL
+                    if side is not None:
+                        filled = engine.place_order(tradingsymbol, side, qty + abs(current_qty), price, timestamp=bar_ts)
+                        if filled is not None:
+                            order = {"side": side.value, "qty": qty + abs(current_qty),
+                                     "price": round(float(getattr(filled, "fill_price", price)), 2)}
 
                 engine.update_prices({tradingsymbol: price})
                 self._replay_state["progress"] = i
+                pos = engine._positions.get(tradingsymbol)
 
                 await self._broadcast_ws({
                     "type": "replay_tick",
@@ -5049,9 +5075,20 @@ class TradingService:
                         "timestamp": str(bar_ts),
                         "tradingsymbol": tradingsymbol,
                         "price": price,
+                        # the bar itself, so the screen draws the candles as they print
+                        "o": float(bar["open"]) if has["open"] else price,
+                        "h": float(bar["high"]) if has["high"] else price,
+                        "l": float(bar["low"]) if has["low"] else price,
+                        "v": float(bar["volume"]) if has["volume"] else 0.0,
+                        "order": order,
+                        "position": pos.quantity if pos else 0,
+                        "avg_cost": round(pos.avg_cost, 2) if pos and pos.quantity else None,
+                        "pnl": round(engine.get_pnl(), 2),
+                        "trades": len(engine._closed),
                         "portfolio_value": engine.get_portfolio_value(),
                         "progress": i,
                         "total": total,
+                        "speed": self._replay_state.get("speed"),
                     },
                 })
                 if delay > 0:

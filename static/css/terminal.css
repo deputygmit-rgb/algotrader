@@ -960,3 +960,37 @@ body.has-bnav .toast { bottom: calc(76px + env(safe-area-inset-bottom)); left: 1
                         padding: 10px 16px calc(18px + env(safe-area-inset-bottom)); }
     .vq-x { min-width: 44px; min-height: 44px; font-size: 28px; }
 }
+
+/* ── market replay: the live view ───────────────────────────────── */
+.rp-live { margin-bottom: 16px; }
+.rp-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; margin-bottom: 12px; }
+.rp-sym b { display: block; font-size: 20px; letter-spacing: 2px; color: #fff; }
+.rp-sym span { font-size: 11px; color: var(--t-dim); letter-spacing: 1px; }
+.rp-stats { display: grid; grid-template-columns: repeat(4, minmax(0, auto)); gap: 6px 28px; }
+.rp-stats > div { display: grid; gap: 2px; }
+.rp-stats span { font-size: 9.5px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--t-mute); }
+.rp-stats b { font-size: 16px; color: var(--t-txt); }
+.rp-stats small { font-size: 10.5px; color: var(--t-dim); }
+.rp-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.rp-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--t-line); overflow: hidden; }
+.rp-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--t-c), var(--t-g)); transition: width .25s linear; }
+#rp-progress-text { font-size: 11px; color: var(--t-dim); white-space: nowrap; }
+.rp-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 10px; font-size: 11px; color: var(--t-dim); }
+.rp-controls select { margin: 0 4px; padding: 4px 6px; }
+.rp-legend { margin-left: auto; letter-spacing: .5px; }
+.rp-legend i { font-style: normal; margin: 0 2px 0 8px; }
+.rp-buy { color: var(--t-g); } .rp-sell { color: var(--t-r); } .rp-cost { color: var(--t-a); }
+.rp-chart-wrap { position: relative; height: 340px; border: 1px solid var(--t-line); border-radius: 4px; background: var(--t-bg); }
+.rp-chart-wrap canvas { display: block; }
+.rp-log { display: grid; gap: 6px; max-height: 240px; overflow-y: auto; }
+.rp-trade { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 7px 10px;
+            border-left: 3px solid; border-radius: 3px; background: var(--t-panel-2); font-size: 12px; }
+.rp-trade.buy { border-color: var(--t-g); } .rp-trade.buy b { color: var(--t-g); }
+.rp-trade.sell { border-color: var(--t-r); } .rp-trade.sell b { color: var(--t-r); }
+.rp-trade small { color: var(--t-mute); font-size: 10.5px; }
+.rp-empty { margin: 0; color: var(--t-mute); font-size: 12px; }
+@media (max-width: 767.98px) {
+    .rp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+    .rp-chart-wrap { height: 260px; }
+    .rp-legend { margin-left: 0; }
+}
