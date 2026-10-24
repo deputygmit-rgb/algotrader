@@ -231,3 +231,18 @@ def test_minified_scripts_keep_template_text_exactly():
     assert '`<i class="c" data-x="${o.id}">${o.time} ${o.setup}</i>`' in out
     assert "note" not in out and "block" not in out
     assert "/`/g" in out
+
+
+def test_pages_answer_head_like_get():
+    """Uptime monitors and link checkers send HEAD: it used to get 405 on every page."""
+    import asyncio
+    import httpx
+    from src.api import webapp
+
+    async def go():
+        transport = httpx.ASGITransport(app=webapp.app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as c:
+            return await c.head("/privacy"), await c.get("/privacy")
+    head, get = asyncio.run(go())
+    assert head.status_code == get.status_code == 200 and head.content == b""
+    assert head.headers.get("content-type") == get.headers.get("content-type")

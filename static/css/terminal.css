@@ -994,3 +994,14 @@ body.has-bnav .toast { bottom: calc(76px + env(safe-area-inset-bottom)); left: 1
     .rp-chart-wrap { height: 260px; }
     .rp-legend { margin-left: 0; }
 }
+
+/* replay form: the six settings in one row on a wide screen */
+.rp-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0 14px; }
+.rp-form .form-group { min-width: 0; }
+/* the final summary, inside the live view once the replay ends */
+.rp-summary { margin: 2px 0 12px; }
+#replay-summary.rp-summary .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 767.98px) {
+    .rp-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #replay-summary.rp-summary .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -546,6 +546,28 @@ async def metrics_middleware(request: Request, call_next):
 app.middleware("http")(time_request)
 
 
+class HeadAsGet:
+    """HEAD answered as GET without the body. FastAPI routes accept only GET, so every
+    page said 405 to HEAD - which uptime monitors, link checkers and ``curl -I`` send."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("method") != "HEAD":
+            await self.app(scope, receive, send)
+            return
+
+        async def headers_only(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.body":
+                message = {**message, "body": b""}
+            await send(message)
+        await self.app({**scope, "method": "GET"}, receive, headers_only)
+
+
+app.add_middleware(HeadAsGet)
+
+
 @app.post("/metrics/events")
 async def metrics_events(request: Request) -> Any:
     """Browser activity (page views, clicks, tab switches) from static/js/metrics.js."""
@@ -853,8 +875,14 @@ async def contact(request: Request) -> Any:
             "Or on the server:\n"
             f"  sudo -u verquo /opt/verquoai/venv/bin/python scripts/manage_users.py add {trading_id or '<TRADING_ID>'} {email} --access {access_level}\n"
         )
-        if await asyncio.to_thread(send_mail, admin, f"VerquoAI access request: {name}", text, email):
-            await asyncio.to_thread(metrics.mark_emailed, contact_id)
+        # in the background: the visitor's reply does not depend on it (each SMTP send
+        # takes ~4 s, and the form used to wait for two of them - 9 s)
+        async def notify_admin() -> None:
+            if await asyncio.to_thread(send_mail, admin, f"VerquoAI access request: {name}", text, email):
+                await asyncio.to_thread(metrics.mark_emailed, contact_id)
+        task = asyncio.create_task(notify_admin(), name="contact_admin_mail")
+        task.add_done_callback(lambda t: t.cancelled() or t.exception() and logger.warning(
+            "contact_admin_mail_failed", contact_id=contact_id, error=str(t.exception())))
     # tell the requester what they asked for, so they have a record of it - at most
     # once a day per address, within a daily budget (see MailGuard)
     copied = mail_guard.allow_requester_copy(email) and await asyncio.to_thread(

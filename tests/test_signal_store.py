@@ -126,6 +126,7 @@ def _buy():
                   confidence=70, metadata={"trigger": "ema cross"})
 
 
+@pytest.mark.usefixtures("mid_session")      # entries are refused after 15:15
 def test_live_signals_are_ledgered_with_their_outcome(store):
     import asyncio
 
@@ -140,6 +141,7 @@ def test_live_signals_are_ledgered_with_their_outcome(store):
     assert (r["decision"], r["order_id"], r["setup"]) == ("sent", "OID7", "ema cross")
 
 
+@pytest.mark.usefixtures("mid_session")      # entries are refused after 15:15
 def test_kill_switch_blocks_are_ledgered_and_do_not_crash(store):
     import asyncio
 

@@ -88,6 +88,7 @@ def test_daily_timeframe_is_long_only_delivery():
     assert trades[0]["exit_price"] == pytest.approx(data["open"][9])
 
 
+@pytest.mark.usefixtures("mid_session")      # entries are refused after 15:15
 def test_live_opposite_signal_closes_the_open_position_and_daily_sells_never_short():
     from src.api.service import TradingService
 

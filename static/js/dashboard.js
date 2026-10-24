@@ -3876,7 +3876,9 @@ async function startReplay() {
     const statusLine = document.getElementById('replay-status-line');
     document.getElementById('replay-results-section').style.display = 'block';
     resetReplayView(symbol, parseFloat(document.getElementById('replay-speed').value) || 10);
-    document.getElementById('replay-summary').innerHTML = '<div class="empty-state"><p>Replay running - follow it live below.</p></div>';
+    const summary = document.getElementById('replay-summary');
+    summary.hidden = true;                        // the final summary shows here when the replay ends
+    summary.innerHTML = '';
     revealResult('rp-candles');
     statusLine.style.display = 'block';
     statusLine.style.color = 'var(--accent-green)';
@@ -4089,6 +4091,15 @@ function finishReplay(data) {
     const left = document.getElementById('rp-progress-text');
     if (left && rp.bars.length) left.textContent = `${rp.bars.length} bars replayed · complete`;
     rp.position = 0;
+    // the replay closes any open position at the end: the strip matches the summary
+    const pos = document.getElementById('rp-pos');
+    if (pos) { pos.textContent = 'FLAT'; pos.className = ''; document.getElementById('rp-avg').textContent = ''; }
+    if (data.total_trades != null) document.getElementById('rp-trades').textContent = String(data.total_trades);
+    if (data.total_pnl != null) {
+        const pnl = document.getElementById('rp-pnl');
+        pnl.textContent = '₹' + formatNum(data.total_pnl);
+        pnl.className = data.total_pnl >= 0 ? 'positive' : 'negative';
+    }
     drawReplayCandles();
     const statusLine = document.getElementById('replay-status-line');
     if (statusLine) {
@@ -4099,6 +4110,7 @@ function finishReplay(data) {
         replayEquityData = data.equity_curve;
         drawReplayEquityCurve(replayEquityData);
     }
+    document.getElementById('replay-summary').hidden = false;
     document.getElementById('replay-summary').innerHTML = `
         <div class="summary-grid">
             <div class="summary-item"><span class="summary-label">Total Trades</span><span class="summary-value">${data.total_trades ?? 0}</span></div>

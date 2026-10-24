@@ -298,3 +298,18 @@ def _isolated_saved_market_data(tmp_path, monkeypatch):
     monkeypatch.setattr(published, "STORE_DIR", str(tmp_path / "published"))
     monkeypatch.setattr(service, "LAST_SESSION_DIR", str(tmp_path / "last_session"))
     monkeypatch.setattr(service, "_LAST_SESSION_CACHE", {})
+
+
+@pytest.fixture
+def mid_session(monkeypatch):
+    """The service's clock at 10:30 today: tests that place entries must not depend on
+    the time they run (after the 15:15 square-off every new entry is refused)."""
+    import datetime as _dt
+    from src.api import service
+
+    class _MidSession(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            today = _dt.date.today()
+            return cls(today.year, today.month, today.day, 10, 30, tzinfo=tz)
+    monkeypatch.setattr(service, "datetime", _MidSession)

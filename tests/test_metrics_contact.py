@@ -38,7 +38,10 @@ def _call(method, path, *, body=None, raw=None, cookies=None, headers=None):
         transport = httpx.ASGITransport(app=webapp.app)
         async with httpx.AsyncClient(transport=transport, base_url="https://testserver", cookies=cookies) as c:
             content = raw if raw is not None else (json.dumps(body) if body is not None else None)
-            return await c.request(method, path, content=content, headers=headers)
+            response = await c.request(method, path, content=content, headers=headers)
+        # the admin notice is sent after the reply (in the background): let it finish
+        await asyncio.gather(*[t for t in asyncio.all_tasks() if t.get_name() == "contact_admin_mail"])
+        return response
     return asyncio.run(go())
 
 
@@ -80,8 +83,8 @@ def test_contact_request_is_stored_and_emailed(store, monkeypatch):
         store, "SELECT name, email, trading_id, emailed, access_level, platform FROM contact_requests")
     assert "\n" not in name and "\r" not in name and email == "asha@example.com" and trading_id == "AB1234" and emailed == 1
     assert (access, platform) == ("trade", "Zerodha")
-    to, subject, text, reply_to = sent[0]
-    assert to == "admin@example.com" and reply_to == "asha@example.com"
+    to, subject, text, reply_to = next(m for m in sent if m[0] == "admin@example.com")   # sent in the background
+    assert reply_to == "asha@example.com"
     assert "\n" not in subject and "manage_users.py add AB1234 asha@example.com" in text
     assert "Access requested: Trading - place and manage your own orders" in text
     assert "Trading platform: Zerodha - supported" in text and "confirmed both choices" in text
@@ -132,7 +135,8 @@ def test_requester_gets_a_confirmation_of_access_and_platform(store, monkeypatch
     r = _call("POST", "/contact", body={"name": "Ravi", "email": "ravi@example.com", "phone": "+91 99887 76655", "access_level": "agentic",
                                         "platform": "FreeMoneyBroker visit spam.example", "confirm": "yes"})
     assert "emailed you a copy" in r.json()["message"]
-    admin_mail, user_mail = sent
+    admin_mail = next(m for m in sent if m[0] == "admin@example.com")
+    user_mail = next(m for m in sent if m[0] == "ravi@example.com")
     assert "NOT supported yet" in admin_mail[2] and "FreeMoneyBroker" in admin_mail[2]
     to, subject, text, reply_to = user_mail
     (cid,), = _rows(store, "SELECT id FROM contact_requests")
@@ -175,11 +179,11 @@ def test_follow_up_for_a_supported_broker_gives_setup_steps(store, monkeypatch):
     sent = []
     monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("PUBLIC_URL", "https://verquoai.com/")
-    monkeypatch.setattr(webapp, "send_mail", lambda to, subject, text, reply_to=None: sent.append(text) or True)
+    monkeypatch.setattr(webapp, "send_mail", lambda to, subject, text, reply_to=None: sent.append((to, text)) or True)
     # a spoofed Host header must not change the links we email
     _call("POST", "/contact", body={"name": "A", "email": "a@b.co", "phone": "9876543210", **CHOICES},
           headers={"Host": "evil.example"})
-    text = sent[1]
+    text = next(t for to, t in sent if to == "a@b.co")
     assert "Redirect URL:  https://verquoai.com/api/auth/callback" in text
     assert "Please do NOT send the API\n     secret by email" in text
     assert "Every order is checked against risk limits" in text      # trading access follow-up

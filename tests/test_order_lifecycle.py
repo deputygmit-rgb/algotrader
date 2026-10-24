@@ -312,6 +312,7 @@ def _live_service(tmp_path, execute, preflight=False):
     return svc
 
 
+@pytest.mark.usefixtures("mid_session")      # entries are refused after 15:15
 def test_every_live_signal_gets_a_lifecycle_id_and_a_signal_event(tmp_path):
     seen = []
 
@@ -327,6 +328,7 @@ def test_every_live_signal_gets_a_lifecycle_id_and_a_signal_event(tmp_path):
     assert len(lid) == 12 and svc.get_signal_lifecycles()[0]["events"][0]["stage"] == "SIGNAL"
 
 
+@pytest.mark.usefixtures("mid_session")      # entries are refused after 15:15
 def test_the_optional_preflight_blocks_a_live_order(tmp_path):
     execute = AsyncMock(return_value="O1")
     svc = _live_service(tmp_path, execute, preflight=True)

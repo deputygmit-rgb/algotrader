@@ -1596,10 +1596,13 @@ class TradingService:
             self._ws_clients.remove(ws)
 
     async def _broadcast_ws(self, data: dict[str, Any]) -> None:
+        # serialised once, anything unusual (dates, objects) as text: a value that json
+        # cannot encode used to make every send fail, and each client was then dropped as dead
+        safe = json.loads(json.dumps(data, default=str))
         dead: list[Any] = []
         for ws in self._ws_clients:
             try:
-                await ws.send_json(data)
+                await ws.send_json(safe)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -4946,7 +4949,8 @@ class TradingService:
     # ────────────────────────────────────────────────────────────
 
     def get_replay_status(self) -> dict[str, Any]:
-        return {k: v for k, v in self._replay_state.items() if k != "running"}
+        state = {k: v for k, v in self._replay_state.items() if k != "running"}
+        return json.loads(json.dumps(state, default=str))      # objects / dates as text
 
     async def start_replay(
         self,
@@ -5100,7 +5104,8 @@ class TradingService:
                 engine.close_all_positions({tradingsymbol: last_price}, timestamp=last_ts)
                 self._replay_state["status"] = "completed"
 
-            report = engine.get_performance_report()
+            # the report carries the strategy object itself: its name only
+            report = {k: v for k, v in engine.get_performance_report().items() if k != "strategy"}
             result_dict: dict[str, Any] = {
                 "strategy_name": getattr(strategy, "name", str(strategy)),
                 "tradingsymbol": tradingsymbol,

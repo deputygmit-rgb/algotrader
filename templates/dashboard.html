@@ -2005,9 +2005,9 @@
 
         <!-- Market Replay Tab -->
         <div id="tab-replay" class="tab-content">
-            <div class="grid grid-2" style="margin-bottom:16px">
-                <div class="card">
-                    <div class="card-title">Replay Market</div>
+            <div class="card" style="margin-bottom:16px">
+                <div class="card-title">Replay Market</div>
+                <div class="rp-form">
                     <div class="form-group">
                         <label>Strategy</label>
                         <select id="replay-strategy">
@@ -2021,7 +2021,7 @@
                     <div class="form-group">
                         <label>Symbol</label>
                         <div style="display:flex;gap:6px">
-                            <input id="replay-symbol" type="text" placeholder="e.g. RELIANCE" value="RELIANCE" style="flex:1">
+                            <input id="replay-symbol" type="text" placeholder="e.g. RELIANCE" value="RELIANCE" style="flex:1;min-width:0">
                             <select id="replay-exchange" style="width:80px">
                                 <option value="NSE" selected>NSE</option>
                                 <option value="BSE">BSE</option>
@@ -2029,47 +2029,36 @@
                             </select>
                         </div>
                     </div>
-                    <div class="grid grid-2">
-                        <div class="form-group">
-                            <label>Interval</label>
-                            <select id="replay-interval">
-                                <option value="5minute" selected>5 min</option>
-                                <option value="15minute">15 min</option>
-                                <option value="30minute">30 min</option>
-                                <option value="60minute">1 hour</option>
-                                <option value="day">Daily</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Duration (days)</label>
-                            <input id="replay-days" type="number" value="30" min="1" max="365">
-                        </div>
+                    <div class="form-group">
+                        <label>Interval</label>
+                        <select id="replay-interval">
+                            <option value="5minute" selected>5 min</option>
+                            <option value="15minute">15 min</option>
+                            <option value="30minute">30 min</option>
+                            <option value="60minute">1 hour</option>
+                            <option value="day">Daily</option>
+                        </select>
                     </div>
-                    <div class="grid grid-2">
-                        <div class="form-group">
-                            <label>Initial Capital</label>
-                            <input id="replay-capital" type="number" value="100000" min="1000">
-                        </div>
-                        <div class="form-group">
-                            <label>Speed (bars/sec)</label>
-                            <input id="replay-speed" type="number" value="10" min="0.5" max="100" step="0.5">
-                        </div>
+                    <div class="form-group">
+                        <label>Duration (days)</label>
+                        <input id="replay-days" type="number" value="30" min="1" max="365">
                     </div>
-                    <div style="display:flex;gap:8px;margin-top:8px">
-                        <button id="btn-start-replay" class="btn btn-primary" onclick="startReplay()">▶ Start Replay</button>
-                        <button id="btn-stop-replay" class="btn btn-outline" onclick="stopReplay()" disabled>■ Stop</button>
-                        <button class="btn btn-outline" onclick="importHistoricalData('replay')" title="Fetch &amp; cache historical candles from your broker (incremental)">⬇ Import Historical Data</button>
+                    <div class="form-group">
+                        <label>Initial Capital</label>
+                        <input id="replay-capital" type="number" value="100000" min="1000">
                     </div>
-                    <div id="replay-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
-                    <div id="replay-status-line" style="display:none;margin-top:12px;color:var(--accent-green);font-size:13px"></div>
-                </div>
-
-                <div class="card">
-                    <div class="card-title">Replay Progress</div>
-                    <div id="replay-summary">
-                        <div class="empty-state"><p>Start a replay to see live progress</p></div>
+                    <div class="form-group">
+                        <label>Speed (bars/sec)</label>
+                        <input id="replay-speed" type="number" value="10" min="0.5" max="100" step="0.5">
                     </div>
                 </div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                    <button id="btn-start-replay" class="btn btn-primary" onclick="startReplay()">▶ Start Replay</button>
+                    <button id="btn-stop-replay" class="btn btn-outline" onclick="stopReplay()" disabled>■ Stop</button>
+                    <button class="btn btn-outline" onclick="importHistoricalData('replay')" title="Fetch &amp; cache historical candles from your broker (incremental)">⬇ Import Historical Data</button>
+                </div>
+                <div id="replay-import-status" style="display:none;margin-top:8px;font-size:12px"></div>
+                <div id="replay-status-line" style="display:none;margin-top:12px;color:var(--accent-green);font-size:13px"></div>
             </div>
 
             <div id="replay-results-section" style="display:none">
@@ -2088,6 +2077,7 @@
                         <div class="rp-bar"><i id="rp-fill"></i></div>
                         <span id="rp-progress-text">0 / 0</span>
                     </div>
+                    <div id="replay-summary" class="rp-summary" hidden></div>
                     <div class="rp-controls">
                         <button id="rp-pause" class="btn btn-outline btn-sm" type="button" onclick="toggleReplayPause()">❚❚ Pause</button>
                         <label>Speed
