@@ -3108,6 +3108,11 @@ class TradingService:
     # ────────────────────────────────────────────────────────────
 
     def save_fno_custom_strategy(self, config: dict[str, Any]) -> dict[str, Any]:
+        from src.strategy.custom_builder import custom_config_problem
+
+        problem = custom_config_problem(config, rules=("legs",), max_items=8)
+        if problem:
+            return {"error": problem}
         cfg = FnOStrategyConfig.from_dict(config)
         if not cfg.name:
             return {"error": "Strategy name is required"}
@@ -4974,11 +4979,24 @@ class TradingService:
         if isinstance(strategy, dict):  # error dict
             return strategy
 
-        rows = await self._resolve_ohlcv_rows(instrument_token, interval, days=days)
+        # strategies that need earlier sessions (the Day-Trade setups: ATR, previous-day
+        # levels and each slot's normal volume over 15 sessions) get them loaded before the
+        # window, and the replay starts at the window - a short replay used to fire nothing
+        warmup_days = int(getattr(strategy, "history_days", 0) or 0)
+        if isinstance(strategy, DayTradeSetupsStrategy) and interval != "5minute":
+            return {"error": "Day-Trade Setups replay on 5-minute bars - choose the 5 min interval."}
+        rows = await self._resolve_ohlcv_rows(instrument_token, interval, days=days + warmup_days)
         if not rows:
             return {"error": "No historical data available for replay. Import historical data first."}
 
         df = pd.DataFrame(rows).rename(columns={"ts": "timestamp"})
+        start_at = 1
+        if warmup_days:
+            stamps = pd.to_datetime(df["timestamp"])
+            cutoff = stamps.max().normalize() - pd.Timedelta(days=days - 1)
+            start_at = max(1, int((stamps < cutoff).sum()))
+            if start_at >= len(df) - 1:
+                return {"error": "Not enough history before the replay window. Import historical data first."}
         engine = PaperTradingEngine(strategy=strategy, initial_capital=capital)
 
         self._replay_state = {
@@ -4987,14 +5005,14 @@ class TradingService:
             "strategy": strategy_name,
             "tradingsymbol": tradingsymbol,
             "interval": interval,
-            "total": len(df),
+            "total": len(df) - start_at + 1,
             "progress": 0,
         }
         self._replay_task = asyncio.create_task(
-            self._replay_loop(df, engine, instrument_token, tradingsymbol, exchange, interval, speed)
+            self._replay_loop(df, engine, instrument_token, tradingsymbol, exchange, interval, speed, start_at)
         )
         self._replay_task.add_done_callback(self._task_exception_handler)
-        return {"success": True, "total_bars": len(df)}
+        return {"success": True, "total_bars": len(df) - start_at + 1, "warmup_bars": start_at - 1}
 
     def stop_replay(self) -> dict[str, Any]:
         if not self._replay_state.get("running"):
@@ -5026,18 +5044,22 @@ class TradingService:
         exchange: str,
         timeframe: str,
         speed: float,
+        start_at: int = 1,
     ) -> None:
+        """Bars before ``start_at`` are warm-up history: the strategy sees them, the
+        replay (ticks, orders, progress) starts at ``start_at``."""
         strategy = engine.strategy
         # Tell the strategy the replay interval so it scales lookbacks to it.
         if hasattr(strategy, "set_timeframe"):
             strategy.set_timeframe(timeframe)
         df = df.reset_index(drop=True)
         total = len(df)
+        shown = total - start_at + 1          # bars the viewer sees replayed
         self._replay_state.update(status="running", speed=speed, paused=False)
         has = {c: c in df.columns for c in ("open", "high", "low", "volume")}
 
         try:
-            for i in range(1, total):
+            for i in range(start_at, total):
                 while self._replay_state.get("paused") and self._replay_state.get("running"):
                     await asyncio.sleep(0.2)
                 if not self._replay_state.get("running"):
@@ -5070,7 +5092,7 @@ class TradingService:
                                      "price": round(float(getattr(filled, "fill_price", price)), 2)}
 
                 engine.update_prices({tradingsymbol: price})
-                self._replay_state["progress"] = i
+                self._replay_state["progress"] = i - start_at + 1
                 pos = engine._positions.get(tradingsymbol)
 
                 await self._broadcast_ws({
@@ -5090,8 +5112,8 @@ class TradingService:
                         "pnl": round(engine.get_pnl(), 2),
                         "trades": len(engine._closed),
                         "portfolio_value": engine.get_portfolio_value(),
-                        "progress": i,
-                        "total": total,
+                        "progress": i - start_at + 1,
+                        "total": shown,
                         "speed": self._replay_state.get("speed"),
                     },
                 })

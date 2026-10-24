@@ -39,3 +39,12 @@ def test_an_unusual_value_never_drops_a_live_connection():
     svc._ws_clients = [ws]
     asyncio.run(svc._broadcast_ws({"type": "replay_complete", "data": {"strategy": object()}}))
     assert svc._ws_clients == [ws] and '"replay_complete"' in ws.sent[0]
+
+
+def test_day_trade_replay_requires_5_minute_bars():
+    import asyncio
+    from src.strategy.day_trade_setups import DayTradeSetupsStrategy
+    svc = _svc(running=False)
+    svc._resolve_strategy = lambda name, params: DayTradeSetupsStrategy()
+    r = asyncio.run(svc.start_replay("day_trade_setups", 1, "INFY", interval="day", days=30))
+    assert "5-minute" in r["error"]

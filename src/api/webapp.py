@@ -21,7 +21,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Optional
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -37,9 +37,10 @@ from src.auth.access import AGENTIC, LEVEL_LABELS, VIEW, AccessDenied
 from src.api.day_trade import DayTradeTracker, completed_session_bars
 from src.api.market_data import build_account_summary
 from src.api import site_facts
-from src.api.request_limiter import api_limiter
+from src.api.request_limiter import RequestLimiter, api_limiter
 from src.utils.memory import run_hygiene
 from src.analysis.efficacy import run_rebuilder
+from src.api.input_guard import InputGuard
 from src.api.market_recorder import run_market_recorder
 from src.utils.watchdog import run_watchdog, time_request
 from src.api.response_cache import shared_json
@@ -47,6 +48,7 @@ from src.api.service import TradingService, TradingServiceManager
 from src.auth.otp_auth import SESSION_EXPIRY_SECONDS, STEP_UP_PURPOSE, otp_auth, rate_limit_subject
 from src.auth.user_config import UserConfigService
 from src.metrics.store import device_of, metrics
+from src.notify import telegram
 from src.utils.mailer import mail_guard, send_mail
 from src.api.admin import is_admin_session, router as admin_router
 from src.demo.sessions import (
@@ -167,7 +169,8 @@ PUBLIC_PATHS = {"/", "/login", "/demo/start", "/auth/send-otp", "/auth/verify-ot
                 "/robots.txt", "/sitemap.xml",
                 # installable app: manifest, service worker, offline screen, Android app link
                 "/manifest.webmanifest", "/sw.js", "/offline", "/.well-known/assetlinks.json", "/privacy",
-                "/about", "/disclaimer", "/disclosures", "/favicon.ico"}
+                "/about", "/disclaimer", "/disclosures", "/favicon.ico",
+                "/telegram/join"}       # the opt-in link in the invitation email (signed per request)
 # the only pages search engines may index; everything else is sent with noindex
 INDEXABLE_PATHS = {"/", "/robots.txt", "/sitemap.xml", "/privacy", "/about", "/disclaimer", "/disclosures"}
 
@@ -407,7 +410,9 @@ def _apply_security_headers(response, request: Request):
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # a route may ask for stricter (the Telegram confirm page: its URL carries a token)
+    if response.headers.get("Referrer-Policy") != "no-referrer":
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     if _is_secure_request(request):
@@ -565,6 +570,7 @@ class HeadAsGet:
         await self.app({**scope, "method": "GET"}, receive, headers_only)
 
 
+app.add_middleware(InputGuard)       # size, JSON shape and shared fields on every API route
 app.add_middleware(HeadAsGet)
 
 
@@ -672,32 +678,82 @@ def telegram_channel_url() -> str:
 FOLLOWUP_DAYS = 7
 
 
-def _access_followup(contact_id: int, channel: str) -> str:
-    """The update sent seven days after an access request (fixed text, no visitor input)."""
+# What the channel carries, said the same way in the invitation and on the confirm page.
+CHANNEL_CONTENTS = (
+    "Day Trade setups (5-minute bars) and Swing setups (1-hour bars), posted as each one\n"
+    "    triggers, with the reason it triggered and its plan (entry, stop, two targets)",
+    "With every setup: Money Flow's top 5 long and top 5 short stocks, each with its\n"
+    "    futures open-interest change and build-up",
+)
+
+
+def _optin_token(contact_id: int) -> str:
+    """Signs the confirm link, so it works only for the request it was emailed for."""
+    return hmac.new(otp_auth._secret.encode(), f"telegram-optin:{contact_id}".encode(),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def _optin_url(contact_id: int) -> str:
+    return f"{_public_url()}/telegram/join?c={contact_id}&t={_optin_token(contact_id)}"
+
+
+def _access_followup(contact_id: int) -> str:
+    """The one-time invitation, seven days after an access request (fixed text, no visitor input).
+    It describes the channel; the invite link itself is sent only after they confirm."""
+    contents = "\n".join(f"  - {line}" for line in CHANNEL_CONTENTS)
     return (
         "Hello,\n\n"
         f"An update on your VerquoAI access request #{contact_id}.\n\n"
-        "We're completing broker compliance for account access. Until then, follow the\n"
-        "Money Flow tracker and the Day Trade and Swing setups on our Telegram channel:\n"
-        f"  {channel}\n\n"
-        "The channel is private and read-only. We will write again as soon as account\n"
-        "access is open for you.\n\n"
+        "We're completing broker compliance for account access. Until then, you can follow\n"
+        "our analytics on a private Telegram channel. What it carries:\n\n"
+        f"{contents}\n\n"
+        "How it works:\n"
+        "  - Private and read-only: only VerquoAI posts; members cannot message or see each other.\n"
+        "  - Posts cannot be forwarded or saved.\n"
+        "  - Posts come during market hours (9:15-15:30 IST) on trading days only.\n"
+        "  - Leave at any time from Telegram.\n\n"
+        "Would you like to join? Confirm here and we'll email you the invite link:\n"
+        f"  {_optin_url(contact_id)}\n\n"
+        "If you'd rather not, ignore this email - we won't send it again.\n\n"
         f"Please quote #{contact_id} in any reply.\n\n"
-        "Important: trading involves substantial risk, including possible loss of capital.\n"
-        "VerquoAI provides analytical and workflow tools, not investment advice.\n\n"
+        "Important: the setups are rule-based analytics for information only, not\n"
+        "recommendations or investment advice. Trading involves substantial risk, including\n"
+        "possible loss of capital.\n\n"
         "- The VerquoAI team\n"
     )
 
 
+def _channel_link_email(contact_id: int, channel: str) -> str:
+    return (
+        "Hello,\n\n"
+        f"Thanks for confirming (request #{contact_id}). Here is your invite link to the private\n"
+        "VerquoAI Telegram channel:\n"
+        f"  {channel}\n\n"
+        "Please keep it to yourself - the link is for you only.\n\n"
+        "Setups are posted during market hours on trading days. You can leave the channel at\n"
+        "any time from Telegram.\n\n"
+        "Important: the setups are rule-based analytics for information only, not\n"
+        "recommendations or investment advice. Trading involves substantial risk, including\n"
+        "possible loss of capital.\n\n"
+        "- The VerquoAI team\n"
+    )
+
+
+def channel_ready() -> bool:
+    """Invitations go out only once the channel is posting and has an invite link, and the
+    signing secret is fixed (a random one would void every confirm link on restart)."""
+    return bool(telegram_channel_url()) and telegram.enabled() and bool(os.environ.get("SESSION_SECRET"))
+
+
 async def send_due_followups(now_days: int = FOLLOWUP_DAYS) -> int:
-    """Email each request that is a week old (once). Waits while no channel link is set."""
-    channel = telegram_channel_url()
-    if not channel:
+    """Invite each request that is a week old (once). Waits until the channel is ready."""
+    if not channel_ready():
         return 0
     sent = 0
     for row in await asyncio.to_thread(metrics.due_followups, now_days):
-        if await asyncio.to_thread(send_mail, row["email"], f"Your VerquoAI access request #{row['id']} - an update",
-                                   _access_followup(row["id"], channel)):
+        if await asyncio.to_thread(send_mail, row["email"],
+                                   f"Your VerquoAI access request #{row['id']} - join our private Telegram channel?",
+                                   _access_followup(row["id"])):
             await asyncio.to_thread(metrics.mark_followup, row["id"])
             sent += 1
     if sent:
@@ -705,8 +761,84 @@ async def send_due_followups(now_days: int = FOLLOWUP_DAYS) -> int:
     return sent
 
 
+OPTIN_VALID_DAYS = 30
+_OPTIN_ID = re.compile(r"[1-9]\d{0,11}")
+_OPTIN_TOKEN = re.compile(r"[0-9a-f]{32}")
+optin_limiter = RequestLimiter(rate=0.2, burst=10)      # per IP: a person clicks once or twice
+
+
+def _optin_request(contact_id: str, token: str) -> Optional[dict[str, Any]]:
+    """The request a confirm link belongs to, if the link is genuine and still open:
+    signed for this request, invited, not rejected, and invited within OPTIN_VALID_DAYS."""
+    if not _OPTIN_ID.fullmatch(contact_id or "") or not _OPTIN_TOKEN.fullmatch(token or "") or \
+            not hmac.compare_digest(_optin_token(int(contact_id)), token):
+        return None
+    row = metrics.get_contact(int(contact_id))
+    if not row or row["status"] == "rejected" or not row["followup_at"]:
+        return None
+    try:
+        invited = datetime.fromisoformat(row["followup_at"])
+    except ValueError:
+        return None
+    if datetime.now(invited.tzinfo) - invited > timedelta(days=OPTIN_VALID_DAYS):
+        return None
+    return row
+
+
+def _join_page(request: Request, state: str, status_code: int = 200, **extra: Any) -> HTMLResponse:
+    response = templates.TemplateResponse(request, "telegram_join.html",
+                                          {"request": request, "state": state, "contents": CHANNEL_CONTENTS, **extra},
+                                          status_code=status_code)
+    # the URL carries the signed token: never cached, never sent on as a referrer
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _optin_limited(request: Request) -> bool:
+    return not optin_limiter.allow(_client_ip(request))
+
+
+@app.get("/telegram/join", response_class=HTMLResponse)
+async def telegram_join_page(request: Request, c: str = "", t: str = "") -> HTMLResponse:
+    """What the confirm link opens. Nothing changes until the button is pressed: mail
+    scanners open links in emails on their own, and that must not opt anyone in."""
+    if _optin_limited(request):
+        return _join_page(request, "busy", 429)
+    row = await asyncio.to_thread(_optin_request, c, t)
+    if not row:
+        return _join_page(request, "invalid", 404)
+    if row["link_sent_at"]:
+        return _join_page(request, "already")
+    return _join_page(request, "ask", contact_id=row["id"], token=t)
+
+
+@app.post("/telegram/join", response_class=HTMLResponse)
+async def telegram_join_confirm(request: Request) -> HTMLResponse:
+    """Confirmed: record the opt-in and email the invite link to the address on the request."""
+    if _optin_limited(request):
+        return _join_page(request, "busy", 429)
+    form = dict(parse_qsl((await request.body()).decode("utf-8", "replace")))   # <= 1 KB (input_guard)
+    row = await asyncio.to_thread(_optin_request, form.get("c", ""), form.get("t", ""))
+    if not row:
+        return _join_page(request, "invalid", 404)
+    channel = telegram_channel_url()
+    if not channel:
+        return _join_page(request, "unavailable", 503)
+    await asyncio.to_thread(metrics.mark_optin, row["id"])
+    if not await asyncio.to_thread(metrics.claim_link_sent, row["id"]):
+        return _join_page(request, "already")              # sent before, or by a simultaneous click
+    # to the address on the request only: the link is never shown on the page
+    if not await asyncio.to_thread(send_mail, row["email"], f"Your VerquoAI Telegram invite (request #{row['id']})",
+                                   _channel_link_email(row["id"], channel)):
+        await asyncio.to_thread(metrics.release_link_sent, row["id"])
+        return _join_page(request, "unavailable", 503)
+    logger.info("telegram_optin_link_sent", contact=row["id"])
+    return _join_page(request, "done")
+
+
 async def _run_followups() -> None:
-    """Hourly: the 7-day update emails."""
+    """Hourly: the 7-day invitations to the Telegram channel."""
     await asyncio.sleep(60)
     while True:
         try:
@@ -836,7 +968,7 @@ async def contact(request: Request) -> Any:
     platform = _clean(body.get("platform"), 60)
     if not name:
         return JSONResponse({"success": False, "message": "Please tell us your name."}, status_code=400)
-    if not _EMAIL.match(email):
+    if not _EMAIL.fullmatch(email):
         return JSONResponse({"success": False, "message": "Please enter a valid email address."}, status_code=400)
     if not _valid_phone(phone):
         return JSONResponse({"success": False, "message": PHONE_HINT}, status_code=400)

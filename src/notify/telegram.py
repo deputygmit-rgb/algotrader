@@ -63,6 +63,9 @@ def config_problem() -> str:
         return "TELEGRAM_CHAT_ID holds a link: it must be the channel's numeric id (-100...)"
     if not CHAT_RE.fullmatch(chat):
         return "TELEGRAM_CHAT_ID is not a channel id (-100... number)"
+    if chat.isdigit():
+        # a positive id is one person's chat with the bot: posts would go to them, not a channel
+        return "TELEGRAM_CHAT_ID is a person's chat, not the channel: the channel's id starts with -100"
     return ""
 
 
@@ -243,3 +246,79 @@ async def send(text: str) -> bool:
 
 
 publisher = TelegramPublisher()
+
+
+# ── the pinned welcome post: the first thing a new member sees ──
+# (a channel cannot greet each member: bots cannot message people first, and a
+# "welcome <name>" post would show members to each other)
+WELCOME = (
+    "<b>Welcome to VerquoAI</b>\n"
+    "\n"
+    "What is posted here:\n"
+    "• <b>Day Trade</b> setups on 5-minute bars and <b>Swing</b> setups on 1-hour bars, as each one "
+    "triggers - with why it triggered and its plan (entry, stop, two targets)\n"
+    "• With every setup, <b>Money Flow</b>'s top 5 long and top 5 short stocks, each with its futures "
+    "open-interest change and build-up\n"
+    "\n"
+    "How to read a post:\n"
+    "• <i>Why</i> - the condition that triggered it, on a closed bar\n"
+    "• <i>quality</i> - 0-100 score of the setup; <i>volume</i> - versus the recent average\n"
+    "• <i>NIFTY options-OI</i> - the index options' bias and how it adjusted the score\n"
+    "• <i>Plan (est.)</i> - levels at the time of the signal; prices move on\n"
+    "\n"
+    "Posts come during market hours (9:15-15:30 IST) on trading days. The channel is private and "
+    "read-only, and posts cannot be forwarded or saved.\n"
+    "\n"
+    "<b>VerquoAI will never message you privately, ask for money or payments, or ask for your "
+    "broker login or OTP.</b> Anyone who does is not us.\n"
+    "\n"
+    f"<i>{html.escape(DISCLAIMER)}</i>"
+)
+WELCOME_FILE = os.path.join(SENT_DIR, "welcome.json")
+
+
+async def _call(method: str, payload: dict[str, Any]) -> Optional[Any]:
+    """One Bot API call to the channel; the result, or None (logged without the token)."""
+    token, chat = _config()
+    if not token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{API}/bot{token}/{method}", json={"chat_id": chat, **payload})
+        data = r.json() if r.content else {}
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("telegram_call_failed", method=method, error=type(e).__name__)
+        return None
+    if not data.get("ok"):
+        description = str(data.get("description", ""))
+        if "message is not modified" not in description:         # an edit to identical text: expected
+            logger.warning("telegram_call_failed", method=method, description=description[:120])
+        return None
+    return data["result"]
+
+
+async def post_welcome() -> str:
+    """Post and pin the welcome message, or update the one already pinned.
+    Returns "posted", "updated", "unchanged" or "" on failure."""
+    try:
+        with open(WELCOME_FILE, encoding="utf-8") as f:
+            message_id = int(json.load(f)["message_id"])
+    except (OSError, ValueError, KeyError, TypeError):
+        message_id = 0
+    if message_id:
+        result = await _call("editMessageText", {"message_id": message_id, "text": WELCOME, "parse_mode": "HTML",
+                                                 "disable_web_page_preview": True})
+        if result is not None:
+            return "updated"
+        # Telegram refuses an edit that changes nothing; any other refusal (deleted post) posts anew
+        if await _call("pinChatMessage", {"message_id": message_id, "disable_notification": True}) is not None:
+            return "unchanged"
+    sent = await _call("sendMessage", {"text": WELCOME, "parse_mode": "HTML", "disable_web_page_preview": True,
+                                       "protect_content": True, "disable_notification": True})
+    if not sent:
+        return ""
+    await _call("pinChatMessage", {"message_id": sent["message_id"], "disable_notification": True})
+    os.makedirs(SENT_DIR, exist_ok=True)
+    with open(WELCOME_FILE, "w", encoding="utf-8") as f:
+        json.dump({"message_id": sent["message_id"]}, f)
+    return "posted"

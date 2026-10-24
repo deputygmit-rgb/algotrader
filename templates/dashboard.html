@@ -2010,7 +2010,8 @@
                 <div class="rp-form">
                     <div class="form-group">
                         <label>Strategy</label>
-                        <select id="replay-strategy">
+                        <select id="replay-strategy" onchange="replayStrategyChanged()">
+                            <option value="day_trade_setups">Day-Trade Setups (5-min: ORB / PDH-PDL / VWAP / squeeze)</option>
                             <option value="ema_crossover">EMA Crossover</option>
                             <option value="vwap_breakout">VWAP Breakout</option>
                             <option value="mean_reversion">Mean Reversion</option>

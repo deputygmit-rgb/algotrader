@@ -568,17 +568,17 @@ function updateStrategiesList(strategies) {
     el.innerHTML = strategies.map(s => `
         <div class="strategy-card">
             <div class="strategy-info">
-                <h4>${s.name}</h4>
-                <span class="type-tag type-${s.type}">${s.type}</span>
+                <h4>${escHtml(s.name)}</h4>
+                <span class="type-tag type-${escHtml(s.type)}">${escHtml(s.type)}</span>
                 <span style="margin-left:8px;color:${s.is_active ? 'var(--accent-green)' : 'var(--accent-red)'}">
                     ${s.is_active ? 'Active' : 'Paused'}
                 </span>
             </div>
             <div class="strategy-actions">
-                <button class="btn btn-sm btn-outline" ${s.is_active ? '' : 'data-requires="agentic"'} onclick="toggleStrategy('${s.name}')">
+                <button class="btn btn-sm btn-outline" ${s.is_active ? '' : 'data-requires="agentic"'} data-name="${escHtml(s.name)}" onclick="toggleStrategy(this.dataset.name)">
                     ${s.is_active ? 'Pause' : 'Resume'}
                 </button>
-                <button class="btn btn-sm btn-danger" onclick="removeStrategy('${s.name}')">Remove</button>
+                <button class="btn btn-sm btn-danger" data-name="${escHtml(s.name)}" onclick="removeStrategy(this.dataset.name)">Remove</button>
             </div>
         </div>
     `).join('');
@@ -806,7 +806,7 @@ function updateSelectedDisplay() {
         return;
     }
     container.innerHTML = Array.from(selectedInstruments.entries()).map(([token, name]) =>
-        `<span class="inst-tag">${name} <span class="remove-tag" onclick="removeInstrument(${token})">&times;</span></span>`
+        `<span class="inst-tag">${escHtml(name)} <span class="remove-tag" onclick="removeInstrument(${Number(token)})">&times;</span></span>`
     ).join('');
 }
 
@@ -3865,6 +3865,16 @@ function drawEquityCurve(data) {
 
 let replayEquityData = [];
 
+// Day-Trade setups trade 5-minute bars only: the interval follows the strategy
+function replayStrategyChanged() {
+    const dayTrade = document.getElementById('replay-strategy').value === 'day_trade_setups';
+    const interval = document.getElementById('replay-interval');
+    if (dayTrade) interval.value = '5minute';
+    interval.disabled = dayTrade;
+    interval.title = dayTrade ? 'Day-Trade setups run on 5-minute bars' : '';
+}
+document.addEventListener('DOMContentLoaded', () => { if (document.getElementById('replay-strategy')) replayStrategyChanged(); });
+
 async function startReplay() {
     const symbol = document.getElementById('replay-symbol').value.trim().toUpperCase();
     if (!symbol) {
@@ -4366,12 +4376,12 @@ async function loadCustomStrategiesList() {
         container.innerHTML = strategies.map(s => `
             <div class="custom-strat-item">
                 <div>
-                    <div class="cs-name">${s.name}</div>
-                    <div class="cs-meta">${s.description || ''} &bull; ${s.entry_rules} entry rules, ${s.exit_rules} exit rules</div>
+                    <div class="cs-name">${escHtml(s.name)}</div>
+                    <div class="cs-meta">${escHtml(s.description || '')} &bull; ${Number(s.entry_rules) || 0} entry rules, ${Number(s.exit_rules) || 0} exit rules</div>
                 </div>
                 <div class="cs-actions">
-                    <button class="btn btn-outline btn-sm" onclick="paperTradeCustom('${s.name}')">Test</button>
-                    <button class="btn btn-outline btn-sm" style="border-color:#ff5252;color:#ff5252" onclick="deleteCustomStrategy('${s.name}')">Delete</button>
+                    <button class="btn btn-outline btn-sm" data-name="${escHtml(s.name)}" onclick="paperTradeCustom(this.dataset.name)">Test</button>
+                    <button class="btn btn-outline btn-sm" style="border-color:#ff5252;color:#ff5252" data-name="${escHtml(s.name)}" onclick="deleteCustomStrategy(this.dataset.name)">Delete</button>
                 </div>
             </div>
         `).join('');
@@ -4384,7 +4394,7 @@ async function loadCustomStrategiesDropdowns() {
     try {
         const strategies = await API.get('/api/strategy-builder/list');
         const html = (strategies || []).map(s =>
-            `<option value="${s.name}">${s.name}</option>`
+            `<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`
         ).join('');
         // Paper trading dropdown
         const paperGroup = document.getElementById('paper-custom-strategies');
@@ -4634,7 +4644,7 @@ async function loadFnOTemplates() {
         if (sel && data.templates) {
             sel.innerHTML = '<option value="">— Select a template —</option>' +
                 data.templates.map(t =>
-                    `<option value="${t.name}">${t.description}</option>`
+                    `<option value="${escHtml(t.name)}">${escHtml(t.description)}</option>`
                 ).join('');
         }
     } catch (e) {}
@@ -4668,13 +4678,13 @@ async function loadFnOCustomStrategiesList() {
         container.innerHTML = strategies.map(s => `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:#0d1821;border-radius:6px;margin-bottom:6px;border:1px solid #2a3a4a">
                 <div>
-                    <strong style="color:#ff9100">${s.name}</strong>
-                    <span style="color:#667788;font-size:11px;margin-left:8px">${s.underlying} · ${s.strategy_type} · ${(s.legs||[]).length} legs</span>
-                    <div style="font-size:11px;color:#8899aa;margin-top:2px">${s.description || ''}</div>
+                    <strong style="color:#ff9100">${escHtml(s.name)}</strong>
+                    <span style="color:#667788;font-size:11px;margin-left:8px">${escHtml(s.underlying)} · ${escHtml(s.strategy_type)} · ${(s.legs||[]).length} legs</span>
+                    <div style="font-size:11px;color:#8899aa;margin-top:2px">${escHtml(s.description || '')}</div>
                 </div>
                 <div style="display:flex;gap:6px">
-                    <button class="btn btn-outline btn-sm" onclick="loadFnOBuilderStrategy('${s.name}')" style="font-size:10px;padding:2px 8px">Edit</button>
-                    <button class="btn btn-outline btn-sm" onclick="deleteFnOCustomStrategy('${s.name}')" style="font-size:10px;padding:2px 8px;color:#ff5252;border-color:#ff5252">Delete</button>
+                    <button class="btn btn-outline btn-sm" data-name="${escHtml(s.name)}" onclick="loadFnOBuilderStrategy(this.dataset.name)" style="font-size:10px;padding:2px 8px">Edit</button>
+                    <button class="btn btn-outline btn-sm" data-name="${escHtml(s.name)}" onclick="deleteFnOCustomStrategy(this.dataset.name)" style="font-size:10px;padding:2px 8px;color:#ff5252;border-color:#ff5252">Delete</button>
                 </div>
             </div>
         `).join('');
@@ -4685,7 +4695,7 @@ async function loadFnOCustomStrategiesDropdowns() {
     try {
         const strategies = await API.get('/api/fno-builder/list');
         const html = (strategies || []).map(s =>
-            `<option value="fno_custom_${s.name}">⚙ ${s.name}</option>`
+            `<option value="fno_custom_${escHtml(s.name)}">⚙ ${escHtml(s.name)}</option>`
         ).join('');
         ['bt-fno-custom-strategies', 'paper-fno-custom-strategies'].forEach(id => {
             const el = document.getElementById(id);
@@ -6238,7 +6248,7 @@ async function viewJournalEntry(id) {
         // Notes / Tags
         html += '<div style="margin-top:12px">';
         html += `<div style="font-size:12px;color:#667788;margin-bottom:4px">Tags: ${(data.tags || []).join(', ') || 'none'}</div>`;
-        html += `<div style="font-size:12px;color:#667788">Notes: ${data.notes || 'none'}</div>`;
+        html += `<div style="font-size:12px;color:#667788">Notes: ${escHtml(data.notes || 'none')}</div>`;
         html += '</div>';
         html += '<div style="margin-top:12px;display:flex;gap:8px">';
         html += `<button class="btn btn-outline btn-sm" onclick="updateJournalReview('${data.trade_id || id}','reviewed')">Mark Reviewed</button>`;
@@ -6832,7 +6842,7 @@ function displayHealthReport(health, prefix) {
         // Notes
         let notesHtml = '';
         if (p.notes && p.notes.length > 0) {
-            notesHtml = '<div style="font-size:10px;color:' + vColor + ';margin-top:3px">' + p.notes[0] + '</div>';
+            notesHtml = '<div style="font-size:10px;color:' + vColor + ';margin-top:3px">' + escHtml(p.notes[0]) + '</div>';
         }
 
         pillarsHtml += '<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:10px;border-left:3px solid ' + vColor + '">' +

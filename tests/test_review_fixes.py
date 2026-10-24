@@ -246,3 +246,16 @@ def test_pages_answer_head_like_get():
     head, get = asyncio.run(go())
     assert head.status_code == get.status_code == 200 and head.content == b""
     assert head.headers.get("content-type") == get.headers.get("content-type")
+
+
+def test_bot_tokens_never_reach_the_logs():
+    import logging
+
+    from src.utils.logger import RedactSecrets, redact
+
+    token = "123456789:" + "A" * 35
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    assert token not in redact(url) and token not in str(redact({"event": url, "n": [url]}))
+    record = logging.LogRecord("httpx", logging.INFO, "", 0, "HTTP Request: POST %s", (url,), None)
+    RedactSecrets().filter(record)
+    assert token not in record.getMessage() and "[redacted]" in record.getMessage()

@@ -31,6 +31,7 @@ Example custom strategy config:
 from __future__ import annotations
 
 import json
+import re
 import os
 from datetime import datetime
 from typing import Any, Optional
@@ -61,6 +62,33 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 CUSTOM_STRATEGIES_FILE = "data/custom_strategies.json"
+
+# What a saved strategy may be: the name is shown in lists and passed back as an id, the
+# whole definition is stored per account (a size cap keeps one account from filling the disk)
+STRATEGY_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,39}")
+MAX_DESCRIPTION = 300
+MAX_RULES = 20
+MAX_CONFIG_BYTES = 20_000
+
+
+def custom_config_problem(config: Any, rules: tuple[str, ...] = (), max_items: int = MAX_RULES) -> str:
+    """Why a custom strategy definition cannot be saved ("" when it can)."""
+    if not isinstance(config, dict):
+        return "Invalid strategy definition"
+    name = str(config.get("name") or "").strip()
+    if not name:
+        return "Strategy name is required"
+    if not STRATEGY_NAME.fullmatch(name):
+        return "Strategy name: letters, digits, spaces, - and _ only (up to 40 characters)"
+    if len(str(config.get("description") or "")) > MAX_DESCRIPTION:
+        return f"Description: at most {MAX_DESCRIPTION} characters"
+    for key in rules:
+        items = config.get(key) or []
+        if not isinstance(items, list) or len(items) > max_items:
+            return f"{key.replace('_', ' ').capitalize()}: at most {max_items}"
+    if len(json.dumps(config, default=str)) > MAX_CONFIG_BYTES:
+        return "Strategy definition is too large"
+    return ""
 
 # ────────────────────────────────────────────────────────────────
 # Available indicator definitions for the builder UI
@@ -578,9 +606,10 @@ class CustomStrategyStore:
 
     def save_strategy(self, config: dict[str, Any]) -> dict[str, Any]:
         """Save or update a custom strategy config."""
+        problem = custom_config_problem(config, rules=("entry_rules", "exit_rules"))
+        if problem:
+            return {"error": problem}
         name = config.get("name", "")
-        if not name:
-            return {"error": "Strategy name is required"}
         if not config.get("entry_rules"):
             return {"error": "At least one entry rule is required"}
 

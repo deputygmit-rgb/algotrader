@@ -1,0 +1,67 @@
+{% from "_brand.html" import brand %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#05080c">
+    <meta name="robots" content="noindex">
+    <meta name="referrer" content="no-referrer">
+    <title>VerquoAI — Telegram channel</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #05080c; color: #d7e3ea;
+               font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+               padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+        main { width: 100%; max-width: 480px; }
+        h1 { font-size: 22px; margin: 28px 0 8px; }
+        p { color: #8aa0ad; margin: 0 0 16px; }
+        ul { margin: 0 0 20px; padding-left: 20px; color: #b6c6cf; }
+        li { margin-bottom: 8px; }
+        button { font: 700 13px/1 ui-monospace, monospace; letter-spacing: .08em; padding: 14px 22px; min-height: 44px;
+                 width: 100%; border: 0; border-radius: 6px; background: #19e6a1; color: #04110a; cursor: pointer; }
+        small { display: block; margin-top: 18px; color: #5d717d; }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/brand.css">
+</head>
+<body>
+<main>
+    {{ brand(tag="div", label="VerquoAI", size="20px") }}
+    {% if state == "ask" %}
+    <h1>Join our private Telegram channel?</h1>
+    <p>Request #{{ contact_id }}. What the channel carries:</p>
+    <ul>{% for line in contents %}<li>{{ line }}</li>{% endfor %}</ul>
+    <p>It is private and read-only: only VerquoAI posts, members can't message or see each other, and posts
+        can't be forwarded or saved. Posts come during market hours on trading days. You can leave at any time.</p>
+    <form method="post" action="/telegram/join">
+        <input type="hidden" name="c" value="{{ contact_id }}">
+        <input type="hidden" name="t" value="{{ token }}">
+        <button type="submit">YES, EMAIL ME THE INVITE LINK</button>
+    </form>
+    <small>We send the link to the email address on your request. Setups are rule-based analytics for
+        information only, not recommendations or investment advice. Trading involves substantial risk.</small>
+    {% elif state == "done" %}
+    <h1>Confirmed — check your email</h1>
+    <p>We've emailed the invite link to the address on your request. Please keep it to yourself.</p>
+    {% elif state == "already" %}
+    <h1>You've already confirmed</h1>
+    <p>The invite link was emailed to the address on your request. If you can't find it, reply to our
+        email quoting your request number.</p>
+    {% elif state == "unavailable" %}
+    <h1>Please try again later</h1>
+    <p>We couldn't send the invite link just now. Nothing was lost — open the link from our email again in a
+        little while.</p>
+    {% elif state == "busy" %}
+    <h1>Too many attempts</h1>
+    <p>Please wait a minute, then open the link from our email again.</p>
+    {% else %}
+    <h1>This link isn't valid</h1>
+    <p>It may be incomplete, or older than 30 days. Use the link exactly as it appears in our email, or reply
+        to it quoting your request number.</p>
+    {% endif %}
+</main>
+</body>
+</html>

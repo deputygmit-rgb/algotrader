@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import re
 import sys
 from typing import Any
 
@@ -14,6 +15,37 @@ from src.utils.event_log import SQLiteLogHandler
 
 LOG_MAX_BYTES = 20 * 1024 * 1024
 LOG_BACKUPS = 5
+
+# A Telegram bot token is part of every Bot API URL (api.telegram.org/bot<token>/...).
+_BOT_TOKEN = re.compile(r"\d{5,15}:[A-Za-z0-9_-]{30,60}")
+# HTTP clients log each request's full URL at INFO - for the Bot API that URL holds the token
+QUIET_LOGGERS = ("httpx", "httpcore")
+
+
+def redact(value: Any) -> Any:
+    if isinstance(value, str):
+        return _BOT_TOKEN.sub("[redacted]", value)
+    if isinstance(value, dict):
+        return {k: redact(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(redact(v) for v in value)
+    return value
+
+
+class RedactSecrets(logging.Filter):
+    """Masks bot tokens in any record, whichever library logged it (on every handler)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, dict):                 # structlog's event dict
+            record.msg = redact(record.msg)
+        else:
+            try:
+                message = record.getMessage()
+            except Exception:
+                return True
+            if _BOT_TOKEN.search(message):
+                record.msg, record.args = redact(message), ()
+        return True
 
 
 def setup_logging() -> None:
@@ -46,10 +78,12 @@ def setup_logging() -> None:
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
-    root_logger.addHandler(stdout_handler)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(event_db_handler)
+    for handler in (stdout_handler, file_handler, event_db_handler):
+        handler.addFilter(RedactSecrets())
+        root_logger.addHandler(handler)
     root_logger.setLevel(level)
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
 
     structlog.configure(
         processors=[

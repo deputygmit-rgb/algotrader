@@ -159,6 +159,8 @@ class MetricsStore:
             "access_level": "TEXT NOT NULL DEFAULT ''",
             "platform": "TEXT NOT NULL DEFAULT ''",
             "followup_at": "TEXT NOT NULL DEFAULT ''",     # the 7-day update email, when sent
+            "optin_at": "TEXT NOT NULL DEFAULT ''",        # confirmed they want the Telegram channel
+            "link_sent_at": "TEXT NOT NULL DEFAULT ''",    # the channel's invite link was emailed
         },
     }
 
@@ -312,7 +314,8 @@ class MetricsStore:
         try:
             rows = conn.execute(
                 """SELECT id, ts, name, email, phone, trading_id, message, source, emailed, status,
-                          access_level, platform FROM contact_requests ORDER BY id DESC LIMIT ?""", (limit,)).fetchall()
+                          access_level, platform, followup_at, optin_at, link_sent_at
+                   FROM contact_requests ORDER BY id DESC LIMIT ?""", (limit,)).fetchall()
         finally:
             conn.close()
         return [dict(r) for r in rows]
@@ -328,26 +331,65 @@ class MetricsStore:
         finally:
             conn.close()
 
-    def due_followups(self, days: int = 7, limit: int = 20) -> list[dict[str, Any]]:
-        """Requests at least ``days`` old with no update email yet (not approved / rejected)."""
+    def due_followups(self, days: int = 7, limit: int = 20,
+                      skip_statuses: tuple[str, ...] = ("approved", "rejected")) -> list[dict[str, Any]]:
+        """Requests at least ``days`` old with no update email yet, not in ``skip_statuses``."""
         cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat(timespec="seconds")
+        skip = [st for st in skip_statuses if st in CONTACT_STATUSES] or ["-"]
         conn = self._connect()
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
-                """SELECT id, ts, email FROM contact_requests
-                   WHERE followup_at = '' AND ts <= ? AND status NOT IN ('approved', 'rejected')
-                   ORDER BY id LIMIT ?""", (cutoff, limit)).fetchall()
+                f"""SELECT id, ts, email FROM contact_requests
+                    WHERE followup_at = '' AND ts <= ? AND status NOT IN ({",".join("?" * len(skip))})
+                    ORDER BY id LIMIT ?""", (cutoff, *skip, limit)).fetchall()
         finally:
             conn.close()
         return [dict(r) for r in rows]
 
     def mark_followup(self, contact_id: int) -> None:
+        self._stamp(contact_id, "followup_at")
+
+    def get_contact(self, contact_id: int) -> Optional[dict[str, Any]]:
+        """The request's email and where it stands in the Telegram opt-in (None when erased)."""
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                """SELECT id, email, status, followup_at, optin_at, link_sent_at
+                   FROM contact_requests WHERE id = ?""", (contact_id,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def mark_optin(self, contact_id: int) -> None:
+        self._stamp(contact_id, "optin_at")
+
+    def claim_link_sent(self, contact_id: int) -> bool:
+        """Mark the invite link as sent, atomically: True for exactly one caller, so two
+        confirmations at the same moment cannot both email it."""
+        return self._stamp(contact_id, "link_sent_at")
+
+    def release_link_sent(self, contact_id: int) -> None:
+        """The email failed after the claim: let the next confirmation try again."""
         conn = self._connect()
         try:
             with conn:
-                conn.execute("UPDATE contact_requests SET followup_at = ? WHERE id = ?",
-                             (datetime.now(IST).isoformat(timespec="seconds"), contact_id))
+                conn.execute("UPDATE contact_requests SET link_sent_at = '' WHERE id = ?", (contact_id,))
+        finally:
+            conn.close()
+
+    _STAMPS = ("followup_at", "optin_at", "link_sent_at")
+
+    def _stamp(self, contact_id: int, column: str) -> bool:
+        """Set a when-it-happened column once (the first time stays). True when this call set it."""
+        if column not in self._STAMPS:
+            raise ValueError(column)
+        conn = self._connect()
+        try:
+            with conn:
+                return conn.execute(f"UPDATE contact_requests SET {column} = ? WHERE id = ? AND {column} = ''",
+                                    (datetime.now(IST).isoformat(timespec="seconds"), contact_id)).rowcount == 1
         finally:
             conn.close()
 

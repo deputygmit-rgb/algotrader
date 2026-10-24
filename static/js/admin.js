@@ -137,6 +137,15 @@
         $('adm-backup-state').className = b.active ? 'negative' : b.configured ? 'positive' : 'adm-muted';
     }
 
+    // the 7-day invitation, then their confirmation and the invite link (src/api/webapp.py)
+    function telegramState(c) {
+        const day = ts => (ts || '').slice(0, 10);
+        if (c.link_sent_at) return `link sent ${day(c.link_sent_at)}`;
+        if (c.optin_at) return `confirmed ${day(c.optin_at)}`;
+        if (c.followup_at) return `invited ${day(c.followup_at)}`;
+        return '—';
+    }
+
     function renderContacts() {
         $('adm-contacts').replaceChildren(...data.contacts.map(c => {
             const status = el('select', { onchange: e => act('POST', `/api/admin/contacts/${c.id}/status`, { status: e.target.value }, `Request #${c.id} marked ${e.target.value}.`) },
@@ -159,7 +168,7 @@
                 el('td', {}, String(c.id)), el('td', {}, (c.ts || '').replace('T', ' ').slice(0, 16)),
                 el('td', {}, c.name), el('td', {}, c.email), el('td', {}, c.phone || '—'), el('td', {}, c.trading_id || '—'),
                 el('td', {}, c.access_level || '—'), el('td', {}, c.platform || '—'),
-                el('td', { class: 'adm-message' }, c.message || '—'), el('td', {}, status), el('td', { class: 'adm-actions' }, add, erase));
+                el('td', { class: 'adm-message' }, c.message || '—'), el('td', {}, telegramState(c)), el('td', {}, status), el('td', { class: 'adm-actions' }, add, erase));
         }));
         const open = data.contacts.filter(c => c.status === 'new').length;
         $('adm-contact-count').textContent = `${open} new`;
