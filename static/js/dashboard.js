@@ -1097,7 +1097,7 @@ async function loadVerifierFindings() {
         if (report.passed) {
             body.innerHTML = '<span style="color:#00d4aa">\u2713 All preflight checks passed</span>';
         } else {
-            const reasons = (report.blocked_reasons || []).map(r => `<li>${r}</li>`).join('');
+            const reasons = (report.blocked_reasons || []).map(r => `<li>${escHtml(r)}</li>`).join('');
             body.innerHTML = `<div style="color:#ff9100;margin-bottom:6px">\u26A0 Preflight found issues (advisory - does not block execution):</div><ul style="margin:0;padding-left:18px;color:var(--text-muted)">${reasons}</ul>`;
         }
     } catch (e) { console.error('loadVerifierFindings failed:', e); }
@@ -1699,7 +1699,7 @@ function renderOptionsOI(d) {
     biasEl.textContent = d.bias || '--';
     biasEl.style.color = biasColor(d.bias);
     const reasonsEl = document.getElementById('opt-bias-reasons');
-    reasonsEl.innerHTML = (d.bias_reasons || []).map(r => `• ${r}`).join('<br>') || '--';
+    reasonsEl.innerHTML = (d.bias_reasons || []).map(r => `• ${escHtml(r)}`).join('<br>') || '--';
 
     // OI Walls
     document.getElementById('opt-pe-wall').textContent = d.max_pe_oi_strike ? formatNum(d.max_pe_oi_strike, 0) : '--';
@@ -1906,7 +1906,7 @@ function renderFuturesOI(d) {
     document.getElementById('fut-confidence').textContent = formatNum(s.confidence || 0, 0) + '%';
     document.getElementById('fut-bullish-count').textContent = (s.long_buildup || 0) + ' + ' + (s.short_covering || 0);
     document.getElementById('fut-bearish-count').textContent = (s.short_buildup || 0) + ' + ' + (s.long_unwinding || 0);
-    document.getElementById('fut-reasons').innerHTML = (s.reasons || []).map(r => `• ${r}`).join('<br>') || '--';
+    document.getElementById('fut-reasons').innerHTML = (s.reasons || []).map(r => `• ${escHtml(r)}`).join('<br>') || '--';
 
     // Index Futures
     renderFutIndexTable(d.index_futures || []);
@@ -2854,11 +2854,11 @@ function renderStockTestResults(data) {
         const pass = r.passed === true;
         const color = pass ? '#00d4aa' : '#ff5252';
         const metrics = r.error
-            ? `<span style="color:#ff5252">${r.error}</span>`
+            ? `<span style="color:#ff5252">${escHtml(r.error)}</span>`
             : `WR ${fmtNum(r.win_rate)}% · Sharpe ${fmtNum(r.sharpe_ratio)} · DD ${fmtNum(r.max_drawdown_pct)}% · Ret ${fmtNum(r.total_return_pct)}% · Trades ${r.total_trades ?? 0}` +
               (r.out_of_sample ? `<br><span style="font-size:10px">Out-of-sample (last 30%): ${r.out_of_sample.trades} trades · P&L ₹${fmtNum(r.out_of_sample.pnl)} · WR ${fmtNum(r.out_of_sample.win_rate)}%</span>` : '') +
-              (r.failure_reasons?.length ? `<br><span style="font-size:10px;color:var(--text-muted)">${r.failure_reasons.join('; ')}</span>` : '');
-        return `<tr><td>${_STOCK_TF_LABELS[tf] || tf}</td>
+              (r.failure_reasons?.length ? `<br><span style="font-size:10px;color:var(--text-muted)">${escHtml(r.failure_reasons.join('; '))}</span>` : '');
+        return `<tr><td>${_STOCK_TF_LABELS[tf] || escHtml(tf)}</td>
             <td style="color:${color};font-weight:700">${pass ? 'PASS' : 'FAIL'}</td>
             <td style="font-size:11px">${metrics}</td></tr>`;
     }).join('');

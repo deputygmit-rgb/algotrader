@@ -423,6 +423,37 @@ def _apply_security_headers(response, request: Request):
 CSRF_EXEMPT_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 
 
+# Backtests, simulations and imports run for tens of seconds on the one worker's CPU:
+# each account runs one at a time, and only a few run at once site-wide.
+HEAVY_PATHS = frozenset({
+    "/api/backtest/run", "/api/backtest/sample", "/api/fno-backtest/run", "/api/fno-backtest/sample",
+    "/api/paper-trade/run", "/api/paper-trade/sample", "/api/fno-paper-trade/run", "/api/fno-paper-trade/sample",
+    "/api/strategy-builder/test", "/api/fno-builder/test", "/api/analysis/stock/test-strategy",
+    "/api/strategy/health-report", "/api/data/import-historical", "/api/data/import-fno-historical",
+    "/api/analysis/scan",
+})
+HEAVY_SITE_MAX = 3
+_heavy_running: set[str] = set()
+
+
+@app.middleware("http")
+async def heavy_job_guard(request: Request, call_next):
+    """Runs inside the auth check below, so only signed-in requests get here."""
+    if request.method != "POST" or request.url.path not in HEAVY_PATHS:
+        return await call_next(request)
+    account = otp_auth.get_session_user(request.cookies.get(SESSION_COOKIE, "")) or "?"
+    if account in _heavy_running or len(_heavy_running) >= HEAVY_SITE_MAX:
+        busy = ("Another backtest or simulation of yours is still running - please wait for it to finish."
+                if account in _heavy_running else "The server is busy with other backtests - please try again shortly.")
+        return JSONResponse({"success": False, "error": busy, "message": busy}, status_code=429,
+                            headers={"Retry-After": "10"})
+    _heavy_running.add(account)
+    try:
+        return await call_next(request)
+    finally:
+        _heavy_running.discard(account)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
@@ -2204,11 +2235,20 @@ def _deep_profile_is_fresh(profile: dict[str, Any]) -> bool:
     return datetime.now() - as_of <= DEEP_PROFILE_MAX_AGE
 
 
+def _path_symbol(symbol: str) -> str:
+    """A symbol taken from the URL path (the input guard sees only query and body)."""
+    from src.api.input_guard import check_fields
+
+    if check_fields({"symbol": symbol}):
+        raise HTTPException(400, "Invalid symbol.")
+    return symbol.upper().strip()
+
+
 @app.get("/api/analysis/deep/{symbol}")
 async def analysis_deep_profile(request: Request, symbol: str) -> dict[str, Any]:
     """Get deep analysis profile for a single stock (on-demand if not cached)."""
+    sym = _path_symbol(symbol)
     svc = get_user_service(request)
-    sym = symbol.upper().strip()
     cached = svc.get_deep_profile(sym)
     if not cached.get("error"):
         if _deep_profile_is_fresh(cached):
@@ -2365,7 +2405,7 @@ async def research_news(request: Request, symbol: str, limit: int = 15) -> dict[
 @app.get("/api/research/stock/{symbol}")
 async def research_stock(request: Request, symbol: str) -> dict[str, Any]:
     """Full research report for a single NSE symbol via the supervised stock-research MCP agent."""
-    return await mcp_driver.call_research_tool("get_stock_research", symbol=symbol.upper().strip())
+    return await mcp_driver.call_research_tool("get_stock_research", symbol=_path_symbol(symbol))
 
 
 @app.get("/api/analysis/sectors")
@@ -2745,6 +2785,7 @@ async def get_historical_chart(request: Request) -> dict[str, Any]:
 @app.get("/api/chart/historical/{symbol}")
 async def get_historical_chart_by_symbol(symbol: str, request: Request) -> dict[str, Any]:
     """Fetch chart data by symbol name (auto-resolves token)."""
+    _path_symbol(symbol)
     svc = get_user_service(request)
     params = request.query_params
     exchange = params.get("exchange", "NSE")

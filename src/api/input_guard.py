@@ -9,7 +9,9 @@ forgets, a hostile value never reaches it:
 * a JSON body that does not parse, or is not an object, gets 400 instead of a server error
   (47 routes read ``request.json()`` and would have raised);
 * the shared fields below, in the JSON body or the query string, must match their rule -
-  otherwise 400 naming the field. Nothing is silently changed.
+  otherwise 400 naming the field;
+* top-level fields sent as ``null`` are dropped, so they read as not given (the route's
+  default applies) instead of crashing a conversion.
 
 Pure ASGI: the body is read once and replayed to the route unchanged.
 """
@@ -141,6 +143,10 @@ class InputGuard:
             if problem:
                 await _reject(send, 400, problem)
                 return
+            if any(v is None for v in data.values()):
+                # a field sent as null means "not given": routes read body.get(key, default), and
+                # an explicit null would bypass the default and crash the conversion after it
+                body = json.dumps({k: v for k, v in data.items() if v is not None}).encode()
 
         sent = False
 
